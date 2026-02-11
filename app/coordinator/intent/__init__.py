@@ -1,0 +1,1 @@
+"""Coordinator – Intent handling."""

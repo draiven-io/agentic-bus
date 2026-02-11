@@ -1,0 +1,1 @@
+"""Dynamic capability registry."""
