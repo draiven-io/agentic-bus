@@ -8,6 +8,12 @@ Supports two agent registration modes:
   approves the enrolment (or auto-approve is on).  On subsequent connects
   the agent proves identity via a cryptographic challenge–response.
 
+A third mode is now available:
+
+- **Managed**: agent is *created from within* the Agentic Bus using the
+  CrewAI Role-Goal-Backstory framework.  Managed agents are stored in
+  their own table and can be instantiated as CrewAI agents on demand.
+
 Storage is backed by SQLAlchemy (SQLite by default, any SQL database via
 ``AGBUS_DATABASE_URL``).
 """
@@ -19,6 +25,10 @@ from app.core.persistence.llm_repository import (
     LLMConfigNotFoundError,
     NoCurrentLLMConfigError,
 )
+from app.core.persistence.managed_agent_repository import (
+    ManagedAgentRepository,
+    ManagedAgentNotFoundError,
+)
 
 __all__ = [
     "init_db",
@@ -28,4 +38,6 @@ __all__ = [
     "LLMConfigRepository",
     "LLMConfigNotFoundError",
     "NoCurrentLLMConfigError",
+    "ManagedAgentRepository",
+    "ManagedAgentNotFoundError",
 ]

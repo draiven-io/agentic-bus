@@ -8,12 +8,19 @@ Usage::
     agbus install                        # interactive setup wizard
     agbus serve                          # start the coordinator server
     agbus db init                        # create / migrate database tables
-    agbus agent list                     # list persistent agents
+    agbus agent list                     # list all agents
     agbus agent show  <id>               # inspect a single agent
     agbus agent approve <id>             # approve a pending enrolment
     agbus agent reject  <id>             # reject a pending enrolment
     agbus agent revoke  <id>             # revoke an approved agent
     agbus agent delete  <id>             # permanently remove an agent
+    agbus agent create                   # create a managed agent (interactive)
+    agbus agent create <id> --role ...   # create a managed agent (flags)
+    agbus agent activate <id>            # activate a managed agent
+    agbus agent disable <id>             # disable a managed agent
+    agbus agent add-capability <id>      # add capability to managed agent
+    agbus agent remove-capability <id> c # remove capability
+    agbus agent tools                    # list available CrewAI tools
     agbus config show                    # display resolved configuration
     agbus config init                    # write a starter .env file
 """
@@ -162,6 +169,22 @@ _AZURE_EXTRA_KEYS = [
 ]
 
 
+def _require_configuration() -> None:
+    """Require that the system is configured before proceeding."""
+    db_url = os.getenv("AGBUS_DATABASE_URL")
+    env_file = Path(".env")
+    
+    if db_url is None and not env_file.exists():
+        print()
+        print(f"  {_c('✗ Error:', _RED)} No configuration found", file=sys.stderr)
+        print(f"  The Agentic Bus must be configured before use.", file=sys.stderr)
+        print()
+        print(f"  Run {_c('agbus install', _BOLD)} to set up database and LLM settings", file=sys.stderr)
+        print(f"  Or create a .env file with {_c('AGBUS_DATABASE_URL', _YELLOW)}", file=sys.stderr)
+        print()
+        sys.exit(1)
+
+
 def _prompt(label: str, default: str = "", secret: bool = False) -> str:
     """Prompt the user for input, showing a default value."""
     if default:
@@ -204,6 +227,215 @@ def _prompt_yes_no(label: str, default: bool = False) -> bool:
     hint = "Y/n" if default else "y/N"
     raw = _prompt(f"{label} [{hint}]", "y" if default else "n")
     return raw.lower() in ("y", "yes", "true", "1")
+
+
+def _checkbox_picker(
+    items: list[str],
+    title: str = "Select items",
+    descriptions: dict[str, str] | None = None,
+    page_size: int = 15,
+) -> list[str]:
+    """Interactive checkbox picker for terminal.
+
+    Uses raw terminal input (arrow keys + space to toggle, Enter to confirm).
+    Falls back to comma-separated text input if the terminal doesn't support
+    raw mode (e.g. piped stdin).
+
+    Returns the list of selected item names.
+    """
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        # Fallback for non-interactive terminals
+        raw = input(f"  {title} (comma-separated): ")
+        return [s.strip() for s in raw.split(",") if s.strip()]
+
+    import tty
+    import termios
+
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+
+    selected: set[int] = set()
+    cursor = 0
+    scroll_offset = 0
+    search_query = ""
+    prev_line_count = 0
+
+    def _filtered_indices() -> list[int]:
+        """Return indices of items matching the current search query."""
+        if not search_query:
+            return list(range(len(items)))
+        q = search_query.lower()
+        return [i for i, name in enumerate(items) if q in name.lower()]
+
+    def _read_key() -> str:
+        """Read a single keypress (handles escape sequences)."""
+        ch = sys.stdin.read(1)
+        if ch == "\x1b":
+            seq = sys.stdin.read(1)
+            if seq == "[":
+                code = sys.stdin.read(1)
+                return {"A": "UP", "B": "DOWN", "C": "RIGHT", "D": "LEFT"}.get(code, "")
+            return ""
+        return ch
+
+    def _render() -> None:
+        """Render the picker UI by overwriting previous output in-place."""
+        nonlocal cursor, scroll_offset, prev_line_count
+        visible = _filtered_indices()
+        total = len(visible)
+
+        # Ensure cursor is within bounds
+        if total == 0:
+            cursor = 0
+            scroll_offset = 0
+        else:
+            cursor = max(0, min(cursor, total - 1))
+            if cursor < scroll_offset:
+                scroll_offset = cursor
+            elif cursor >= scroll_offset + page_size:
+                scroll_offset = cursor - page_size + 1
+
+        # Build output lines (using \r\n for raw mode)
+        lines: list[str] = []
+        lines.append(f"  {_c(title, _BOLD)}")
+        lines.append(f"  {_c('↑/↓ navigate  Space toggle  a toggle-all  / filter  Enter confirm', _DIM)}")
+        if search_query:
+            lines.append(f"  {_c('Filter:', _YELLOW)} {search_query}  ({total} match{'es' if total != 1 else ''})")
+        else:
+            lines.append("")
+
+        window_end = min(scroll_offset + page_size, total)
+        if scroll_offset > 0:
+            lines.append(f"    {_c('▲ more above', _DIM)}")
+        else:
+            lines.append("")
+
+        for vi in range(scroll_offset, window_end):
+            idx = visible[vi]
+            name = items[idx]
+            is_cursor = vi == cursor
+            is_selected = idx in selected
+
+            check = _c("✓", _GREEN) if is_selected else " "
+            pointer = _c("❯", _CYAN) if is_cursor else " "
+            box = f"[{check}]"
+
+            desc = ""
+            if descriptions and name in descriptions:
+                desc = f"  {_c(descriptions[name], _DIM)}"
+
+            label = _c(name, _BOLD) if is_cursor else name
+            lines.append(f"  {pointer} {box} {label}{desc}")
+
+        # Pad remaining rows so the picker height stays fixed
+        for _ in range(page_size - (window_end - scroll_offset)):
+            lines.append("")
+
+        if window_end < total:
+            lines.append(f"    {_c('▼ more below', _DIM)}")
+        else:
+            lines.append("")
+
+        count = len(selected)
+        lines.append(f"  {_c(f'{count} selected', _GREEN if count else _DIM)}")
+
+        # Move cursor up to overwrite previous render (if any)
+        buf = ""
+        if prev_line_count > 0:
+            buf += f"\x1b[{prev_line_count}A"  # move up
+            buf += "\r"  # move to column 0
+
+        # Write each line, clearing the rest of the row
+        for line in lines:
+            buf += f"\x1b[2K{line}\r\n"
+
+        prev_line_count = len(lines)
+        sys.stdout.write(buf)
+        sys.stdout.flush()
+
+    try:
+        tty.setraw(fd)
+        _render()
+
+        while True:
+            key = _read_key()
+            visible = _filtered_indices()
+            total = len(visible)
+
+            if key in ("\r", "\n"):
+                break
+            elif key == " ":
+                if visible and 0 <= cursor < total:
+                    idx = visible[cursor]
+                    if idx in selected:
+                        selected.discard(idx)
+                    else:
+                        selected.add(idx)
+                    cursor = min(cursor + 1, total - 1)
+            elif key == "UP":
+                cursor = max(0, cursor - 1)
+            elif key == "DOWN":
+                cursor = min(total - 1, cursor + 1) if total else 0
+            elif key == "a":
+                all_visible = set(_filtered_indices())
+                if all_visible <= selected:
+                    selected -= all_visible
+                else:
+                    selected |= all_visible
+            elif key == "/":
+                search_query = ""
+                cursor = 0
+                scroll_offset = 0
+                _render()
+                while True:
+                    sch = sys.stdin.read(1)
+                    if sch in ("\r", "\n", "\x1b"):
+                        break
+                    elif sch in ("\x7f", "\x08"):
+                        search_query = search_query[:-1]
+                    elif sch.isprintable():
+                        search_query += sch
+                    cursor = 0
+                    scroll_offset = 0
+                    _render()
+            elif key == "\x1b" or key == "q":
+                if search_query:
+                    search_query = ""
+                    cursor = 0
+                    scroll_offset = 0
+                else:
+                    selected.clear()
+                    break
+            elif key == "\x03":
+                selected.clear()
+                break
+
+            _render()
+
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        # Overwrite the picker area with blank lines to clean up
+        buf = ""
+        if prev_line_count > 0:
+            buf += f"\x1b[{prev_line_count}A\r"
+            for _ in range(prev_line_count):
+                buf += "\x1b[2K\n"
+            buf += f"\x1b[{prev_line_count}A\r"
+        sys.stdout.write(buf)
+        sys.stdout.flush()
+
+    result = [items[i] for i in sorted(selected)]
+
+    # Print summary after exiting picker
+    if result:
+        print(f"  {_c('Selected tools:', _BOLD)}")
+        for name in result:
+            print(f"    {_c('✓', _GREEN)} {name}")
+    else:
+        print(f"  {_c('No tools selected', _DIM)}")
+    print()
+
+    return result
 
 
 def cmd_install(args: argparse.Namespace) -> None:  # noqa: C901
@@ -250,7 +482,7 @@ def cmd_install(args: argparse.Namespace) -> None:  # noqa: C901
         llm_extra_config["base_url"] = base_url
     else:
         key_env = info["key_env"]
-        key_val = _prompt(f"{key_env}", info["key_hint"], secret=True)
+        key_val = _prompt(f"{key_env}", info["key_hint"], secret=False)
         if key_val and key_val != info["key_hint"]:
             llm_api_key = key_val
 
@@ -456,50 +688,96 @@ def _get_repo():
     from app.core.persistence.database import init_db
     from app.core.persistence.repository import AgentRepository
 
+    _require_configuration()
     init_db()
     return AgentRepository()
 
 
 def cmd_agent_list(args: argparse.Namespace) -> None:
-    """List persistent agents."""
-    from app.core.persistence.models import AgentStatus
+    """List all agents (both registered and managed)."""
+    from app.core.persistence.models import AgentStatus, ManagedAgentStatus
 
     repo = _get_repo()
-    status_filter = None
-    if args.status:
+    managed_repo = _get_managed_repo()
+
+    # Collect status filter – accept values from both enums
+    status_raw = args.status.lower() if args.status else None
+
+    # Fetch registered (persistent) agents
+    reg_status = None
+    if status_raw:
         try:
-            status_filter = AgentStatus(args.status.lower())
+            reg_status = AgentStatus(status_raw)
         except ValueError:
-            print(f"Error: unknown status {args.status!r}. "
-                  f"Valid: {', '.join(s.value for s in AgentStatus)}", file=sys.stderr)
-            sys.exit(1)
+            reg_status = None  # not a registered-agent status – skip
+    registered = repo.list_all(status=reg_status) if (not status_raw or reg_status) else []
 
-    agents = repo.list_all(status=status_filter)
+    # Fetch managed agents
+    mgd_status = None
+    if status_raw:
+        try:
+            mgd_status = ManagedAgentStatus(status_raw)
+        except ValueError:
+            mgd_status = None  # not a managed-agent status – skip
+    managed = managed_repo.list_all(status=mgd_status) if (not status_raw or mgd_status) else []
 
-    if not agents:
+    if not registered and not managed:
         label = f" with status={args.status}" if args.status else ""
-        print(f"  No persistent agents found{label}.")
+        print(f"  No agents found{label}.")
         return
 
     print()
-    print(f"  {_c('AGENT ID', _DIM):<40s}  {_c('STATUS', _DIM):<22s}  "
-          f"{_c('VERSION', _DIM):<8s}  {_c('ENROLLED', _DIM)}")
-    print(f"  {'─' * 40}  {'─' * 10}  {'─' * 8}  {'─' * 24}")
-    for agent in agents:
-        _print_agent_row(agent)
+    print(f"  {_c('AGENT ID', _DIM):<40s}  {_c('TYPE', _DIM):<14s}  "
+          f"{_c('STATUS', _DIM):<22s}  {_c('DETAILS', _DIM)}")
+    print(f"  {'─' * 40}  {'─' * 12}  {'─' * 10}  {'─' * 28}")
+
+    for agent in registered:
+        badge = _status_badge(agent.status.value)
+        detail = f"v{agent.version}"
+        print(
+            f"  {_c(agent.agent_id, _BOLD):<40s}  "
+            f"{_c('registered', _CYAN):<14s}  "
+            f"{badge:<22s}  "
+            f"{detail}"
+        )
+
+    for agent in managed:
+        status_colors = {"draft": _YELLOW, "active": _GREEN, "disabled": _RED}
+        badge = _c(agent.status.value.upper(), status_colors.get(agent.status.value, ""))
+        n_caps = len(agent.capabilities) if agent.capabilities else 0
+        n_tools = len(agent.tools_json) if agent.tools_json else 0
+        detail = f"{n_caps} cap · {n_tools} tools"
+        print(
+            f"  {_c(agent.agent_id, _BOLD):<40s}  "
+            f"{_c('managed', _YELLOW):<14s}  "
+            f"{badge:<22s}  "
+            f"{detail}"
+        )
+
+    total = len(registered) + len(managed)
     print()
-    print(f"  {len(agents)} agent(s)")
+    print(f"  {total} agent(s)")
     print()
 
 
 def cmd_agent_show(args: argparse.Namespace) -> None:
-    """Show details for a single agent."""
+    """Show details for a single agent (registered or managed)."""
     repo = _get_repo()
-    agent = repo.get(args.agent_id)
-    if agent is None:
-        print(f"Error: agent {args.agent_id!r} not found.", file=sys.stderr)
-        sys.exit(1)
-    _print_agent_detail(agent)
+    managed_repo = _get_managed_repo()
+
+    # Try managed first, then registered
+    managed = managed_repo.get(args.agent_id)
+    if managed is not None:
+        _print_managed_agent_detail(managed)
+        return
+
+    registered = repo.get(args.agent_id)
+    if registered is not None:
+        _print_agent_detail(registered)
+        return
+
+    print(f"Error: agent {args.agent_id!r} not found.", file=sys.stderr)
+    sys.exit(1)
 
 
 def cmd_agent_approve(args: argparse.Namespace) -> None:
@@ -536,18 +814,374 @@ def cmd_agent_revoke(args: argparse.Namespace) -> None:
 
 
 def cmd_agent_delete(args: argparse.Namespace) -> None:
-    """Permanently delete an agent."""
+    """Permanently delete an agent (registered or managed)."""
     repo = _get_repo()
+    managed_repo = _get_managed_repo()
+
     if not args.yes:
         answer = input(f"Delete agent {args.agent_id!r} permanently? [y/N] ")
         if answer.strip().lower() not in ("y", "yes"):
             print("Cancelled.")
             return
-    if repo.delete(args.agent_id):
-        print(f"✓ Agent {_c(args.agent_id, _BOLD)} deleted")
+
+    # Try managed first, then registered
+    if managed_repo.delete(args.agent_id):
+        print(f"✓ Agent {_c(args.agent_id, _BOLD)} deleted (managed)")
+    elif repo.delete(args.agent_id):
+        print(f"✓ Agent {_c(args.agent_id, _BOLD)} deleted (registered)")
     else:
         print(f"Error: agent {args.agent_id!r} not found.", file=sys.stderr)
         sys.exit(1)
+
+
+# -- agent create (managed agents) -------------------------------------------
+
+def _get_managed_repo():
+    from app.core.persistence.database import init_db
+    from app.core.persistence.managed_agent_repository import ManagedAgentRepository
+
+    _require_configuration()
+    init_db()
+    return ManagedAgentRepository()
+
+
+def _print_managed_agent_row(agent) -> None:
+    """Print one managed agent as a compact table row."""
+    status_colors = {"draft": _YELLOW, "active": _GREEN, "disabled": _RED}
+    badge = _c(agent.status.value.upper(), status_colors.get(agent.status.value, ""))
+    n_caps = len(agent.capabilities) if agent.capabilities else 0
+    n_tools = len(agent.tools_json) if agent.tools_json else 0
+    print(
+        f"  {_c(agent.agent_id, _BOLD):<36s}  "
+        f"{agent.name:<24s}  "
+        f"{badge:<22s}  "
+        f"{n_caps} cap  "
+        f"{n_tools} tools"
+    )
+
+
+def _print_managed_agent_detail(agent) -> None:
+    """Print full managed agent details."""
+    status_colors = {"draft": _YELLOW, "active": _GREEN, "disabled": _RED}
+    badge = _c(agent.status.value.upper(), status_colors.get(agent.status.value, ""))
+    print()
+    print(f"  {_c('Agent ID', _BOLD)}:         {agent.agent_id}")
+    print(f"  {_c('Name', _BOLD)}:             {agent.name}")
+    print(f"  {_c('Status', _BOLD)}:           {badge}")
+    print(f"  {_c('Role', _BOLD)}:             {agent.role}")
+    print(f"  {_c('Goal', _BOLD)}:             {agent.goal}")
+    print(f"  {_c('Backstory', _BOLD)}:")
+    # Wrap backstory nicely
+    for line in textwrap.wrap(agent.backstory, width=68):
+        print(f"    {line}")
+    print()
+    llm_label = agent.llm_config_name or "(bus default)"
+    print(f"  {_c('LLM Config', _BOLD)}:       {llm_label}")
+    print(f"  {_c('Verbose', _BOLD)}:           {agent.verbose}")
+    print(f"  {_c('Max Iterations', _BOLD)}:   {agent.max_iter}")
+    print(f"  {_c('Max RPM', _BOLD)}:           {agent.max_rpm or '—'}")
+    print(f"  {_c('Memory', _BOLD)}:            {agent.memory}")
+
+    tools = agent.tools_json or []
+    print(f"  {_c('Tools', _BOLD)} ({len(tools)}):")
+    if tools:
+        for t in tools:
+            print(f"    • {t}")
+    else:
+        print(f"    {_c('(none)', _DIM)}")
+
+    caps = agent.capabilities or []
+    print(f"  {_c('Capabilities', _BOLD)} ({len(caps)}):")
+    if caps:
+        for cap in caps:
+            print(f"    • {_c(cap.capability_id, _CYAN)}: {cap.description}")
+            if cap.expected_output:
+                print(f"      Expected output: {cap.expected_output}")
+    else:
+        print(f"    {_c('(none – add with: agbus agent add-capability)', _DIM)}")
+
+    print(f"  {_c('Created at', _BOLD)}:      {_ts(agent.created_at)}")
+    print(f"  {_c('Updated at', _BOLD)}:      {_ts(agent.updated_at)}")
+    print(f"  {_c('Created by', _BOLD)}:      {agent.created_by}")
+    print()
+
+
+def _prompt_multiline(label: str, hint: str = "") -> str:
+    """Prompt for multiline text input.  Empty line finishes."""
+    if hint:
+        print(f"  {_c(hint, _DIM)}")
+    print(f"  {label} (press Enter twice to finish):")
+    lines: list[str] = []
+    while True:
+        try:
+            line = input("  > ")
+        except EOFError:
+            break
+        if line == "" and lines:
+            break
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def cmd_agent_create(args: argparse.Namespace) -> None:  # noqa: C901
+    """Create a new managed agent (CrewAI-based)."""
+    from app.core.persistence.models import ManagedAgentStatus
+    from app.agents.factory import list_available_tools
+
+    repo = _get_managed_repo()
+    interactive = args.agent_id is None
+
+    if interactive:
+        print()
+        print(f"  {_c('╔══════════════════════════════════════════╗', _CYAN)}")
+        print(f"  {_c('║', _CYAN)}   {_c('Create a Managed Agent', _BOLD)}             {_c('║', _CYAN)}")
+        print(f"  {_c('╚══════════════════════════════════════════╝', _CYAN)}")
+        print()
+        print(f"  {_c('Agents use the CrewAI Role-Goal-Backstory framework.', _DIM)}")
+        print(f"  {_c('See: https://docs.crewai.com/en/guides/agents/crafting-effective-agents', _DIM)}")
+        print()
+
+        # Identity
+        print(f"  {_c('─── Identity ───', _YELLOW)}")
+        agent_id = _prompt("Agent ID (unique slug, e.g. 'market-researcher-01')")
+        while not agent_id:
+            agent_id = _prompt("Agent ID (required)")
+
+        name = _prompt("Display name", agent_id.replace("-", " ").title())
+
+        # CrewAI persona
+        print(f"\n  {_c('─── CrewAI Persona ───', _YELLOW)}")
+        print(f"  {_c('Be specific and specialised – avoid generic roles.', _DIM)}")
+        print()
+
+        role = _prompt("Role (e.g. 'Senior UX Researcher specializing in user interview analysis')")
+        while not role:
+            role = _prompt("Role (required)")
+
+        goal = _prompt("Goal (e.g. 'Uncover actionable user insights by analyzing interview data')")
+        while not goal:
+            goal = _prompt("Goal (required)")
+
+        print()
+        backstory = _prompt_multiline(
+            "Backstory",
+            "Give depth to the agent: experience, working style, values."
+        )
+        while not backstory:
+            backstory = _prompt_multiline("Backstory (required)")
+
+        # LLM
+        print(f"\n  {_c('─── LLM Configuration ───', _YELLOW)}")
+        llm_config_name = _prompt(
+            "LLM config name (leave empty for bus default)",
+            ""
+        ) or None
+
+        # Options
+        print(f"\n  {_c('─── Agent Options ───', _YELLOW)}")
+        verbose = _prompt_yes_no("Verbose mode?", False)
+        max_iter_str = _prompt("Max iterations", "25")
+        max_iter = int(max_iter_str) if max_iter_str.isdigit() else 25
+        memory = _prompt_yes_no("Enable memory?", True)
+
+        # Tools
+        print(f"\n  {_c('─── Tools ───', _YELLOW)}")
+        print(f"  {_c('Bind CrewAI tools to this agent.', _DIM)}")
+        print()
+        available = list_available_tools()
+        from app.agents.factory import CREWAI_TOOL_DESCRIPTIONS
+        tools: list[str] = _checkbox_picker(
+            items=available,
+            title="Select CrewAI tools to bind",
+            descriptions=CREWAI_TOOL_DESCRIPTIONS,
+        )
+
+        # Capabilities
+        print(f"\n  {_c('─── Capabilities ───', _YELLOW)}")
+        print(f"  {_c('Capabilities define what this agent can do on the bus.', _DIM)}")
+        print(f"  {_c('You can add more later with: agbus agent add-capability', _DIM)}")
+        print()
+        capabilities: list[dict] = []
+        while True:
+            add_cap = _prompt_yes_no(
+                "Add a capability?" if not capabilities else "Add another capability?",
+                not bool(capabilities)
+            )
+            if not add_cap:
+                break
+            cap_id = _prompt("  Capability ID (e.g. 'market_analysis')")
+            cap_desc = _prompt("  Description")
+            cap_output = _prompt("  Expected output description", "")
+            cap_scopes = _prompt("  Required scopes (comma-separated)", "")
+            cap_domains = _prompt("  Data domains (comma-separated)", "")
+            cap_cost = _prompt("  Estimated cost per invocation ($)", "0.0")
+            cap_latency = _prompt("  Estimated latency (seconds)", "0.0")
+
+            capabilities.append({
+                "capability_id": cap_id,
+                "description": cap_desc,
+                "expected_output": cap_output,
+                "required_scopes": [s.strip() for s in cap_scopes.split(",") if s.strip()],
+                "supported_data_domains": [d.strip() for d in cap_domains.split(",") if d.strip()],
+                "estimated_cost": float(cap_cost) if cap_cost else 0.0,
+                "estimated_latency": float(cap_latency) if cap_latency else 0.0,
+            })
+            print(f"  {_c('✓', _GREEN)} Capability {_c(cap_id, _CYAN)} queued")
+
+        # Status
+        print(f"\n  {_c('─── Status ───', _YELLOW)}")
+        activate_now = _prompt_yes_no("Activate agent immediately?", False)
+        status = ManagedAgentStatus.ACTIVE if activate_now else ManagedAgentStatus.DRAFT
+
+    else:
+        # Non-interactive: all from CLI args
+        agent_id = args.agent_id
+        name = args.name or agent_id.replace("-", " ").title()
+        role = args.role
+        goal = args.goal
+        backstory = args.backstory
+        llm_config_name = args.llm_config or None
+        verbose = args.verbose
+        max_iter = args.max_iter
+        memory = not args.no_memory
+        tools = [t.strip() for t in args.tools.split(",") if t.strip()] if args.tools else []
+        capabilities = []
+        status = (
+            ManagedAgentStatus.ACTIVE if args.activate
+            else ManagedAgentStatus.DRAFT
+        )
+
+    # Create
+    try:
+        agent = repo.create(
+            agent_id=agent_id,
+            name=name,
+            role=role,
+            goal=goal,
+            backstory=backstory,
+            llm_config_name=llm_config_name,
+            verbose=verbose,
+            max_iter=max_iter,
+            memory=memory,
+            tools=tools,
+            capabilities=capabilities,
+            status=status,
+            created_by=f"cli:{os.getenv('USER', 'admin')}",
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    print()
+    print(f"  {_c('✓', _GREEN)} Managed agent {_c(agent.agent_id, _BOLD)} created ({agent.status.value})")
+    if agent.status == ManagedAgentStatus.DRAFT:
+        print(f"    Activate with: {_c(f'agbus agent activate {agent.agent_id}', _CYAN)}")
+    print(f"    Add capabilities: {_c(f'agbus agent add-capability {agent.agent_id}', _CYAN)}")
+    print()
+
+
+def cmd_agent_activate(args: argparse.Namespace) -> None:
+    """Activate a managed agent."""
+    from app.core.persistence.models import ManagedAgentStatus
+    from app.core.persistence.managed_agent_repository import ManagedAgentNotFoundError
+
+    repo = _get_managed_repo()
+    try:
+        agent = repo.set_status(args.agent_id, ManagedAgentStatus.ACTIVE)
+    except ManagedAgentNotFoundError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    print(f"✓ Managed agent {_c(agent.agent_id, _BOLD)} activated")
+
+
+def cmd_agent_disable(args: argparse.Namespace) -> None:
+    """Disable a managed agent."""
+    from app.core.persistence.models import ManagedAgentStatus
+    from app.core.persistence.managed_agent_repository import ManagedAgentNotFoundError
+
+    repo = _get_managed_repo()
+    try:
+        agent = repo.set_status(args.agent_id, ManagedAgentStatus.DISABLED)
+    except ManagedAgentNotFoundError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    print(f"✓ Managed agent {_c(agent.agent_id, _BOLD)} disabled")
+
+
+def cmd_agent_add_capability(args: argparse.Namespace) -> None:  # noqa: C901
+    """Add a capability to a managed agent."""
+    from app.core.persistence.managed_agent_repository import ManagedAgentNotFoundError
+
+    repo = _get_managed_repo()
+    interactive = args.capability_id is None
+
+    if interactive:
+        print()
+        print(f"  {_c('Add capability to', _BOLD)} {_c(args.agent_id, _CYAN)}")
+        print()
+        capability_id = _prompt("Capability ID (e.g. 'market_analysis')")
+        while not capability_id:
+            capability_id = _prompt("Capability ID (required)")
+        description = _prompt("Description")
+        expected_output = _prompt("Expected output description", "")
+        scopes_str = _prompt("Required scopes (comma-separated)", "")
+        domains_str = _prompt("Data domains (comma-separated)", "")
+        cost_str = _prompt("Estimated cost per invocation ($)", "0.0")
+        latency_str = _prompt("Estimated latency (seconds)", "0.0")
+    else:
+        capability_id = args.capability_id
+        description = args.description or ""
+        expected_output = args.expected_output or ""
+        scopes_str = args.scopes or ""
+        domains_str = args.domains or ""
+        cost_str = args.cost or "0.0"
+        latency_str = args.latency or "0.0"
+
+    try:
+        cap = repo.add_capability(
+            agent_id=args.agent_id,
+            capability_id=capability_id,
+            description=description,
+            expected_output=expected_output,
+            required_scopes=[s.strip() for s in scopes_str.split(",") if s.strip()],
+            supported_data_domains=[d.strip() for d in domains_str.split(",") if d.strip()],
+            estimated_cost=float(cost_str),
+            estimated_latency=float(latency_str),
+        )
+    except ManagedAgentNotFoundError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"✓ Capability {_c(cap.capability_id, _CYAN)} added to {_c(args.agent_id, _BOLD)}")
+
+
+def cmd_agent_remove_capability(args: argparse.Namespace) -> None:
+    """Remove a capability from a managed agent."""
+    repo = _get_managed_repo()
+    if repo.remove_capability(args.agent_id, args.capability_id):
+        print(f"✓ Capability {_c(args.capability_id, _CYAN)} removed from {_c(args.agent_id, _BOLD)}")
+    else:
+        print(f"Error: capability {args.capability_id!r} not found on agent {args.agent_id!r}.",
+              file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_agent_tools(args: argparse.Namespace) -> None:
+    """List available CrewAI tools that can be bound to managed agents."""
+    from app.agents.factory import CREWAI_TOOL_CATALOGUE, CREWAI_TOOL_DESCRIPTIONS
+
+    print()
+    print(f"  {_c('Available CrewAI Tools', _BOLD)}")
+    print(f"  {'─' * 72}")
+    print(f"  {_c('TOOL', _DIM):<36s}  {_c('DESCRIPTION', _DIM)}")
+    print(f"  {'─' * 36}  {'─' * 34}")
+    for name in sorted(CREWAI_TOOL_CATALOGUE.keys()):
+        desc = CREWAI_TOOL_DESCRIPTIONS.get(name, "")
+        print(f"    {_c(name, _CYAN):<36s}  {desc}")
+    print()
+    print(f"  {len(CREWAI_TOOL_CATALOGUE)} tool(s) available")
+    print(f"  {_c('Install with:', _DIM)} pip install 'crewai[tools]'")
+    print()
 
 
 # -- llm ---------------------------------------------------------------------
@@ -556,6 +1190,7 @@ def _get_llm_repo():
     from app.core.persistence.database import init_db
     from app.core.persistence.llm_repository import LLMConfigRepository
 
+    _require_configuration()
     init_db()
     return LLMConfigRepository()
 
@@ -654,7 +1289,7 @@ def cmd_llm_add(args: argparse.Namespace) -> None:  # noqa: C901
             base_url = _prompt("Ollama base URL", info["key_hint"])
             extra_config["base_url"] = base_url
         else:
-            key_val = _prompt(f"API key ({info['key_env']})", "", secret=True)
+            key_val = _prompt(f"API key ({info['key_env']})", "", secret=False)
             if key_val:
                 api_key = key_val
 
@@ -1315,12 +1950,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_db_init.set_defaults(func=cmd_db_init)
 
     # -- agent ---------------------------------------------------------------
-    p_agent = sub.add_parser("agent", help="Manage persistent agents")
+    p_agent = sub.add_parser("agent", help="Manage agents")
     agent_sub = p_agent.add_subparsers(dest="agent_command", title="agent commands")
 
-    p_list = agent_sub.add_parser("list", help="List persistent agents")
+    p_list = agent_sub.add_parser("list", help="List all agents")
     p_list.add_argument("--status", type=str, default=None,
-                        help="Filter by status (pending, approved, rejected, revoked)")
+                        help="Filter by status (pending, approved, rejected, revoked, draft, active, disabled)")
     p_list.set_defaults(func=cmd_agent_list)
 
     p_show = agent_sub.add_parser("show", help="Show agent details")
@@ -1343,6 +1978,68 @@ def build_parser() -> argparse.ArgumentParser:
     p_delete.add_argument("agent_id", help="Agent identifier")
     p_delete.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
     p_delete.set_defaults(func=cmd_agent_delete)
+
+    # -- agent create (managed agents) -----------------------------------------
+    p_create = agent_sub.add_parser(
+        "create",
+        help="Create a new managed agent (CrewAI-based). Interactive if no args.",
+    )
+    p_create.add_argument("agent_id", nargs="?", default=None,
+                          help="Agent identifier (interactive if omitted)")
+    p_create.add_argument("--name", type=str, default=None, help="Display name")
+    p_create.add_argument("--role", type=str, default=None, help="CrewAI role")
+    p_create.add_argument("--goal", type=str, default=None, help="CrewAI goal")
+    p_create.add_argument("--backstory", type=str, default=None, help="CrewAI backstory")
+    p_create.add_argument("--llm-config", type=str, default=None,
+                          help="Name of an LLM config to use (default: bus default)")
+    p_create.add_argument("--verbose", action="store_true", default=False,
+                          help="Enable verbose mode")
+    p_create.add_argument("--max-iter", type=int, default=25,
+                          help="Max iterations (default: 25)")
+    p_create.add_argument("--no-memory", action="store_true", default=False,
+                          help="Disable memory")
+    p_create.add_argument("--tools", type=str, default=None,
+                          help="Comma-separated list of CrewAI tool names")
+    p_create.add_argument("--activate", action="store_true", default=False,
+                          help="Set status to 'active' immediately")
+    p_create.set_defaults(func=cmd_agent_create)
+
+    p_activate = agent_sub.add_parser("activate", help="Activate a managed agent")
+    p_activate.add_argument("agent_id", help="Agent identifier")
+    p_activate.set_defaults(func=cmd_agent_activate)
+
+    p_disable = agent_sub.add_parser("disable", help="Disable a managed agent")
+    p_disable.add_argument("agent_id", help="Agent identifier")
+    p_disable.set_defaults(func=cmd_agent_disable)
+
+    p_add_cap = agent_sub.add_parser("add-capability",
+                                     help="Add a capability to a managed agent")
+    p_add_cap.add_argument("agent_id", help="Agent identifier")
+    p_add_cap.add_argument("capability_id", nargs="?", default=None,
+                           help="Capability ID (interactive if omitted)")
+    p_add_cap.add_argument("--description", type=str, default=None,
+                           help="Capability description")
+    p_add_cap.add_argument("--expected-output", type=str, default=None,
+                           help="Expected output description")
+    p_add_cap.add_argument("--scopes", type=str, default=None,
+                           help="Required scopes (comma-separated)")
+    p_add_cap.add_argument("--domains", type=str, default=None,
+                           help="Data domains (comma-separated)")
+    p_add_cap.add_argument("--cost", type=str, default=None,
+                           help="Estimated cost per invocation")
+    p_add_cap.add_argument("--latency", type=str, default=None,
+                           help="Estimated latency in seconds")
+    p_add_cap.set_defaults(func=cmd_agent_add_capability)
+
+    p_rm_cap = agent_sub.add_parser("remove-capability",
+                                    help="Remove a capability from a managed agent")
+    p_rm_cap.add_argument("agent_id", help="Agent identifier")
+    p_rm_cap.add_argument("capability_id", help="Capability ID to remove")
+    p_rm_cap.set_defaults(func=cmd_agent_remove_capability)
+
+    p_tools = agent_sub.add_parser("tools",
+                                   help="List available CrewAI tools")
+    p_tools.set_defaults(func=cmd_agent_tools)
 
     # -- llm -----------------------------------------------------------------
     p_llm = sub.add_parser("llm", help="Manage LLM provider configurations")
