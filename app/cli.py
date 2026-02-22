@@ -45,7 +45,7 @@ from dotenv import load_dotenv, find_dotenv
 # Load .env before any module reads os.environ
 # find_dotenv() searches for .env in current dir and parent dirs
 _dotenv_path = find_dotenv(usecwd=True)
-_loaded = load_dotenv(_dotenv_path)
+_loaded = load_dotenv(_dotenv_path, encoding="utf-8")
 
 # Debug: Uncomment to troubleshoot .env loading
 # import sys
@@ -561,11 +561,11 @@ def cmd_install(args: argparse.Namespace) -> None:  # noqa: C901
         lines.append(f"{key}={val}")
     lines.append("")
 
-    env_path.write_text("\n".join(lines))
+    env_path.write_text("\n".join(lines), encoding="utf-8")
     print(f"  {_c('✓', _GREEN)} Wrote {env_path}")
 
     # Reload env so that init_db and serve see the new values
-    load_dotenv(env_path, override=True)
+    load_dotenv(env_path, override=True, encoding="utf-8")
 
     # ── Initialise database ────────────────────────────────────────────────
     print(f"\n  {_c('─── Initialising database ───', _YELLOW)}")
@@ -623,8 +623,13 @@ def cmd_install(args: argparse.Namespace) -> None:  # noqa: C901
 
             stop = asyncio.Event()
             loop = asyncio.get_running_loop()
-            for sig in (signal.SIGINT, signal.SIGTERM):
-                loop.add_signal_handler(sig, stop.set)
+
+            if sys.platform != "win32":
+                for sig in (signal.SIGINT, signal.SIGTERM):
+                    loop.add_signal_handler(sig, stop.set)
+            else:
+                for sig in (signal.SIGINT, signal.SIGTERM):
+                    signal.signal(sig, lambda *_: loop.call_soon_threadsafe(stop.set))
 
             logger = logging.getLogger("agbus.cli")
             logger.info("Coordinator running on %s:%d – press Ctrl+C to stop",
@@ -641,27 +646,56 @@ def cmd_install(args: argparse.Namespace) -> None:  # noqa: C901
 # -- serve -------------------------------------------------------------------
 
 def cmd_serve(args: argparse.Namespace) -> None:
-    """Start the coordinator WebSocket server."""
+    """Start the coordinator WebSocket server and Admin REST API."""
     _init_logging()
     logger = logging.getLogger("agbus.cli")
 
     from app.coordinator.runtime import CoordinatorRuntime
+    from app.coordinator.admin.api import create_admin_api
 
     host = args.host or os.getenv("AGBUS_HOST", "0.0.0.0")
     port = args.port or int(os.getenv("AGBUS_PORT", "8765"))
+    api_port = int(os.getenv("AGBUS_API_PORT", "8766"))
 
     async def _run() -> None:
         runtime = CoordinatorRuntime(host=host, port=port)
         await runtime.start()
 
+        # Start the Admin REST API alongside the WebSocket server
+        import uvicorn
+
+        api_app = create_admin_api(runtime)
+        config = uvicorn.Config(
+            api_app,
+            host=host,
+            port=api_port,
+            log_level=os.getenv("AGBUS_LOG_LEVEL", "info").lower(),
+        )
+        api_server = uvicorn.Server(config)
+        api_task = asyncio.create_task(api_server.serve())
+        logger.info("Admin API listening on http://%s:%d/api/docs", host, api_port)
+
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, stop.set)
 
-        logger.info("Coordinator running on %s:%d – press Ctrl+C to stop", host, port)
+        if sys.platform != "win32":
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.add_signal_handler(sig, stop.set)
+        else:
+            # Windows does not support add_signal_handler; fall back to
+            # signal.signal which schedules the event set threadsafe.
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                signal.signal(sig, lambda *_: loop.call_soon_threadsafe(stop.set))
+
+        logger.info(
+            "Coordinator running – WS on %s:%d, API on %s:%d – press Ctrl+C to stop",
+            host, port, host, api_port,
+        )
         await stop.wait()
 
+        # Graceful shutdown
+        api_server.should_exit = True
+        await api_task
         await runtime.stop()
         logger.info("Coordinator shut down cleanly")
 
@@ -897,6 +931,12 @@ def _print_managed_agent_detail(agent) -> None:
             print(f"    • {_c(cap.capability_id, _CYAN)}: {cap.description}")
             if cap.expected_output:
                 print(f"      Expected output: {cap.expected_output}")
+            out_fields = cap.output_fields_json or []
+            if out_fields:
+                print(f"      Output fields ({len(out_fields)}):")
+                for f in out_fields:
+                    fdesc = f" – {f['description']}" if f.get("description") else ""
+                    print(f"        {_c(f['name'], _CYAN)}: {f.get('type', 'str')}{fdesc}")
     else:
         print(f"    {_c('(none – add with: agbus agent add-capability)', _DIM)}")
 
@@ -949,8 +989,8 @@ def cmd_agent_create(args: argparse.Namespace) -> None:  # noqa: C901
 
         name = _prompt("Display name", agent_id.replace("-", " ").title())
 
-        # CrewAI persona
-        print(f"\n  {_c('─── CrewAI Persona ───', _YELLOW)}")
+        # persona
+        print(f"\n  {_c('─── Persona ───', _YELLOW)}")
         print(f"  {_c('Be specific and specialised – avoid generic roles.', _DIM)}")
         print()
 
@@ -1012,19 +1052,38 @@ def cmd_agent_create(args: argparse.Namespace) -> None:  # noqa: C901
             cap_id = _prompt("  Capability ID (e.g. 'market_analysis')")
             cap_desc = _prompt("  Description")
             cap_output = _prompt("  Expected output description", "")
-            cap_scopes = _prompt("  Required scopes (comma-separated)", "")
-            cap_domains = _prompt("  Data domains (comma-separated)", "")
+            cap_domains = _prompt("  Tags (comma-separated)", "")
             cap_cost = _prompt("  Estimated cost per invocation ($)", "0.0")
             cap_latency = _prompt("  Estimated latency (seconds)", "0.0")
+
+            # Output fields – structured output definition
+            output_fields: list[dict] = []
+            define_fields = _prompt_yes_no("  Define structured output fields?", False)
+            if define_fields:
+                print(f"    {_c('Supported types: str, int, float, bool, list, dict', _DIM)}")
+                while True:
+                    fname = _prompt("    Field name (blank to finish)")
+                    if not fname:
+                        break
+                    ftype = _prompt("    Field type", "str")
+                    fdesc = _prompt("    Field description", "")
+                    output_fields.append({
+                        "name": fname,
+                        "type": ftype,
+                        "description": fdesc,
+                    })
+                    print(f"    {_c('✓', _GREEN)} Field {_c(fname, _CYAN)} ({ftype})")
+                if output_fields:
+                    print(f"    {_c(str(len(output_fields)), _BOLD)} output field(s) defined")
 
             capabilities.append({
                 "capability_id": cap_id,
                 "description": cap_desc,
                 "expected_output": cap_output,
-                "required_scopes": [s.strip() for s in cap_scopes.split(",") if s.strip()],
                 "supported_data_domains": [d.strip() for d in cap_domains.split(",") if d.strip()],
                 "estimated_cost": float(cap_cost) if cap_cost else 0.0,
                 "estimated_latency": float(cap_latency) if cap_latency else 0.0,
+                "output_fields": output_fields,
             })
             print(f"  {_c('✓', _GREEN)} Capability {_c(cap_id, _CYAN)} queued")
 
@@ -1092,6 +1151,7 @@ def cmd_agent_activate(args: argparse.Namespace) -> None:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
     print(f"✓ Managed agent {_c(agent.agent_id, _BOLD)} activated")
+    print(f"  Start server with: {_c(f'agbus agent start {agent.agent_id}', _CYAN)}")
 
 
 def cmd_agent_disable(args: argparse.Namespace) -> None:
@@ -1106,6 +1166,24 @@ def cmd_agent_disable(args: argparse.Namespace) -> None:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
     print(f"✓ Managed agent {_c(agent.agent_id, _BOLD)} disabled")
+
+
+def cmd_agent_start(args: argparse.Namespace) -> None:
+    """Start a managed agent as an independent server process.
+
+    The agent connects to the coordinator via WebSocket and registers its
+    capabilities.  It then listens for intents and executes tasks via CrewAI.
+    Press Ctrl+C to stop.
+    """
+    from app.agents.managed_server import run_managed_agent_sync
+
+    coordinator_uri = args.coordinator_uri or os.getenv("AGBUS_WS_URI")
+    print(f"Starting managed agent {_c(args.agent_id, _BOLD)} ...")
+
+    try:
+        run_managed_agent_sync(args.agent_id, coordinator_uri=coordinator_uri)
+    except KeyboardInterrupt:
+        print(f"\n✓ Managed agent {_c(args.agent_id, _BOLD)} stopped")
 
 
 def cmd_agent_add_capability(args: argparse.Namespace) -> None:  # noqa: C901
@@ -1124,18 +1202,45 @@ def cmd_agent_add_capability(args: argparse.Namespace) -> None:  # noqa: C901
             capability_id = _prompt("Capability ID (required)")
         description = _prompt("Description")
         expected_output = _prompt("Expected output description", "")
-        scopes_str = _prompt("Required scopes (comma-separated)", "")
-        domains_str = _prompt("Data domains (comma-separated)", "")
+        domains_str = _prompt("Tags (comma-separated)", "")
         cost_str = _prompt("Estimated cost per invocation ($)", "0.0")
         latency_str = _prompt("Estimated latency (seconds)", "0.0")
+
+        # Output fields – structured output definition
+        output_fields: list[dict] = []
+        define_fields = _prompt_yes_no("Define structured output fields?", False)
+        if define_fields:
+            print(f"  {_c('Supported types: str, int, float, bool, list, dict', _DIM)}")
+            while True:
+                fname = _prompt("  Field name (blank to finish)")
+                if not fname:
+                    break
+                ftype = _prompt("  Field type", "str")
+                fdesc = _prompt("  Field description", "")
+                output_fields.append({
+                    "name": fname,
+                    "type": ftype,
+                    "description": fdesc,
+                })
+                print(f"  {_c('✓', _GREEN)} Field {_c(fname, _CYAN)} ({ftype})")
+            if output_fields:
+                print(f"  {_c(str(len(output_fields)), _BOLD)} output field(s) defined")
     else:
         capability_id = args.capability_id
         description = args.description or ""
         expected_output = args.expected_output or ""
-        scopes_str = args.scopes or ""
         domains_str = args.domains or ""
         cost_str = args.cost or "0.0"
         latency_str = args.latency or "0.0"
+        output_fields = []
+        # Support --output-field name:type:description on the command line
+        for raw in (args.output_fields or []):
+            parts = raw.split(":", 2)
+            output_fields.append({
+                "name": parts[0],
+                "type": parts[1] if len(parts) > 1 else "str",
+                "description": parts[2] if len(parts) > 2 else "",
+            })
 
     try:
         cap = repo.add_capability(
@@ -1143,10 +1248,10 @@ def cmd_agent_add_capability(args: argparse.Namespace) -> None:  # noqa: C901
             capability_id=capability_id,
             description=description,
             expected_output=expected_output,
-            required_scopes=[s.strip() for s in scopes_str.split(",") if s.strip()],
             supported_data_domains=[d.strip() for d in domains_str.split(",") if d.strip()],
             estimated_cost=float(cost_str),
             estimated_latency=float(latency_str),
+            output_fields=output_fields if output_fields else None,
         )
     except ManagedAgentNotFoundError as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -2012,6 +2117,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_disable.add_argument("agent_id", help="Agent identifier")
     p_disable.set_defaults(func=cmd_agent_disable)
 
+    p_start = agent_sub.add_parser("start", help="Start a managed agent as an independent server")
+    p_start.add_argument("agent_id", help="Agent identifier")
+    p_start.add_argument("--coordinator-uri", type=str, default=None,
+                         help="Coordinator WebSocket URI (default: ws://localhost:8765)")
+    p_start.set_defaults(func=cmd_agent_start)
+
     p_add_cap = agent_sub.add_parser("add-capability",
                                      help="Add a capability to a managed agent")
     p_add_cap.add_argument("agent_id", help="Agent identifier")
@@ -2021,14 +2132,15 @@ def build_parser() -> argparse.ArgumentParser:
                            help="Capability description")
     p_add_cap.add_argument("--expected-output", type=str, default=None,
                            help="Expected output description")
-    p_add_cap.add_argument("--scopes", type=str, default=None,
-                           help="Required scopes (comma-separated)")
     p_add_cap.add_argument("--domains", type=str, default=None,
-                           help="Data domains (comma-separated)")
+                           help="Tags (comma-separated)")
     p_add_cap.add_argument("--cost", type=str, default=None,
                            help="Estimated cost per invocation")
     p_add_cap.add_argument("--latency", type=str, default=None,
                            help="Estimated latency in seconds")
+    p_add_cap.add_argument("--output-field", dest="output_fields", action="append",
+                           metavar="NAME:TYPE:DESC",
+                           help="Structured output field (repeatable). Format: name:type:description")
     p_add_cap.set_defaults(func=cmd_agent_add_capability)
 
     p_rm_cap = agent_sub.add_parser("remove-capability",

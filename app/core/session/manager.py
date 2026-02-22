@@ -66,6 +66,7 @@ class SessionState(BaseModel):
 
     # Discovery
     discovered_agents: list[str] = Field(default_factory=list)
+    solicited_agents: list[str] = Field(default_factory=list)
 
     # Negotiation
     offers: list[NegotiationRecord] = Field(default_factory=list)

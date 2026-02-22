@@ -59,7 +59,8 @@ from app.core.auth.oidc import OIDCIdentity, DevVerifier
 from app.core.auth.admin import AdminPolicy
 from app.core.persistence.database import init_db
 from app.core.persistence.repository import AgentRepository
-from app.core.persistence.models import PersistentAgent
+from app.core.persistence.models import PersistentAgent, ManagedAgentStatus
+from app.agents.managed_server import ManagedAgentServer
 from app.coordinator.admin.service import AdminService
 from app.coordinator.intent.processor import IntentProcessor
 from app.coordinator.negotiation.engine import (
@@ -68,6 +69,8 @@ from app.coordinator.negotiation.engine import (
 )
 from app.coordinator.graph.builder import DynamicGraphBuilder, AgBusGraphState
 from app.coordinator.execution.supervisor import ExecutionSupervisor
+from app.coordinator.admin.audit import AuditLog
+from app.core.persistence.managed_agent_repository import ManagedAgentRepository
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +100,15 @@ class CoordinatorRuntime:
         self.agent_repo = AgentRepository()
         self.admin_policy = AdminPolicy.from_env()
         self.admin = AdminService(repo=self.agent_repo, policy=self.admin_policy)
+        self.managed_repo = ManagedAgentRepository()
+        self.audit_log = AuditLog()
+
+        # User & tenant management
+        from app.core.persistence.user_repository import UserRepository
+        from app.core.persistence.tenant_repository import TenantRepository
+
+        self.user_repo = UserRepository()
+        self.tenant_repo = TenantRepository()
 
         # LLM-dependent coordinator subsystems are lazily initialised.
         # The application CAN start without an LLM configured – the admin
@@ -118,6 +130,7 @@ class CoordinatorRuntime:
             host=host,
             port=port,
             on_message=self._on_message,
+            on_disconnect=self.handle_disconnect,
         )
 
         # Peer tracking: peer_id -> OIDCIdentity
@@ -126,6 +139,10 @@ class CoordinatorRuntime:
         self._agent_peers: dict[str, str] = {}
         # Session -> peer mapping for requesters
         self._session_requester_peers: dict[str, str] = {}
+        # Managed agent tasks: agent_id -> asyncio.Task
+        self._managed_tasks: dict[str, asyncio.Task] = {}
+        # Pending execution completions: (session_id, agent_id) -> Future
+        self._pending_completions: dict[tuple[str, str], asyncio.Future[AgBusEnvelope]] = {}
 
         # Telemetry
         init_telemetry("agentic-bus")
@@ -157,10 +174,22 @@ class CoordinatorRuntime:
         init_db()
         # Pre-load approved persistent agents into the registry
         self._load_persistent_agents()
+        # Start active managed agents as independent server tasks
+        await self._start_managed_agents()
         await self._server.start()
+        self.audit_log.log(
+            action="system.startup",
+            actor="coordinator",
+            target="coordinator",
+            target_type="system",
+            details=f"Coordinator runtime started on {self._server.host}:{self._server.port}",
+            severity="info",
+        )
         logger.info("Coordinator runtime started")
 
     async def stop(self) -> None:
+        # Stop all managed agent tasks
+        await self._stop_all_managed_agents()
         # Dissolve all active sessions
         for session in self.sessions.active_sessions():
             await self._dissolve_session(session.session_id)
@@ -213,6 +242,15 @@ class CoordinatorRuntime:
             session.audit_log.append(envelope)
             self._session_requester_peers[session.session_id] = peer.peer_id
 
+            self.audit_log.log(
+                action="session.created",
+                actor=envelope.sender.id,
+                target=session.session_id,
+                target_type="session",
+                details=f'Intent: "{intent.intent_text[:120]}"',
+                severity="info",
+            )
+
             # 2. IBAC – intent admission
             ibac_req = IBACRequest(
                 evaluation_point=IBACEvaluationPoint.INTENT_ADMISSION,
@@ -222,7 +260,7 @@ class CoordinatorRuntime:
                 intent_context=intent.context,
                 requested_scopes=intent.ibac_claims_requested,
             )
-            ibac_result = self.ibac.evaluate(ibac_req)
+            ibac_result = await self.ibac.evaluate_with_llm(ibac_req)
             session.ibac_decisions.append(ibac_result.model_dump())
 
             if ibac_result.decision == IBACDecision.DENY:
@@ -272,7 +310,12 @@ class CoordinatorRuntime:
     # -----------------------------------------------------------------------
 
     async def _request_offers(self, session: SessionState, candidates: list) -> None:
-        """Send intent to discovered agents to solicit offers."""
+        """Send intent to discovered agents to solicit offers.
+
+        All agents (ephemeral, persistent, and managed) are contacted over
+        WebSocket.  Managed agents run as independent server processes and
+        connect to the coordinator just like any other agent.
+        """
         for candidate in candidates:
             agent_peer_id = self._agent_peers.get(candidate.agent_id)
             if agent_peer_id is None:
@@ -283,7 +326,7 @@ class CoordinatorRuntime:
             if peer is None:
                 continue
 
-            # Forward the intent to the agent
+            session.solicited_agents.append(candidate.agent_id)
             intent_env = build_envelope(
                 MessageType.INTENT,
                 COORDINATOR_SENDER,
@@ -312,7 +355,7 @@ class CoordinatorRuntime:
             proposed_capabilities=[offer.capability_id],
             requested_scopes=offer.required_scopes,
         )
-        ibac_result = self.ibac.evaluate(ibac_req)
+        ibac_result = await self.ibac.evaluate_with_llm(ibac_req)
         session.ibac_decisions.append(ibac_result.model_dump())
 
         record = NegotiationRecord(
@@ -333,6 +376,26 @@ class CoordinatorRuntime:
         and sends it to the requester as an ``offer`` for explicit approval.
         Execution does NOT begin until the requester sends ``accept``.
         """
+        # Guard: don't re-propose if already awaiting approval
+        if session.phase == SessionPhase.AWAITING_APPROVAL:
+            logger.debug(
+                "Session %s already awaiting approval – ignoring late offer",
+                session.session_id,
+            )
+            return
+
+        # Wait until all solicited agents have responded
+        expected = set(session.solicited_agents) or set(session.discovered_agents)
+        responded = {o.agent_id for o in session.offers}
+        if not expected.issubset(responded):
+            logger.debug(
+                "Waiting for offers: %d/%d solicited agents responded for session %s",
+                len(responded & expected),
+                len(expected),
+                session.session_id,
+            )
+            return
+
         # Compute initial entropy (first time)
         if "initial_entropy" not in session.composition_plan:
             session.composition_plan["initial_entropy"] = (
@@ -353,7 +416,7 @@ class CoordinatorRuntime:
                     proposed_capabilities=[record.offer.capability_id],
                     requested_scopes=record.offer.required_scopes,
                 )
-                ibac_result = self.ibac.evaluate(ibac_req)
+                ibac_result = await self.ibac.evaluate_with_llm(ibac_req)
                 session.ibac_decisions.append(ibac_result.model_dump())
 
                 if ibac_result.decision == IBACDecision.ALLOW:
@@ -549,6 +612,12 @@ class CoordinatorRuntime:
             session.audit_log.append(envelope)
             session.execution_results.append(envelope.payload)
 
+        # Resolve any pending execution future for this agent+session
+        key = (envelope.session_id, envelope.sender.id)
+        fut = self._pending_completions.pop(key, None)
+        if fut and not fut.done():
+            fut.set_result(envelope)
+
     async def _handle_agent_registration(self, envelope: AgBusEnvelope, peer: WSPeer) -> None:
         """Handle agent capability registration (§7 AGENTS.md).
         
@@ -564,33 +633,33 @@ class CoordinatorRuntime:
             reg_data = payload["registration"]
             registration = AgentRegistration.model_validate(reg_data)
             
-            # Register in the capability registry
-            self.registry.register(registration)
-            
-            # Track the agent's peer connection for routing
-            self._agent_peers[registration.agent_id] = peer.peer_id
+            # Register in the capability registry and map to WS peer
+            self.register_agent(registration, peer.peer_id)
             
             logger.info(
-                "✅ Agent registered: %s (version %s) with %d capabilities",
+                "✅ Agent registered: %s (version %s, mode=%s) with %d capabilities",
                 registration.agent_id,
                 registration.version,
+                registration.mode,
                 len(registration.capabilities),
             )
             
-            # Optionally persist to database
-            try:
-                persistent_agent = PersistentAgent(
-                    agent_id=registration.agent_id,
-                    version=registration.version,
-                    semantic_description=registration.semantic_description,
-                    capabilities=registration.model_dump()["capabilities"],
-                    required_scopes=registration.required_scopes,
-                    supported_data_domains=registration.supported_data_domains,
-                )
-                self.agent_repo.save(persistent_agent)
-                logger.debug("Agent %s persisted to database", registration.agent_id)
-            except Exception as e:
-                logger.warning("Failed to persist agent %s: %s", registration.agent_id, e)
+            # Only persist to database for persistent agents.
+            # Ephemeral agents are in-memory only (§5.1.2 — zero residual state).
+            if registration.mode == "persistent":
+                try:
+                    persistent_agent = PersistentAgent(
+                        agent_id=registration.agent_id,
+                        version=registration.version,
+                        semantic_description=registration.semantic_description,
+                        capabilities=registration.model_dump()["capabilities"],
+                        required_scopes=registration.required_scopes,
+                        supported_data_domains=registration.supported_data_domains,
+                    )
+                    self.agent_repo.save(persistent_agent)
+                    logger.debug("Agent %s persisted to database", registration.agent_id)
+                except Exception as e:
+                    logger.warning("Failed to persist agent %s: %s", registration.agent_id, e)
                 
         except Exception as e:
             logger.exception("Failed to register agent from %s: %s", envelope.sender.id, e)
@@ -787,6 +856,14 @@ class CoordinatorRuntime:
             # Destroy session – all negotiated schemas, scopes, bindings gone
             final_snapshot = self.sessions.dissolve(session_id)
             if final_snapshot:
+                self.audit_log.log(
+                    action="session.dissolved",
+                    actor="coordinator",
+                    target=session_id,
+                    target_type="session",
+                    details="Session completed and dissolved per Invariant II",
+                    severity="info",
+                )
                 logger.info(
                     "Session %s dissolved. Audit trail: %d messages",
                     session_id,
@@ -812,6 +889,78 @@ class CoordinatorRuntime:
             "Loaded %d persistent agent(s) from database",
             len(self.agent_repo.list_approved()),
         )
+
+    async def _start_managed_agents(self) -> None:
+        """Spawn all active managed agents as independent server tasks.
+
+        Each managed agent runs a ``ManagedAgentServer`` in an asyncio task.
+        The server connects back to the coordinator via WebSocket and
+        registers its capabilities like any external agent.
+        """
+        active_agents = self.managed_repo.list_all(status=ManagedAgentStatus.ACTIVE)
+        for ma in active_agents:
+            await self.start_managed_agent(ma.agent_id)
+        logger.info(
+            "Spawned %d managed (active) agent server(s)",
+            len(active_agents),
+        )
+
+    async def start_managed_agent(self, agent_id: str) -> bool:
+        """Start a single managed agent as an independent server task.
+
+        Returns ``True`` if the agent was started, ``False`` if it was
+        already running or couldn't be found.
+        """
+        if agent_id in self._managed_tasks and not self._managed_tasks[agent_id].done():
+            logger.info("Managed agent %s is already running", agent_id)
+            return False
+
+        ma = self.managed_repo.get(agent_id)
+        if ma is None:
+            logger.error("Managed agent %r not found in database", agent_id)
+            return False
+
+        uri = f"ws://{self._server.host}:{self._server.port}"
+        # Use 127.0.0.1 when the server binds to 0.0.0.0
+        if self._server.host == "0.0.0.0":
+            uri = f"ws://127.0.0.1:{self._server.port}"
+
+        server = ManagedAgentServer(ma, coordinator_uri=uri)
+
+        async def _run_agent() -> None:
+            try:
+                await server.run_forever()
+            except asyncio.CancelledError:
+                logger.info("Managed agent %s task cancelled", agent_id)
+            except Exception:
+                logger.exception("Managed agent %s crashed", agent_id)
+
+        task = asyncio.create_task(_run_agent(), name=f"managed-agent-{agent_id}")
+        self._managed_tasks[agent_id] = task
+        logger.info("Started managed agent %s as independent server task", agent_id)
+        return True
+
+    async def stop_managed_agent(self, agent_id: str) -> bool:
+        """Stop a running managed agent task.
+
+        Returns ``True`` if the agent was stopped.
+        """
+        task = self._managed_tasks.pop(agent_id, None)
+        if task is None or task.done():
+            return False
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        logger.info("Stopped managed agent %s", agent_id)
+        return True
+
+    async def _stop_all_managed_agents(self) -> None:
+        """Stop all running managed agent tasks (called during shutdown)."""
+        agent_ids = list(self._managed_tasks.keys())
+        for agent_id in agent_ids:
+            await self.stop_managed_agent(agent_id)
 
     @staticmethod
     def _persistent_agent_to_registration(pa: PersistentAgent) -> AgentRegistration:
@@ -854,6 +1003,15 @@ class CoordinatorRuntime:
         self._agent_peers.pop(agent_id, None)
         self._identities.pop(peer_id, None)
 
+        self.audit_log.log(
+            action="agent.disconnected",
+            actor=agent_id,
+            target=agent_id,
+            target_type="agent",
+            details="WebSocket disconnect",
+            severity="info",
+        )
+
     # -----------------------------------------------------------------------
     # Agent registration
     # -----------------------------------------------------------------------
@@ -867,6 +1025,15 @@ class CoordinatorRuntime:
         """
         self.registry.register(registration)
         self._agent_peers[registration.agent_id] = peer_id
+
+        self.audit_log.log(
+            action="agent.connected",
+            actor=registration.agent_id,
+            target=registration.agent_id,
+            target_type="agent",
+            details=f"Agent registered (mode={registration.mode}, v{registration.version})",
+            severity="info",
+        )
 
         # Register a default executor that forwards to the agent via WS
         self.graph_builder.register_executor(
@@ -939,15 +1106,25 @@ class CoordinatorRuntime:
                 },
                 inject_trace_context(),
             )
+            # Register a Future that _handle_complete will resolve
+            session_id = state.get("session_id", "")
+            key = (session_id, agent_id)
+            loop = asyncio.get_running_loop()
+            fut: asyncio.Future[AgBusEnvelope] = loop.create_future()
+            self._pending_completions[key] = fut
+
             await peer.send_envelope(execute_env)
 
-            # Wait for complete message from agent (with timeout)
+            # Wait for the agent's COMPLETE routed through the main message loop
             try:
-                response = await asyncio.wait_for(peer.recv_envelope(), timeout=120.0)
+                response = await asyncio.wait_for(fut, timeout=120.0)
                 results = dict(state.get("step_results", {}))
                 results[agent_id] = response.payload
                 return {**state, "step_results": results}
-            except asyncio.TimeoutError:
-                raise RuntimeError(f"Agent {agent_id} timed out during execution")
+            except asyncio.TimeoutError as exc:
+                self._pending_completions.pop(key, None)
+                raise RuntimeError(f"Agent {agent_id} timed out during execution") from exc
 
         return _executor
+
+

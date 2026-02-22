@@ -7,7 +7,11 @@ import {
   Bot,
   ScrollText,
   Settings,
+  Shield,
   Zap,
+  Users,
+  Building2,
+  MessageSquare,
 } from "lucide-react";
 
 import {
@@ -25,11 +29,15 @@ import {
 
 const navItems = [
   { title: "Dashboard", href: "/", icon: LayoutDashboard },
+  { title: "Intent Chat", href: "/intent", icon: MessageSquare },
   { title: "Agents", href: "/agents", icon: Bot },
+  { title: "Tenants", href: "/tenants", icon: Building2 },
+  { title: "Users", href: "/users", icon: Users },
   { title: "Audit Logs", href: "/audit", icon: ScrollText },
 ];
 
 const secondaryItems = [
+  { title: "IBAC Rules", href: "/ibac", icon: Shield },
   { title: "Settings", href: "/settings", icon: Settings },
 ];
 

@@ -76,7 +76,7 @@ class ExecutionSupervisor:
                 intent_context=session.intent.context if session.intent else {},
                 requested_scopes=session.intent.ibac_claims_requested if session.intent else [],
             )
-            ibac_result = self._ibac.evaluate(ibac_req)
+            ibac_result = await self._ibac.evaluate_with_llm(ibac_req)
             session.ibac_decisions.append(ibac_result.model_dump())
 
             if ibac_result.decision == IBACDecision.DENY:

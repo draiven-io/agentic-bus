@@ -5,6 +5,7 @@
 import {
   AuditLogEntry,
   DashboardStats,
+  EphemeralAgent,
   ManagedAgent,
   PersistentAgent,
   SessionInfo,
@@ -246,6 +247,80 @@ export const mockManagedAgents: ManagedAgent[] = [
   },
 ];
 
+// ── Ephemeral Agents ──────────────────────────────────────────────────────
+
+export const mockEphemeralAgents: EphemeralAgent[] = [
+  {
+    agent_id: "eph-logistics-tracker",
+    version: "1.0.0",
+    status: "online",
+    semantic_description:
+      "Real-time logistics tracking agent that monitors shipment status and provides ETAs.",
+    capabilities: [
+      {
+        capability_id: "shipment-track",
+        description: "Track shipment status in real-time using carrier APIs",
+        estimated_cost: 0.002,
+        estimated_latency: 1.0,
+      },
+      {
+        capability_id: "eta-prediction",
+        description: "Predict estimated time of arrival based on current logistics data",
+        estimated_cost: 0.005,
+        estimated_latency: 2.0,
+      },
+    ],
+    required_scopes: ["logistics:read"],
+    supported_domains: ["logistics", "supply-chain"],
+    operational_constraints: { max_concurrent_requests: 50 },
+    registered_at: "2026-02-20T09:00:00Z",
+  },
+  {
+    agent_id: "eph-sentiment-analyser",
+    version: "0.3.0",
+    status: "online",
+    semantic_description:
+      "Analyses customer feedback and social media posts for sentiment classification.",
+    capabilities: [
+      {
+        capability_id: "sentiment-classify",
+        description: "Classify text sentiment as positive, negative, or neutral",
+        estimated_cost: 0.001,
+        estimated_latency: 0.5,
+      },
+    ],
+    required_scopes: ["nlp:analyse"],
+    supported_domains: ["marketing", "customer-success"],
+    operational_constraints: {},
+    registered_at: "2026-02-20T08:30:00Z",
+  },
+  {
+    agent_id: "eph-pdf-extractor",
+    version: "2.0.1",
+    status: "online",
+    semantic_description:
+      "Extracts structured data from PDF documents including tables, forms, and invoices.",
+    capabilities: [
+      {
+        capability_id: "pdf-extract",
+        description: "Extract text and structured data from PDF files",
+        estimated_cost: 0.01,
+        estimated_latency: 5.0,
+      },
+      {
+        capability_id: "invoice-parse",
+        description: "Parse invoice PDFs into structured JSON records",
+        estimated_cost: 0.015,
+        estimated_latency: 8.0,
+      },
+    ],
+    required_scopes: ["docs:read", "docs:extract"],
+    supported_domains: ["finance", "legal"],
+    operational_constraints: { max_file_size_mb: 50 },
+    registered_at: "2026-02-20T07:45:00Z",
+  },
+];
+
 // ── Sessions ──────────────────────────────────────────────────────────────
 
 export const mockSessions: SessionInfo[] = [
@@ -443,10 +518,11 @@ export const mockAuditLog: AuditLogEntry[] = [
 // ── Dashboard Stats ───────────────────────────────────────────────────────
 
 export const mockDashboardStats: DashboardStats = {
-  total_agents: 9,
+  total_agents: 12,
   approved_agents: 5,
   pending_agents: 1,
   managed_agents: 3,
+  ephemeral_agents: 3,
   active_sessions: 1,
   total_sessions_today: 3,
   llm_provider: "openai",

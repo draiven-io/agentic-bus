@@ -1,4 +1,5 @@
-"""SQLAlchemy ORM models for agent persistence and LLM configuration."""
+"""SQLAlchemy ORM models for agent persistence, LLM configuration, and
+multi-tenant user management."""
 
 from __future__ import annotations
 
@@ -14,8 +15,10 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    Table,
     Text,
     JSON,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -167,6 +170,11 @@ class ManagedAgent(Base):
     # ["SerperDevTool", "WebsiteSearchTool", "FileReadTool"]
     tools_json: list = Column(JSON, nullable=False, default=list)
 
+    # ── Per-tool configuration ─────────────────────────────────────────
+    # Stored as a JSON dict mapping tool names to their config dicts:
+    # {"SerperDevTool": {"api_key": "sk-..."}, "PGSearchTool": {"db_uri": "..."}}
+    tool_config_json: dict = Column(JSON, nullable=False, default=dict)
+
     # ── Lifecycle ──────────────────────────────────────────────────────
     status: ManagedAgentStatus = Column(
         Enum(ManagedAgentStatus),
@@ -232,9 +240,247 @@ class ManagedAgentCapability(Base):
     estimated_cost: float = Column(Float, nullable=False, default=0.0)
     estimated_latency: float = Column(Float, nullable=False, default=0.0)
     output_schema_json: dict = Column(JSON, nullable=False, default=dict)
+    output_fields_json: list = Column(
+        JSON,
+        nullable=False,
+        default=list,
+        doc=(
+            "List of output field definitions.  Each entry is a dict with "
+            "'name' (str), 'type' (str – one of str/int/float/bool/list/dict), "
+            "and optional 'description' (str).  Used to build a Pydantic model "
+            "at runtime so the agent output is structured and predictable."
+        ),
+    )
 
     # ── Relationship ───────────────────────────────────────────────────
     agent = relationship(
         "ManagedAgent",
         back_populates="capabilities",
     )
+
+
+# ---------------------------------------------------------------------------
+# Multi-tenant user management
+# ---------------------------------------------------------------------------
+
+
+class UserRole(str, PyEnum):
+    """Role a user can hold within the system."""
+
+    ADMIN = "admin"
+    USER = "user"
+
+
+class Tenant(Base):
+    """An organisational tenant.  Users and agents are grouped by tenant."""
+
+    __tablename__ = "tenants"
+
+    id: int = Column(Integer, primary_key=True, autoincrement=True)
+    slug: str = Column(String(128), nullable=False, unique=True, index=True)
+    name: str = Column(String(256), nullable=False)
+    enabled: bool = Column(Boolean, nullable=False, default=True)
+    created_at: datetime = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: datetime = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    # relationships
+    user_associations = relationship(
+        "UserTenantAssociation",
+        back_populates="tenant",
+        cascade="all, delete-orphan",
+        lazy="joined",
+    )
+    agent_associations = relationship(
+        "AgentTenantAssociation",
+        back_populates="tenant",
+        cascade="all, delete-orphan",
+        lazy="joined",
+    )
+
+
+class User(Base):
+    """A system user.  Created by an admin when OIDC is configured.
+
+    The ``subject`` is the OIDC ``sub`` claim and uniquely identifies the
+    user across IdPs.
+    """
+
+    __tablename__ = "users"
+
+    id: int = Column(Integer, primary_key=True, autoincrement=True)
+    subject: str = Column(String(256), nullable=False, unique=True, index=True)
+    email: str = Column(String(320), nullable=False, default="")
+    display_name: str = Column(String(256), nullable=False, default="")
+    role: UserRole = Column(
+        Enum(UserRole), nullable=False, default=UserRole.USER
+    )
+    enabled: bool = Column(Boolean, nullable=False, default=True)
+    created_at: datetime = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: datetime = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    created_by: str = Column(String(256), nullable=False, default="admin")
+
+    # relationships
+    tenant_associations = relationship(
+        "UserTenantAssociation",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="joined",
+    )
+
+
+class UserTenantAssociation(Base):
+    """Many-to-many: which users belong to which tenants."""
+
+    __tablename__ = "user_tenants"
+    __table_args__ = (
+        UniqueConstraint("user_id", "tenant_id", name="uq_user_tenant"),
+    )
+
+    id: int = Column(Integer, primary_key=True, autoincrement=True)
+    user_id: int = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    tenant_id: int = Column(
+        Integer,
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    assigned_at: datetime = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    user = relationship("User", back_populates="tenant_associations")
+    tenant = relationship("Tenant", back_populates="user_associations")
+
+
+class AgentTenantAssociation(Base):
+    """Many-to-many: which agents (persistent or managed) belong to
+    which tenants.
+
+    ``agent_id`` references the logical agent identifier string used by
+    both ``PersistentAgent.agent_id`` and ``ManagedAgent.agent_id``.
+    """
+
+    __tablename__ = "agent_tenants"
+    __table_args__ = (
+        UniqueConstraint("agent_id", "tenant_id", name="uq_agent_tenant"),
+    )
+
+    id: int = Column(Integer, primary_key=True, autoincrement=True)
+    agent_id: str = Column(String(256), nullable=False, index=True)
+    tenant_id: int = Column(
+        Integer,
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    assigned_at: datetime = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    tenant = relationship("Tenant", back_populates="agent_associations")
+
+
+# ---------------------------------------------------------------------------
+# IBAC Rules – admin-configurable guardrails (§6.1 of LIP paper)
+# ---------------------------------------------------------------------------
+
+
+class IBACRuleAction(str, PyEnum):
+    """What happens when an IBAC rule matches."""
+
+    DENY = "deny"
+    ALLOW = "allow"
+
+
+class IBACRule(Base):
+    """A persisted IBAC guardrail rule created by an admin.
+
+    IBAC (Intention-Based Access Control) evaluates governance decisions
+    against the *expressed intent*, contextual constraints, and
+    organisational policies (§6.1 of the Liquid Interfaces paper).
+
+    Rules are evaluated at one or more IBAC evaluation points:
+      1. intent_admission
+      2. offer_eligibility
+      3. negotiation_acceptance
+      4. execution_authorization
+      5. artifact_emission
+
+    The ``conditions`` JSON column holds a flexible set of match criteria:
+      - ``intent_keywords``:  list[str] – deny/allow when intent text
+        contains any of these keywords (case-insensitive).
+      - ``intent_patterns``: list[str] – regex patterns matched against
+        the intent text.
+      - ``blocked_agents`` / ``allowed_agents``: list[str] – agent ID
+        filters.
+      - ``blocked_scopes`` / ``allowed_scopes``: list[str] – scope
+        filters.
+      - ``blocked_domains`` / ``allowed_domains``: list[str] – data
+        domain filters.
+      - ``max_agents``: int – maximum number of agents in a composition.
+      - ``require_human_approval``: bool – force human-in-the-loop (maps
+        to a special constraint returned in the IBAC result).
+
+    Rules are processed in ``priority`` order (lower = first).  First
+    DENY wins; if no rule denies, default is ALLOW.
+    """
+
+    __tablename__ = "ibac_rules"
+
+    id: int = Column(Integer, primary_key=True, autoincrement=True)
+    rule_id: str = Column(String(256), nullable=False, unique=True, index=True)
+    name: str = Column(String(256), nullable=False)
+    description: str = Column(Text, nullable=False, default="")
+    enabled: bool = Column(Boolean, nullable=False, default=True)
+    priority: int = Column(Integer, nullable=False, default=100)
+    action: IBACRuleAction = Column(
+        Enum(IBACRuleAction), nullable=False, default=IBACRuleAction.DENY
+    )
+
+    # Which evaluation points this rule applies to (JSON list of strings).
+    # Empty list means the rule applies to ALL evaluation points.
+    evaluation_points_json: list = Column(JSON, nullable=False, default=list)
+
+    # Flexible match conditions (see docstring above).
+    conditions_json: dict = Column(JSON, nullable=False, default=dict)
+
+    # Metadata
+    created_at: datetime = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: datetime = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    created_by: str = Column(String(256), nullable=False, default="admin")
