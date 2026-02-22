@@ -9,6 +9,8 @@ import {
   Cpu,
   ArrowUpRight,
   Users,
+  Zap,
+  Loader2,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -26,12 +28,15 @@ import {
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 
+import { useAsync } from "@/hooks/use-async";
 import {
-  mockDashboardStats,
-  mockPersistentAgents,
-  mockSessions,
-  mockAuditLog,
-} from "@/lib/mock-data";
+  approveAgent,
+  fetchAuditLog,
+  fetchDashboardStats,
+  fetchPersistentAgents,
+  fetchSessions,
+  rejectAgent,
+} from "@/lib/api";
 
 function timeAgo(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -45,19 +50,56 @@ function timeAgo(dateStr: string): string {
 }
 
 export default function DashboardPage() {
-  const stats = mockDashboardStats;
-  const recentLogs = mockAuditLog.slice(0, 6);
-  const pendingAgents = mockPersistentAgents.filter(
-    (a) => a.status === "pending"
+  const {
+    data: stats,
+    loading: statsLoading,
+    refetch: refetchStats,
+  } = useAsync(() => fetchDashboardStats());
+  const {
+    data: persistentAgents,
+    loading: agentsLoading,
+    refetch: refetchAgents,
+  } = useAsync(() => fetchPersistentAgents());
+  const { data: sessions, loading: sessionsLoading } = useAsync(() =>
+    fetchSessions(),
   );
+  const { data: auditLog, loading: auditLoading } = useAsync(() =>
+    fetchAuditLog(),
+  );
+
+  const recentLogs = (auditLog ?? []).slice(0, 6);
+  const pendingAgents = (persistentAgents ?? []).filter(
+    (a) => a.status === "pending",
+  );
+
+  const handleApprove = async (agentId: string) => {
+    await approveAgent(agentId);
+    refetchAgents();
+    refetchStats();
+  };
+
+  const handleReject = async (agentId: string) => {
+    await rejectAgent(agentId);
+    refetchAgents();
+    refetchStats();
+  };
+
+  const isLoading = statsLoading || agentsLoading || sessionsLoading || auditLoading;
 
   return (
     <>
       <AppHeader breadcrumbs={[{ label: "Dashboard" }]} />
 
       <div className="flex flex-1 flex-col gap-6 p-6">
+        {isLoading && (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading dashboard data…
+          </div>
+        )}
+
         {/* ── Stat Cards ─────────────────────────────────────────── */}
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium">
@@ -66,10 +108,12 @@ export default function DashboardPage() {
               <Bot className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{stats.total_agents}</div>
+              <div className="text-2xl font-bold">
+                {stats?.total_agents ?? "—"}
+              </div>
               <p className="text-xs text-muted-foreground">
-                {stats.approved_agents} approved · {stats.pending_agents}{" "}
-                pending
+                {stats?.approved_agents ?? 0} approved ·{" "}
+                {stats?.pending_agents ?? 0} pending
               </p>
             </CardContent>
           </Card>
@@ -82,9 +126,28 @@ export default function DashboardPage() {
               <Users className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{stats.managed_agents}</div>
+              <div className="text-2xl font-bold">
+                {stats?.managed_agents ?? "—"}
+              </div>
               <p className="text-xs text-muted-foreground">
                 CrewAI-powered agents
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-sm font-medium">
+                Ephemeral Agents
+              </CardTitle>
+              <Zap className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">
+                {stats?.ephemeral_agents ?? "—"}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Currently connected
               </p>
             </CardContent>
           </Card>
@@ -97,9 +160,11 @@ export default function DashboardPage() {
               <Activity className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{stats.active_sessions}</div>
+              <div className="text-2xl font-bold">
+                {stats?.active_sessions ?? "—"}
+              </div>
               <p className="text-xs text-muted-foreground">
-                {stats.total_sessions_today} total today
+                {stats?.total_sessions_today ?? 0} total today
               </p>
             </CardContent>
           </Card>
@@ -113,10 +178,10 @@ export default function DashboardPage() {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold capitalize">
-                {stats.llm_provider}
+                {stats?.llm_provider ?? "—"}
               </div>
               <p className="text-xs text-muted-foreground">
-                Model: {stats.llm_model}
+                Model: {stats?.llm_model ?? "—"}
               </p>
             </CardContent>
           </Card>
@@ -159,11 +224,19 @@ export default function DashboardPage() {
                         </p>
                       </div>
                       <div className="flex gap-2">
-                        <Button size="sm" variant="default">
+                        <Button
+                          size="sm"
+                          variant="default"
+                          onClick={() => handleApprove(agent.agent_id)}
+                        >
                           <ShieldCheck className="mr-1 h-3 w-3" />
                           Approve
                         </Button>
-                        <Button size="sm" variant="destructive">
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => handleReject(agent.agent_id)}
+                        >
                           Reject
                         </Button>
                       </div>
@@ -181,11 +254,13 @@ export default function DashboardPage() {
                 <Clock className="h-4 w-4" />
                 Recent Sessions
               </CardTitle>
-              <Badge variant="secondary">{mockSessions.length}</Badge>
+              <Badge variant="secondary">
+                {(sessions ?? []).length}
+              </Badge>
             </CardHeader>
             <CardContent>
               <div className="space-y-3">
-                {mockSessions.map((session) => (
+                {(sessions ?? []).map((session) => (
                   <div
                     key={session.session_id}
                     className="flex items-center justify-between rounded-lg border p-3"
@@ -215,6 +290,11 @@ export default function DashboardPage() {
                     </span>
                   </div>
                 ))}
+                {(sessions ?? []).length === 0 && !sessionsLoading && (
+                  <p className="text-sm text-muted-foreground">
+                    No active sessions
+                  </p>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -260,6 +340,16 @@ export default function DashboardPage() {
                     </TableCell>
                   </TableRow>
                 ))}
+                {recentLogs.length === 0 && !auditLoading && (
+                  <TableRow>
+                    <TableCell
+                      colSpan={5}
+                      className="py-8 text-center text-muted-foreground"
+                    >
+                      No activity yet
+                    </TableCell>
+                  </TableRow>
+                )}
               </TableBody>
             </Table>
           </CardContent>

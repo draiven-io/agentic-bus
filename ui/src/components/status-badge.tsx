@@ -1,12 +1,13 @@
 import { Badge } from "@/components/ui/badge";
-import type { AgentStatus, ManagedAgentStatus } from "@/lib/types";
+import type { AgentStatus, ManagedAgentStatus, EphemeralAgentStatus } from "@/lib/types";
 
 const statusVariants: Record<
-  AgentStatus | ManagedAgentStatus,
+  AgentStatus | ManagedAgentStatus | EphemeralAgentStatus,
   "default" | "secondary" | "destructive" | "outline"
 > = {
   approved: "default",
   active: "default",
+  online: "default",
   pending: "secondary",
   draft: "secondary",
   rejected: "destructive",
@@ -14,9 +15,10 @@ const statusVariants: Record<
   disabled: "outline",
 };
 
-const statusLabels: Record<AgentStatus | ManagedAgentStatus, string> = {
+const statusLabels: Record<AgentStatus | ManagedAgentStatus | EphemeralAgentStatus, string> = {
   approved: "Approved",
   active: "Active",
+  online: "Online",
   pending: "Pending",
   draft: "Draft",
   rejected: "Rejected",
@@ -25,7 +27,7 @@ const statusLabels: Record<AgentStatus | ManagedAgentStatus, string> = {
 };
 
 interface StatusBadgeProps {
-  status: AgentStatus | ManagedAgentStatus;
+  status: AgentStatus | ManagedAgentStatus | EphemeralAgentStatus;
 }
 
 export function StatusBadge({ status }: StatusBadgeProps) {

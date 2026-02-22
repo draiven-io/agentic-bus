@@ -19,6 +19,7 @@ from app.core.auth.oidc import OIDCIdentity
 from app.core.persistence.models import AgentStatus, LLMConfig, PersistentAgent
 from app.core.persistence.repository import AgentRepository
 from app.core.persistence.llm_repository import LLMConfigRepository
+from app.core.persistence.ibac_repository import IBACRuleRepository
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +38,12 @@ class AdminService:
         repo: AgentRepository | None = None,
         policy: AdminPolicy | None = None,
         llm_repo: LLMConfigRepository | None = None,
+        ibac_repo: IBACRuleRepository | None = None,
     ) -> None:
         self.repo = repo or AgentRepository()
         self.policy = policy or AdminPolicy.from_env()
         self.llm_repo = llm_repo or LLMConfigRepository()
+        self.ibac_repo = ibac_repo or IBACRuleRepository()
 
     # ------------------------------------------------------------------
     # Admin-gated mutations
@@ -255,3 +258,108 @@ class AdminService:
     def get_current_llm_config(self) -> LLMConfig | None:
         """Return the currently active LLM configuration, or ``None``."""
         return self.llm_repo.get_current_or_none()
+
+    # ------------------------------------------------------------------
+    # IBAC rule management (admin-gated)
+    # ------------------------------------------------------------------
+
+    def add_ibac_rule(
+        self,
+        rule_id: str,
+        name: str,
+        identity: OIDCIdentity,
+        *,
+        description: str = "",
+        enabled: bool = True,
+        priority: int = 100,
+        action: str = "deny",
+        evaluation_points: list[str] | None = None,
+        conditions: dict[str, Any] | None = None,
+    ) -> Any:
+        """Create a new IBAC guardrail rule.
+
+        Raises ``PermissionError`` if *identity* is not an admin.
+        """
+        require_admin(identity, self.policy)
+        from app.core.persistence.models import IBACRule
+        rule = self.ibac_repo.add(
+            rule_id=rule_id,
+            name=name,
+            description=description,
+            enabled=enabled,
+            priority=priority,
+            action=action,
+            evaluation_points=evaluation_points,
+            conditions=conditions,
+            created_by=identity.subject,
+        )
+        logger.info(
+            "IBAC rule %r created by admin %s",
+            rule_id,
+            identity.subject,
+        )
+        return rule
+
+    def update_ibac_rule(
+        self,
+        rule_id: str,
+        identity: OIDCIdentity,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        enabled: bool | None = None,
+        priority: int | None = None,
+        action: str | None = None,
+        evaluation_points: list[str] | None = None,
+        conditions: dict[str, Any] | None = None,
+    ) -> Any:
+        """Update an existing IBAC rule.
+
+        Raises ``PermissionError`` if *identity* is not an admin.
+        """
+        require_admin(identity, self.policy)
+        rule = self.ibac_repo.update(
+            rule_id,
+            name=name,
+            description=description,
+            enabled=enabled,
+            priority=priority,
+            action=action,
+            evaluation_points=evaluation_points,
+            conditions=conditions,
+        )
+        logger.info(
+            "IBAC rule %r updated by admin %s",
+            rule_id,
+            identity.subject,
+        )
+        return rule
+
+    def delete_ibac_rule(
+        self,
+        rule_id: str,
+        identity: OIDCIdentity,
+    ) -> bool:
+        """Delete an IBAC rule.
+
+        Raises ``PermissionError`` if *identity* is not an admin.
+        """
+        require_admin(identity, self.policy)
+        deleted = self.ibac_repo.delete(rule_id)
+        if deleted:
+            logger.info(
+                "IBAC rule %r deleted by admin %s",
+                rule_id,
+                identity.subject,
+            )
+        return deleted
+
+    # Read-only IBAC queries (no admin check needed)
+
+    def list_ibac_rules(self) -> list[Any]:
+        """List all IBAC rules ordered by priority."""
+        return self.ibac_repo.list_all()
+
+    def get_ibac_rule(self, rule_id: str) -> Any:
+        """Retrieve a single IBAC rule."""
+        return self.ibac_repo.get(rule_id)

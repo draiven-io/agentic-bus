@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 # Type alias for a handler coroutine
 MessageHandler = Callable[[AgBusEnvelope, "WSPeer"], Coroutine[Any, Any, None]]
 
+# Type alias for a disconnect handler
+DisconnectHandler = Callable[[str], Coroutine[Any, Any, None]]
+
 
 class WSPeer:
     """Thin wrapper around a WebSocket connection with helper send/recv."""
@@ -67,11 +70,13 @@ class WSServer:
         host: str = "0.0.0.0",
         port: int = 8765,
         on_message: MessageHandler | None = None,
+        on_disconnect: DisconnectHandler | None = None,
         auth_handler: Callable[..., Coroutine[Any, Any, str | None]] | None = None,
     ):
         self.host = host
         self.port = port
         self._on_message = on_message
+        self._on_disconnect = on_disconnect
         self._auth_handler = auth_handler
         self._peers: dict[str, WSPeer] = {}
         self._server: Server | None = None
@@ -123,6 +128,11 @@ class WSServer:
             logger.info("Peer disconnected: %s", peer_id)
         finally:
             self._peers.pop(peer_id, None)
+            if peer_id and self._on_disconnect:
+                try:
+                    await self._on_disconnect(peer_id)
+                except Exception:
+                    logger.exception("Error in disconnect handler for %s", peer_id)
 
     # -- helpers -------------------------------------------------------------
 

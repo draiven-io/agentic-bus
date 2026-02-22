@@ -47,6 +47,7 @@ class ManagedAgentRepository:
         max_rpm: int | None = None,
         memory: bool = True,
         tools: list[str] | None = None,
+        tool_config: dict[str, dict[str, Any]] | None = None,
         capabilities: list[dict[str, Any]] | None = None,
         status: ManagedAgentStatus = ManagedAgentStatus.DRAFT,
         created_by: str = "admin",
@@ -70,6 +71,9 @@ class ManagedAgentRepository:
             means the bus-wide default.
         tools:
             List of CrewAI tool class names to bind.
+        tool_config:
+            Per-tool configuration mapping, e.g.
+            ``{"SerperDevTool": {"api_key": "sk-…"}}``.
         capabilities:
             List of capability dicts.  Each dict must contain at least
             ``capability_id`` and ``description``.
@@ -98,6 +102,7 @@ class ManagedAgentRepository:
                 max_rpm=max_rpm,
                 memory=memory,
                 tools_json=tools or [],
+                tool_config_json=tool_config or {},
                 status=status,
                 created_at=now,
                 updated_at=now,
@@ -107,6 +112,22 @@ class ManagedAgentRepository:
 
             # Add capabilities
             for cap_dict in (capabilities or []):
+                # If output_fields are provided, auto-derive output_schema
+                output_fields = cap_dict.get("output_fields", [])
+                output_schema = cap_dict.get("output_schema", {})
+                if output_fields and not output_schema:
+                    try:
+                        from app.agents.factory import build_output_model
+                        model_cls = build_output_model(
+                            cap_dict["capability_id"], output_fields,
+                        )
+                        output_schema = model_cls.model_json_schema()
+                    except Exception:
+                        logger.debug(
+                            "Could not derive output_schema from output_fields",
+                            exc_info=True,
+                        )
+
                 cap = ManagedAgentCapability(
                     agent_id=agent_id,
                     capability_id=cap_dict["capability_id"],
@@ -118,7 +139,8 @@ class ManagedAgentRepository:
                     expected_artifacts_json=cap_dict.get("expected_artifacts", []),
                     estimated_cost=cap_dict.get("estimated_cost", 0.0),
                     estimated_latency=cap_dict.get("estimated_latency", 0.0),
-                    output_schema_json=cap_dict.get("output_schema", {}),
+                    output_fields_json=output_fields,
+                    output_schema_json=output_schema,
                 )
                 session.add(cap)
 
@@ -185,6 +207,7 @@ class ManagedAgentRepository:
         max_rpm: int | None = ...,  # type: ignore[assignment]
         memory: bool | None = None,
         tools: list[str] | None = None,
+        tool_config: dict[str, dict[str, Any]] | None = ...,  # type: ignore[assignment]
     ) -> ManagedAgent:
         """Update scalar fields on a managed agent.
 
@@ -224,6 +247,8 @@ class ManagedAgentRepository:
                 agent.memory = memory
             if tools is not None:
                 agent.tools_json = tools
+            if tool_config is not ...:
+                agent.tool_config_json = tool_config if tool_config is not None else {}
 
             agent.updated_at = datetime.now(timezone.utc)
             session.commit()
@@ -273,9 +298,24 @@ class ManagedAgentRepository:
         expected_artifacts: list[str] | None = None,
         estimated_cost: float = 0.0,
         estimated_latency: float = 0.0,
+        output_fields: list[dict[str, Any]] | None = None,
         output_schema: dict[str, Any] | None = None,
     ) -> ManagedAgentCapability:
         """Add a capability to a managed agent."""
+        # Auto-derive output_schema from output_fields when not explicitly set
+        resolved_fields = output_fields or []
+        resolved_schema = output_schema or {}
+        if resolved_fields and not resolved_schema:
+            try:
+                from app.agents.factory import build_output_model
+                model_cls = build_output_model(capability_id, resolved_fields)
+                resolved_schema = model_cls.model_json_schema()
+            except Exception:
+                logger.debug(
+                    "Could not derive output_schema from output_fields",
+                    exc_info=True,
+                )
+
         with get_session() as session:
             agent = (
                 session.query(ManagedAgent)
@@ -298,7 +338,8 @@ class ManagedAgentRepository:
                 expected_artifacts_json=expected_artifacts or [],
                 estimated_cost=estimated_cost,
                 estimated_latency=estimated_latency,
-                output_schema_json=output_schema or {},
+                output_fields_json=resolved_fields,
+                output_schema_json=resolved_schema,
             )
             session.add(cap)
             session.commit()

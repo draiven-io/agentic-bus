@@ -34,7 +34,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-import { mockAuditLog } from "@/lib/mock-data";
+import { useAsync } from "@/hooks/use-async";
+import { fetchAuditLog } from "@/lib/api";
 import type { AuditLogEntry } from "@/lib/types";
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -85,8 +86,11 @@ export default function AuditPage() {
   const [severityFilter, setSeverityFilter] = useState<string>("all");
   const [targetTypeFilter, setTargetTypeFilter] = useState<string>("all");
 
+  const { data: auditLog, loading } = useAsync(() => fetchAuditLog());
+  const allLogs = auditLog ?? [];
+
   const filtered = useMemo(() => {
-    return mockAuditLog.filter((log) => {
+    return allLogs.filter((log) => {
       const matchesSearch =
         search === "" ||
         log.action.toLowerCase().includes(search.toLowerCase()) ||
@@ -102,16 +106,16 @@ export default function AuditPage() {
 
       return matchesSearch && matchesSeverity && matchesType;
     });
-  }, [search, severityFilter, targetTypeFilter]);
+  }, [search, severityFilter, targetTypeFilter, allLogs]);
 
   // Counts by severity
   const counts = useMemo(() => {
     const c = { info: 0, warning: 0, error: 0, critical: 0 };
-    mockAuditLog.forEach((l) => {
+    allLogs.forEach((l) => {
       if (l.severity in c) c[l.severity as keyof typeof c]++;
     });
     return c;
-  }, []);
+  }, [allLogs]);
 
   const hasFilters =
     search !== "" || severityFilter !== "all" || targetTypeFilter !== "all";
@@ -153,7 +157,7 @@ export default function AuditPage() {
             <CardContent className="flex items-center justify-between pt-4">
               <div>
                 <p className="text-sm text-muted-foreground">Total Events</p>
-                <p className="text-2xl font-bold">{mockAuditLog.length}</p>
+                <p className="text-2xl font-bold">{allLogs.length}</p>
               </div>
               <Activity className="h-8 w-8 text-muted-foreground/50" />
             </CardContent>
@@ -285,7 +289,7 @@ export default function AuditPage() {
           )}
 
           <div className="ml-auto text-sm text-muted-foreground">
-            {filtered.length} of {mockAuditLog.length} events
+            {filtered.length} of {allLogs.length} events
           </div>
         </div>
 

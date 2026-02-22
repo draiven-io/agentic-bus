@@ -1,6 +1,6 @@
 "use client";
 
-import { Cpu, Settings as SettingsIcon } from "lucide-react";
+import { Cpu, Settings as SettingsIcon, Loader2 } from "lucide-react";
 
 import { AppHeader } from "@/components/app-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,24 +14,18 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
+import { useAsync } from "@/hooks/use-async";
+import { fetchLLMConfigs, fetchSettings } from "@/lib/api";
+
 export default function SettingsPage() {
-  // Mock LLM configs
-  const configs = [
-    {
-      name: "gpt-4o-main",
-      provider: "openai",
-      model: "gpt-4o",
-      temperature: 0.0,
-      is_current: true,
-    },
-    {
-      name: "claude-3.5-backup",
-      provider: "anthropic",
-      model: "claude-3.5-sonnet",
-      temperature: 0.1,
-      is_current: false,
-    },
-  ];
+  const { data: configs, loading: configsLoading } = useAsync(() =>
+    fetchLLMConfigs(),
+  );
+  const { data: settings, loading: settingsLoading } = useAsync(() =>
+    fetchSettings(),
+  );
+
+  const isLoading = configsLoading || settingsLoading;
 
   return (
     <>
@@ -49,6 +43,13 @@ export default function SettingsPage() {
             Coordinator and LLM configuration.
           </p>
         </div>
+
+        {isLoading && (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading settings…
+          </div>
+        )}
 
         <Card>
           <CardHeader>
@@ -69,23 +70,37 @@ export default function SettingsPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {configs.map((c) => (
-                  <TableRow key={c.name}>
-                    <TableCell className="font-mono font-medium">
-                      {c.name}
-                    </TableCell>
-                    <TableCell className="capitalize">{c.provider}</TableCell>
-                    <TableCell>{c.model}</TableCell>
-                    <TableCell>{c.temperature}</TableCell>
-                    <TableCell>
-                      {c.is_current ? (
-                        <Badge variant="default">Active</Badge>
-                      ) : (
-                        <Badge variant="secondary">Inactive</Badge>
-                      )}
+                {(configs ?? []).length === 0 && !configsLoading ? (
+                  <TableRow>
+                    <TableCell
+                      colSpan={5}
+                      className="py-8 text-center text-muted-foreground"
+                    >
+                      No LLM configurations. Use the CLI to add one:
+                      <code className="ml-2 rounded bg-muted px-2 py-0.5 text-xs">
+                        agbus llm add
+                      </code>
                     </TableCell>
                   </TableRow>
-                ))}
+                ) : (
+                  (configs ?? []).map((c) => (
+                    <TableRow key={c.name}>
+                      <TableCell className="font-mono font-medium">
+                        {c.name}
+                      </TableCell>
+                      <TableCell className="capitalize">{c.provider}</TableCell>
+                      <TableCell>{c.model}</TableCell>
+                      <TableCell>{c.temperature}</TableCell>
+                      <TableCell>
+                        {c.is_current ? (
+                          <Badge variant="default">Active</Badge>
+                        ) : (
+                          <Badge variant="secondary">Inactive</Badge>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
               </TableBody>
             </Table>
           </CardContent>
@@ -102,7 +117,11 @@ export default function SettingsPage() {
             <div className="grid grid-cols-2 gap-4 text-sm">
               <div>
                 <p className="text-muted-foreground">Host</p>
-                <p className="font-mono">0.0.0.0:8765</p>
+                <p className="font-mono">
+                  {settings
+                    ? `${settings.host}:${settings.port}`
+                    : "—"}
+                </p>
               </div>
               <div>
                 <p className="text-muted-foreground">Protocol</p>
@@ -110,7 +129,21 @@ export default function SettingsPage() {
               </div>
               <div>
                 <p className="text-muted-foreground">Auto-approve</p>
-                <p>Disabled</p>
+                <p>{settings?.auto_approve ? "Enabled" : "Disabled"}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">OIDC</p>
+                <p>
+                  {settings?.oidc_enabled
+                    ? settings.oidc_issuer
+                    : "Disabled (dev mode)"}
+                </p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Database</p>
+                <p className="font-mono truncate max-w-[300px]" title={settings?.database_url}>
+                  {settings?.database_url ?? "—"}
+                </p>
               </div>
               <div>
                 <p className="text-muted-foreground">Telemetry</p>
