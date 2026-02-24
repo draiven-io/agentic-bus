@@ -174,9 +174,11 @@ class CoordinatorRuntime:
         init_db()
         # Pre-load approved persistent agents into the registry
         self._load_persistent_agents()
+        # Start the WebSocket server BEFORE spawning managed agents so
+        # they can connect back immediately.
+        await self._server.start()
         # Start active managed agents as independent server tasks
         await self._start_managed_agents()
-        await self._server.start()
         self.audit_log.log(
             action="system.startup",
             actor="coordinator",
@@ -928,12 +930,31 @@ class CoordinatorRuntime:
         server = ManagedAgentServer(ma, coordinator_uri=uri)
 
         async def _run_agent() -> None:
-            try:
-                await server.run_forever()
-            except asyncio.CancelledError:
-                logger.info("Managed agent %s task cancelled", agent_id)
-            except Exception:
-                logger.exception("Managed agent %s crashed", agent_id)
+            max_retries = 5
+            for attempt in range(1, max_retries + 1):
+                try:
+                    await server.run_forever()
+                    return  # clean exit
+                except asyncio.CancelledError:
+                    logger.info("Managed agent %s task cancelled", agent_id)
+                    return
+                except ConnectionRefusedError:
+                    if attempt < max_retries:
+                        wait = attempt * 0.5
+                        logger.warning(
+                            "Managed agent %s connection refused (attempt %d/%d), "
+                            "retrying in %.1fs…",
+                            agent_id, attempt, max_retries, wait,
+                        )
+                        await asyncio.sleep(wait)
+                    else:
+                        logger.exception(
+                            "Managed agent %s failed after %d attempts",
+                            agent_id, max_retries,
+                        )
+                except Exception:
+                    logger.exception("Managed agent %s crashed", agent_id)
+                    return
 
         task = asyncio.create_task(_run_agent(), name=f"managed-agent-{agent_id}")
         self._managed_tasks[agent_id] = task

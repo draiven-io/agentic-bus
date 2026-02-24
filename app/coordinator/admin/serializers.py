@@ -154,6 +154,7 @@ def llm_config_to_dto(config: LLMConfig) -> LLMConfigDTO:
         model=config.model,
         temperature=config.temperature,
         is_current=config.is_current,
+        extra_config=config.extra_config if config.extra_config else None,
         created_at=config.created_at.isoformat() if config.created_at else "",
         updated_at=config.updated_at.isoformat() if config.updated_at else "",
         created_by=config.created_by or "",

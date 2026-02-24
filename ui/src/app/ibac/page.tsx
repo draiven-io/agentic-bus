@@ -61,6 +61,7 @@ import type {
   IBACEvaluationPoint,
   IBACRuleConditions,
 } from "@/lib/types";
+import { AgentMultiSelect } from "@/components/agent-multi-select";
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -134,25 +135,23 @@ function ConditionsEditor({
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div className="grid gap-1.5">
-          <Label htmlFor="cond-blocked-agents">Blocked Agents</Label>
-          <Input
-            id="cond-blocked-agents"
-            placeholder="agent-a, agent-b"
-            value={listToCsv(conditions.blocked_agents)}
-            onChange={(e) =>
-              onChange({ ...conditions, blocked_agents: csvToList(e.target.value) })
+          <Label>Blocked Agents</Label>
+          <AgentMultiSelect
+            selected={conditions.blocked_agents ?? []}
+            onChange={(ids) =>
+              onChange({ ...conditions, blocked_agents: ids.length ? ids : undefined })
             }
+            placeholder="Select blocked agents…"
           />
         </div>
         <div className="grid gap-1.5">
-          <Label htmlFor="cond-allowed-agents">Allowed Agents</Label>
-          <Input
-            id="cond-allowed-agents"
-            placeholder="trusted-agent-1"
-            value={listToCsv(conditions.allowed_agents)}
-            onChange={(e) =>
-              onChange({ ...conditions, allowed_agents: csvToList(e.target.value) })
+          <Label>Allowed Agents</Label>
+          <AgentMultiSelect
+            selected={conditions.allowed_agents ?? []}
+            onChange={(ids) =>
+              onChange({ ...conditions, allowed_agents: ids.length ? ids : undefined })
             }
+            placeholder="Select allowed agents…"
           />
         </div>
       </div>
