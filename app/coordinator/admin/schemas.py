@@ -176,6 +176,7 @@ class LLMConfigDTO(BaseModel):
     model: str
     temperature: float
     is_current: bool
+    extra_config: dict[str, Any] | None = None
     created_at: str
     updated_at: str
     created_by: str

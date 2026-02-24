@@ -130,6 +130,7 @@ export interface LLMConfig {
   model: string;
   temperature: number;
   is_current: boolean;
+  extra_config: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
   created_by: string;

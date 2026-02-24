@@ -594,8 +594,13 @@ def _safe_crewai_llm(**kwargs: Any) -> Any:
 def _build_crewai_llm_from_config(config: Any) -> Any:
     """Build a ``crewai.LLM`` from a database ``LLMConfig`` row.
 
-    Injects the provider-specific environment variables that litellm
-    expects and constructs the litellm model identifier string.
+    Injects the provider-specific environment variables and constructs the
+    appropriate model identifier string.
+
+    For **Azure OpenAI** the function uses CrewAI's *OpenAI native provider*
+    (which is always available) and points it at the Azure-compatible
+    endpoint.  This avoids the need for the ``azure-ai-inference`` extra
+    and for ``litellm``.
     """
     import os
 
@@ -606,7 +611,7 @@ def _build_crewai_llm_from_config(config: Any) -> Any:
 
     # Provider-specific setup
     if provider == "azure":
-        # litellm convention: "azure/<deployment-name>"
+        # Resolve Azure-specific parameters
         deployment = (
             extra.get("azure_deployment")
             or extra.get("azure_openai_deployment")
@@ -622,6 +627,7 @@ def _build_crewai_llm_from_config(config: Any) -> Any:
             or extra.get("azure_openai_api_version")
             or os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
         )
+        resolved_key = api_key or os.getenv("AZURE_OPENAI_API_KEY", "")
 
         if api_key:
             os.environ["AZURE_API_KEY"] = api_key
@@ -632,12 +638,22 @@ def _build_crewai_llm_from_config(config: Any) -> Any:
         if api_version:
             os.environ["AZURE_API_VERSION"] = api_version
 
+        # Build the Azure-compatible OpenAI base URL:
+        #   {endpoint}/openai/deployments/{deployment}
+        azure_base_url = endpoint.rstrip("/")
+        if azure_base_url and deployment:
+            azure_base_url = f"{azure_base_url}/openai/deployments/{deployment}"
+
+        # Use the OpenAI native provider pointed at the Azure endpoint.
+        # The ``default_query`` injects ``?api-version=…`` on every request,
+        # and ``default_headers`` passes the key via the Azure-specific
+        # ``api-key`` header (the OpenAI SDK also accepts it via ``api_key``).
         return _safe_crewai_llm(
-            model=f"azure/{deployment}",
-            api_key=api_key or None,
-            base_url=endpoint or None,
-            api_version=api_version,
+            model=deployment,
+            api_key=resolved_key or None,
+            base_url=azure_base_url or None,
             temperature=config.temperature,
+            default_query={"api-version": api_version},
         )
 
     elif provider == "openai":
@@ -662,20 +678,36 @@ def _build_crewai_llm_from_config(config: Any) -> Any:
         if api_key:
             os.environ["GOOGLE_API_KEY"] = api_key
             os.environ["GEMINI_API_KEY"] = api_key
-        return _safe_crewai_llm(
-            model=f"gemini/{model}",
-            api_key=api_key or None,
-            temperature=config.temperature,
-        )
+        # Gemini exposes an OpenAI-compatible endpoint.  If the native
+        # ``google-genai`` SDK is not installed, fall back to OpenAI
+        # provider pointed at the Gemini OpenAI-compat base URL.
+        try:
+            return _safe_crewai_llm(
+                model=f"gemini/{model}",
+                api_key=api_key or None,
+                temperature=config.temperature,
+            )
+        except ImportError:
+            resolved_key = api_key or os.getenv("GOOGLE_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")
+            return _safe_crewai_llm(
+                model=model,
+                api_key=resolved_key or None,
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+                temperature=config.temperature,
+            )
 
     elif provider == "ollama":
         base_url = (
             extra.get("base_url")
             or os.getenv("AGBUS_OLLAMA_BASE_URL", "http://localhost:11434")
         )
+        # Ollama exposes an OpenAI-compatible API at /v1.  Use the OpenAI
+        # native provider (always available) so we don't need litellm.
+        ollama_openai_url = f"{base_url.rstrip('/')}/v1"
         return _safe_crewai_llm(
-            model=f"ollama/{model}",
-            base_url=base_url,
+            model=model,
+            base_url=ollama_openai_url,
+            api_key="ollama",  # Ollama requires a non-empty key for the OpenAI client
             temperature=config.temperature,
         )
 
