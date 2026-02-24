@@ -61,6 +61,11 @@ class PersistentAgentDTO(BaseModel):
     approved_at: str | None = None
     approved_by: str | None = None
     last_connected_at: str | None = None
+    # Performance statistics
+    total_executions: int = 0
+    current_score: float = 0.0
+    mean_latency_ms: float = 0.0
+    last_execution_at: str | None = None
 
 
 class ManagedAgentDTO(BaseModel):
@@ -79,6 +84,11 @@ class ManagedAgentDTO(BaseModel):
     tool_config: dict[str, dict[str, Any]] = Field(default_factory=dict)
     status: str
     capabilities: list[ManagedAgentCapabilityDTO] = Field(default_factory=list)
+    # Performance statistics
+    total_executions: int = 0
+    current_score: float = 0.0
+    mean_latency_ms: float = 0.0
+    last_execution_at: str | None = None
     created_at: str
     updated_at: str
     created_by: str
@@ -355,3 +365,52 @@ class IBACRuleUpdateRequest(BaseModel):
     action: str | None = None
     evaluation_points: list[str] | None = None
     conditions: dict[str, Any] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Session Archive DTOs
+# ---------------------------------------------------------------------------
+
+
+class SessionArchiveListDTO(BaseModel):
+    """Lightweight summary for the history list view."""
+    id: int
+    session_id: str
+    requester_id: str
+    intent_text: str = ""
+    intent_domain: str = ""
+    outcome: str  # success | error | partial_failure | denied | rejected | cancelled
+    outcome_summary: str = ""
+    agent_count: int = 0
+    step_count: int = 0
+    created_at: str
+    dissolved_at: str
+    duration_seconds: float = 0.0
+
+
+class SessionArchiveDetailDTO(BaseModel):
+    """Full archive detail for the replay / inspection view."""
+    id: int
+    session_id: str
+    requester_id: str
+    requester_oidc_subject: str = ""
+    intent_text: str = ""
+    intent_domain: str = ""
+    decomposition: dict[str, Any] = Field(default_factory=dict)
+    outcome: str
+    outcome_summary: str = ""
+    discovered_agents: list[str] = Field(default_factory=list)
+    accepted_agents: list[str] = Field(default_factory=list)
+    agents: dict[str, Any] = Field(default_factory=dict)
+    composition_plan: dict[str, Any] = Field(default_factory=dict)
+    execution_results: list[dict[str, Any]] = Field(default_factory=list)
+    timeline_events: list[dict[str, Any]] = Field(default_factory=list)
+    audit_trail: list[dict[str, Any]] = Field(default_factory=list)
+    ibac_decisions: list[dict[str, Any]] = Field(default_factory=list)
+    # Execution output & per-agent metrics
+    output: str | None = None
+    output_summary: str | None = None
+    agent_metrics: list[dict[str, Any]] = Field(default_factory=list)
+    created_at: str
+    dissolved_at: str
+    duration_seconds: float = 0.0

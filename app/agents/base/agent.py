@@ -31,6 +31,7 @@ from app.core.protocol.envelope import (
     OfferPayload,
     ExecutePayload,
     CompletePayload,
+    EventPayload,
     build_envelope,
 )
 from app.core.transport.ws import WSClient, WSPeer
@@ -89,6 +90,44 @@ class BaseAgent(ABC):
         ...
 
     # -----------------------------------------------------------------------
+    # Answer validation – assigned agents validate execution output
+    # -----------------------------------------------------------------------
+
+    async def validate_answer(
+        self,
+        answer: dict[str, Any],
+        intent_text: str,
+        context: dict[str, Any],
+        ibac_rules_summary: str = "",
+    ) -> dict[str, Any]:
+        """Validate an execution answer against this agent's expertise and IBAC rules.
+
+        Called by the coordinator when this agent is the *assigned validator*
+        for an intent.  External agents SHOULD override this method with
+        domain-specific validation logic.
+
+        Args:
+            answer: The synthesised execution output to validate.
+            intent_text: The original intent text.
+            context: Session context including prior validation feedback.
+            ibac_rules_summary: Human-readable summary of applicable IBAC rules.
+
+        Returns:
+            A dict with:
+            - ``"approved"`` (bool): whether the answer passes validation.
+            - ``"reason"`` (str): explanation of the decision.
+            - ``"suggestions"`` (list[str]): optional improvement suggestions
+              that will be fed back into the renegotiation loop.
+        """
+        # Default implementation: approve everything.
+        # External agents MUST override this for meaningful validation.
+        return {
+            "approved": True,
+            "reason": "Default validation — no domain-specific checks implemented.",
+            "suggestions": [],
+        }
+
+    # -----------------------------------------------------------------------
     # Default offer generation
     # -----------------------------------------------------------------------
 
@@ -114,6 +153,56 @@ class BaseAgent(ABC):
             required_scopes=capability.required_scopes,
             output_schema=capability.output_schema,
         )
+
+    # -----------------------------------------------------------------------
+    # Event emission — agents can send progress updates during execution
+    # -----------------------------------------------------------------------
+
+    async def send_event(
+        self,
+        session_id: str,
+        summary: str,
+        *,
+        category: str = "agent",
+        detail: dict[str, Any] | None = None,
+        progress: float | None = None,
+    ) -> None:
+        """Send a progress / status event to the coordinator.
+
+        The coordinator will forward the event to the requester over
+        WebSocket, providing real-time visibility into agent execution.
+
+        Use this inside ``execute_task`` to report intermediate progress,
+        log messages, or partial results.
+
+        Args:
+            session_id: The session this event belongs to.
+            summary: Human-readable description of the progress.
+            category: Event category (``"agent"``, ``"info"``, ``"warning"``, etc.).
+            detail: Arbitrary structured data to accompany the event.
+            progress: Optional progress indicator between 0.0 and 1.0.
+        """
+        if not self._peer:
+            logger.debug("Cannot send event — not connected")
+            return
+
+        event_env = build_envelope(
+            MessageType.EVENT,
+            SenderInfo(kind=SenderKind.AGENT, id=self.agent_id),
+            session_id,
+            EventPayload(
+                category=category,
+                summary=summary,
+                detail=detail or {},
+                agent_id=self.agent_id,
+                progress=progress,
+            ),
+            inject_trace_context(),
+        )
+        try:
+            await self._peer.send_envelope(event_env)
+        except Exception:
+            logger.debug("Failed to send event for session %s", session_id)
 
     # -----------------------------------------------------------------------
     # Lifecycle
@@ -242,13 +331,31 @@ class BaseAgent(ABC):
         execution_plan = payload.get("execution_plan", {})
         context = execution_plan.get("context", {})
 
+        await self.send_event(
+            envelope.session_id,
+            f"Agent '{self.agent_id}' starting task execution…",
+            category="agent",
+        )
+
         try:
             result = await self.execute_task(execution_plan, context)
             status = "success"
+            await self.send_event(
+                envelope.session_id,
+                f"Agent '{self.agent_id}' task completed successfully",
+                category="agent",
+                detail={"status": "success"},
+            )
         except Exception as exc:
             logger.exception("Agent %s execution failed", self.agent_id)
             result = {"error": str(exc)}
             status = "error"
+            await self.send_event(
+                envelope.session_id,
+                f"Agent '{self.agent_id}' task failed: {exc}",
+                category="error",
+                detail={"error": str(exc)},
+            )
 
         complete_env = build_envelope(
             MessageType.COMPLETE,

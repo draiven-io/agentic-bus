@@ -184,6 +184,7 @@ class IntentClient:
         context: dict[str, Any] | None = None,
         requested_outputs: list[str] | None = None,
         ibac_claims: list[str] | None = None,
+        assigned_agent_id: str = "",
         on_offer: OfferCallback | None = None,
         on_accept: AcceptCallback | None = None,
         on_reject: RejectCallback | None = None,
@@ -209,6 +210,9 @@ class IntentClient:
             context: Additional context data (domain-specific)
             requested_outputs: List of expected output artifacts
             ibac_claims: IBAC claims requested for this intent
+            assigned_agent_id: Optional agent ID to validate the answer.
+                When set, the assigned agent validates execution output
+                before completion.  Validation failure triggers renegotiation.
             on_offer: Optional callback for each offer received
             on_accept: Optional callback when coordinator accepts offers
             on_reject: Optional callback if intent is rejected
@@ -240,6 +244,7 @@ class IntentClient:
                         context,
                         requested_outputs,
                         ibac_claims,
+                        assigned_agent_id=assigned_agent_id,
                     )
 
                     # Process responses
@@ -279,6 +284,7 @@ class IntentClient:
         context: dict[str, Any] | None = None,
         requested_outputs: list[str] | None = None,
         ibac_claims: list[str] | None = None,
+        assigned_agent_id: str = "",
         timeout: float | None = None,
     ) -> AsyncIterator[AgBusEnvelope]:
         """Submit an intent and stream all response messages.
@@ -291,6 +297,7 @@ class IntentClient:
             context: Additional context data (domain-specific)
             requested_outputs: List of expected output artifacts
             ibac_claims: IBAC claims requested for this intent
+            assigned_agent_id: Optional agent ID to validate the answer
             timeout: Override default timeout (seconds)
         
         Yields:
@@ -310,6 +317,7 @@ class IntentClient:
                         context,
                         requested_outputs,
                         ibac_claims,
+                        assigned_agent_id=assigned_agent_id,
                     )
 
                     # Stream responses
@@ -338,6 +346,7 @@ class IntentClient:
         context: dict[str, Any] | None,
         requested_outputs: list[str] | None,
         ibac_claims: list[str] | None,
+        assigned_agent_id: str = "",
     ) -> None:
         """Construct and send an intent message."""
         sender = SenderInfo(
@@ -351,6 +360,7 @@ class IntentClient:
             context=context or {},
             requested_outputs=requested_outputs or [],
             ibac_claims_requested=ibac_claims or [],
+            assigned_agent_id=assigned_agent_id,
         )
 
         envelope = AgBusEnvelope(

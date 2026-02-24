@@ -36,6 +36,8 @@ from app.coordinator.admin.schemas import (
     ManagedAgentCreateRequest,
     ManagedAgentDTO,
     PersistentAgentDTO,
+    SessionArchiveDetailDTO,
+    SessionArchiveListDTO,
     SessionDTO,
     TenantCreateRequest,
     TenantDTO,
@@ -50,6 +52,8 @@ from app.coordinator.admin.serializers import (
     managed_agent_to_dto,
     persistent_agent_to_dto,
     registration_to_ephemeral_dto,
+    session_archive_to_detail_dto,
+    session_archive_to_list_dto,
     session_to_dto,
     tenant_to_dto,
     user_to_dto,
@@ -1208,6 +1212,69 @@ def create_admin_api(runtime: Any) -> FastAPI:
             target=rule_id,
             target_type="ibac_rule",
             details=f"IBAC rule '{rule_id}' deleted",
+            severity="warning",
+        )
+        return {"ok": True}
+
+    # ==================================================================
+    # Session Archives (History)
+    # ==================================================================
+
+    @app.get("/api/admin/history", response_model=list[SessionArchiveListDTO])
+    async def list_session_archives(
+        request: Request,
+        limit: int = Query(default=100, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
+        outcome: str | None = Query(default=None),
+        _identity: OIDCIdentity = Depends(_get_identity),
+    ):
+        rt = _rt(request)
+        archives = await _run_sync(
+            rt.archive_repo.list_all,
+            limit=limit,
+            offset=offset,
+            outcome=outcome,
+        )
+        return [session_archive_to_list_dto(a) for a in archives]
+
+    @app.get("/api/admin/history/count")
+    async def count_session_archives(
+        request: Request,
+        outcome: str | None = Query(default=None),
+        _identity: OIDCIdentity = Depends(_get_identity),
+    ):
+        rt = _rt(request)
+        total = await _run_sync(rt.archive_repo.count, outcome=outcome)
+        return {"count": total}
+
+    @app.get("/api/admin/history/{session_id}", response_model=SessionArchiveDetailDTO)
+    async def get_session_archive(
+        request: Request,
+        session_id: str,
+        _identity: OIDCIdentity = Depends(_get_identity),
+    ):
+        rt = _rt(request)
+        archive = await _run_sync(rt.archive_repo.get, session_id)
+        if archive is None:
+            raise HTTPException(status_code=404, detail=f"Archive '{session_id}' not found")
+        return session_archive_to_detail_dto(archive)
+
+    @app.delete("/api/admin/history/{session_id}")
+    async def delete_session_archive(
+        request: Request,
+        session_id: str,
+        identity: OIDCIdentity = Depends(_require_admin),
+    ):
+        rt = _rt(request)
+        deleted = await _run_sync(rt.archive_repo.delete, session_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"Archive '{session_id}' not found")
+        rt.audit_log.log(
+            action="history.archive_deleted",
+            actor=identity.subject,
+            target=session_id,
+            target_type="session",
+            details=f"Session archive '{session_id}' deleted",
             severity="warning",
         )
         return {"ok": True}

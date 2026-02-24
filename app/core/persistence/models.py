@@ -74,6 +74,12 @@ class PersistentAgent(Base):
     approved_by: str | None = Column(String(256), nullable=True)
     last_connected_at: datetime | None = Column(DateTime(timezone=True), nullable=True)
 
+    # ── Performance statistics (updated after each execution) ──────────
+    total_executions: int = Column(Integer, nullable=False, default=0)
+    current_score: float = Column(Float, nullable=False, default=0.0)
+    mean_latency_ms: float = Column(Float, nullable=False, default=0.0)
+    last_execution_at: datetime | None = Column(DateTime(timezone=True), nullable=True)
+
 
 # ---------------------------------------------------------------------------
 # LLM configuration
@@ -193,6 +199,12 @@ class ManagedAgent(Base):
         onupdate=lambda: datetime.now(timezone.utc),
     )
     created_by: str = Column(String(256), nullable=False, default="admin")
+
+    # ── Performance statistics (updated after each execution) ──────────
+    total_executions: int = Column(Integer, nullable=False, default=0)
+    current_score: float = Column(Float, nullable=False, default=0.0)
+    mean_latency_ms: float = Column(Float, nullable=False, default=0.0)
+    last_execution_at: datetime | None = Column(DateTime(timezone=True), nullable=True)
 
     # ── Relationships ──────────────────────────────────────────────────
     # NOTE: no type annotation — SQLAlchemy Declarative Table interprets
@@ -484,3 +496,95 @@ class IBACRule(Base):
         onupdate=lambda: datetime.now(timezone.utc),
     )
     created_by: str = Column(String(256), nullable=False, default="admin")
+
+
+# ---------------------------------------------------------------------------
+# Session Archive – persisted snapshots of dissolved sessions (§5.1.2)
+# ---------------------------------------------------------------------------
+
+
+class SessionOutcome(str, PyEnum):
+    """High-level outcome of a completed session."""
+
+    SUCCESS = "success"
+    ERROR = "error"
+    PARTIAL_FAILURE = "partial_failure"
+    DENIED = "denied"
+    REJECTED = "rejected"
+    CANCELLED = "cancelled"
+
+
+class SessionArchive(Base):
+    """Archived snapshot of a dissolved Agentic Bus session.
+
+    Per Invariant II (§5.1.2), live session state is destroyed upon
+    dissolution.  This archive captures a *read-only historical record*
+    of the session for auditing, debugging, and analytics — it is NOT
+    a live coordination artifact.
+
+    All rich data (timeline events, agent map, execution plan, results,
+    and the full audit trail of envelopes) is stored as JSON columns so
+    the frontend can replay the entire negotiation flow.
+    """
+
+    __tablename__ = "session_archives"
+
+    id: int = Column(Integer, primary_key=True, autoincrement=True)
+    session_id: str = Column(String(256), nullable=False, unique=True, index=True)
+
+    # ── Identity ───────────────────────────────────────────────────────
+    requester_id: str = Column(String(256), nullable=False)
+    requester_oidc_subject: str = Column(String(256), nullable=False, default="")
+
+    # ── Intent ─────────────────────────────────────────────────────────
+    intent_text: str = Column(Text, nullable=False, default="")
+    intent_domain: str = Column(String(256), nullable=False, default="")
+    decomposition_json: dict = Column(JSON, nullable=False, default=dict)
+
+    # ── Outcome ────────────────────────────────────────────────────────
+    outcome: SessionOutcome = Column(
+        Enum(SessionOutcome), nullable=False, default=SessionOutcome.SUCCESS
+    )
+    outcome_summary: str = Column(Text, nullable=False, default="")
+
+    # ── Participating agents ───────────────────────────────────────────
+    discovered_agents_json: list = Column(JSON, nullable=False, default=list)
+    accepted_agents_json: list = Column(JSON, nullable=False, default=list)
+    # Full agent detail map: {agent_id: {capabilityId, description, status, ...}}
+    agents_json: dict = Column(JSON, nullable=False, default=dict)
+
+    # ── Composition plan ───────────────────────────────────────────────
+    composition_plan_json: dict = Column(JSON, nullable=False, default=dict)
+
+    # ── Execution results ──────────────────────────────────────────────
+    execution_results_json: list = Column(JSON, nullable=False, default=list)
+
+    # ── Timeline events (the UI event stream) ─────────────────────────
+    timeline_events_json: list = Column(JSON, nullable=False, default=list)
+
+    # ── Full audit trail (every AgBusEnvelope exchanged) ──────────────
+    audit_trail_json: list = Column(JSON, nullable=False, default=list)
+
+    # ── IBAC decisions ─────────────────────────────────────────────────
+    ibac_decisions_json: list = Column(JSON, nullable=False, default=list)
+
+    # ── Agent quality metrics ──────────────────────────────────────────
+    # Per-agent scoring and latency: [{agent_id, quality_score, latency_ms, retries, quality_rationale}]
+    agent_metrics_json: list = Column(JSON, nullable=False, default=list)
+
+    # ── Synthesised output ─────────────────────────────────────────────
+    output: str = Column(Text, nullable=False, default="")
+    output_summary: str = Column(Text, nullable=False, default="")
+
+    # ── Timing ─────────────────────────────────────────────────────────
+    created_at: datetime = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    dissolved_at: datetime = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    duration_seconds: float = Column(Float, nullable=False, default=0.0)

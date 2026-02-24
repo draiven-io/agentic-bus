@@ -21,6 +21,8 @@ import type {
   ManagedAgent,
   ManagedAgentCreatePayload,
   PersistentAgent,
+  SessionArchiveDetail,
+  SessionArchiveListItem,
   SessionInfo,
   Tenant,
   ToolInfo,
@@ -556,6 +558,47 @@ export async function deleteIBACRule(
 ): Promise<void> {
   await apiFetch(
     `/api/admin/ibac/rules/${encodeURIComponent(ruleId)}`,
+    { method: "DELETE" },
+    opts,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Session Archives (History)
+// ---------------------------------------------------------------------------
+
+export async function fetchSessionArchives(
+  opts?: FetchOptions & { limit?: number; offset?: number; outcome?: string },
+): Promise<SessionArchiveListItem[]> {
+  const params = new URLSearchParams();
+  if (opts?.limit) params.set("limit", String(opts.limit));
+  if (opts?.offset) params.set("offset", String(opts.offset));
+  if (opts?.outcome) params.set("outcome", opts.outcome);
+  const qs = params.toString();
+  return apiFetch<SessionArchiveListItem[]>(
+    `/api/admin/history${qs ? `?${qs}` : ""}`,
+    undefined,
+    opts,
+  );
+}
+
+export async function fetchSessionArchive(
+  sessionId: string,
+  opts?: FetchOptions,
+): Promise<SessionArchiveDetail> {
+  return apiFetch<SessionArchiveDetail>(
+    `/api/admin/history/${encodeURIComponent(sessionId)}`,
+    undefined,
+    opts,
+  );
+}
+
+export async function deleteSessionArchive(
+  sessionId: string,
+  opts?: FetchOptions,
+): Promise<void> {
+  await apiFetch(
+    `/api/admin/history/${encodeURIComponent(sessionId)}`,
     { method: "DELETE" },
     opts,
   );

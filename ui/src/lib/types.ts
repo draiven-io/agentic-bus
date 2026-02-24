@@ -19,6 +19,11 @@ export interface PersistentAgent {
   approved_at: string | null;
   approved_by: string | null;
   last_connected_at: string | null;
+  // Performance statistics
+  total_executions: number;
+  current_score: number;
+  mean_latency_ms: number;
+  last_execution_at: string | null;
 }
 
 export interface AgentCapability {
@@ -47,6 +52,11 @@ export interface ManagedAgent {
   tool_config: Record<string, Record<string, string>>;
   status: ManagedAgentStatus;
   capabilities: ManagedAgentCapability[];
+  // Performance statistics
+  total_executions: number;
+  current_score: number;
+  mean_latency_ms: number;
+  last_execution_at: string | null;
   created_at: string;
   updated_at: string;
   created_by: string;
@@ -282,4 +292,65 @@ export interface IBACRuleUpdatePayload {
   action?: IBACRuleAction;
   evaluation_points?: IBACEvaluationPoint[];
   conditions?: IBACRuleConditions;
+}
+
+// ---------------------------------------------------------------------------
+// Session Archives (History)
+// ---------------------------------------------------------------------------
+
+export interface SessionArchiveListItem {
+  id: number;
+  session_id: string;
+  requester_id: string;
+  intent_text: string;
+  intent_domain: string;
+  outcome: "success" | "error" | "partial_failure" | "denied" | "rejected" | "cancelled";
+  outcome_summary: string;
+  agent_count: number;
+  step_count: number;
+  created_at: string;
+  dissolved_at: string;
+  duration_seconds: number;
+}
+
+export interface SessionArchiveDetail {
+  id: number;
+  session_id: string;
+  requester_id: string;
+  requester_oidc_subject: string;
+  intent_text: string;
+  intent_domain: string;
+  decomposition: Record<string, unknown>;
+  outcome: string;
+  outcome_summary: string;
+  discovered_agents: string[];
+  accepted_agents: string[];
+  agents: Record<string, unknown>;
+  composition_plan: Record<string, unknown>;
+  execution_results: Record<string, unknown>[];
+  timeline_events: {
+    id: string;
+    timestamp: string;
+    category: string;
+    phase: string;
+    summary: string;
+    detail?: Record<string, unknown>;
+    agentId?: string;
+    progress?: number;
+  }[];
+  audit_trail: Record<string, unknown>[];
+  ibac_decisions: Record<string, unknown>[];
+  // Execution output & per-agent metrics
+  output: string | null;
+  output_summary: string | null;
+  agent_metrics: {
+    agent_id: string;
+    latency_ms: number;
+    quality_score: number;
+    quality_rationale: string;
+    retries: number;
+  }[];
+  created_at: string;
+  dissolved_at: string;
+  duration_seconds: number;
 }

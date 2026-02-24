@@ -39,6 +39,7 @@ class MessageType(StrEnum):
     EXECUTE = "execute"
     COMPLETE = "complete"
     DISSOLVE = "dissolve"
+    EVENT = "event"
 
 
 class SenderKind(StrEnum):
@@ -102,6 +103,15 @@ class IntentPayload(BaseModel):
     context: dict[str, Any] = Field(default_factory=dict)
     requested_outputs: list[str] = Field(default_factory=list)
     ibac_claims_requested: list[str] = Field(default_factory=list)
+    assigned_agent_id: str = Field(
+        default="",
+        description=(
+            "Optional agent ID assigned as the validator for this intent. "
+            "When set, the assigned agent must validate the execution output "
+            "before the session completes.  If validation fails, a "
+            "renegotiation loop is triggered with the rejection reason."
+        ),
+    )
 
 
 class OfferPayload(BaseModel):
@@ -211,6 +221,36 @@ class DissolvePayload(BaseModel):
     reason: str = "session_complete"
 
 
+class EventPayload(BaseModel):
+    """Payload for ``message_type='event'`` — progress / status notifications.
+
+    Events are informational messages emitted by the coordinator or agents to
+    provide real-time visibility into the session lifecycle.  They carry no
+    performative semantics and do not alter session state.
+
+    Categories:
+    - ``phase``       – coordinator phase transitions (e.g. discovery, negotiation)
+    - ``agent``       – agent-emitted progress updates during execution
+    - ``ibac``        – IBAC evaluation results
+    - ``discovery``   – agent discovery events
+    - ``negotiation`` – offer evaluation / convergence signals
+    - ``execution``   – graph build / node execution progress
+    - ``info``        – general informational messages
+    - ``warning``     – non-fatal issues
+    - ``error``       – error details (non-terminal)
+    """
+
+    category: str = "info"
+    phase: str = ""
+    summary: str = ""
+    detail: dict[str, Any] = Field(default_factory=dict)
+    agent_id: str = ""
+    progress: float | None = Field(
+        default=None,
+        description="Optional progress indicator between 0.0 and 1.0",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -223,6 +263,7 @@ PAYLOAD_TYPES: dict[MessageType, type[BaseModel]] = {
     MessageType.EXECUTE: ExecutePayload,
     MessageType.COMPLETE: CompletePayload,
     MessageType.DISSOLVE: DissolvePayload,
+    MessageType.EVENT: EventPayload,
 }
 
 

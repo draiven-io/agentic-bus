@@ -18,6 +18,9 @@ import {
   Plug,
   Zap,
   X,
+  Star,
+  Timer,
+  Activity,
 } from "lucide-react";
 
 import { AppHeader } from "@/components/app-header";
@@ -45,6 +48,12 @@ import {
 } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 import { useAsync } from "@/hooks/use-async";
 import {
@@ -79,6 +88,66 @@ function timeAgo(dateStr: string | null): string {
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return "—";
   return new Date(dateStr).toLocaleString();
+}
+
+function scoreColor(score: number): string {
+  if (score >= 8) return "text-emerald-400";
+  if (score >= 6) return "text-yellow-400";
+  if (score >= 4) return "text-orange-400";
+  return "text-red-400";
+}
+
+function formatLatency(ms: number): string {
+  if (ms === 0) return "—";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function AgentStatsInline({
+  score,
+  latencyMs,
+  executions,
+}: {
+  score: number;
+  latencyMs: number;
+  executions: number;
+}) {
+  if (executions === 0) {
+    return <span className="text-xs text-muted-foreground">No runs</span>;
+  }
+  return (
+    <TooltipProvider>
+      <div className="flex items-center gap-3">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className={`flex items-center gap-1 text-sm font-medium ${scoreColor(score)}`}>
+              <Star className="h-3 w-3" />
+              {score.toFixed(1)}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>Quality score (0–10)</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="flex items-center gap-1 text-xs text-muted-foreground">
+              <Timer className="h-3 w-3" />
+              {formatLatency(latencyMs)}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>Mean latency</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="flex items-center gap-1 text-xs text-muted-foreground">
+              <Activity className="h-3 w-3" />
+              {executions}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>Total executions</TooltipContent>
+        </Tooltip>
+      </div>
+    </TooltipProvider>
+  );
 }
 
 // ── Agent Detail Dialog ──────────────────────────────────────────────
@@ -127,6 +196,40 @@ function PersistentAgentDetail({ agent }: { agent: PersistentAgent }) {
                 <p className="text-muted-foreground">Last Connected</p>
                 <p>{formatDate(agent.last_connected_at)}</p>
               </div>
+            </div>
+
+            <Separator />
+
+            {/* Performance */}
+            <div>
+              <h4 className="mb-2 text-sm font-semibold flex items-center gap-2">
+                <Activity className="h-4 w-4" />
+                Performance
+              </h4>
+              {agent.total_executions === 0 ? (
+                <p className="text-sm text-muted-foreground">No executions recorded yet.</p>
+              ) : (
+                <div className="grid grid-cols-4 gap-4 text-sm">
+                  <div>
+                    <p className="text-muted-foreground">Score</p>
+                    <p className={`text-lg font-bold ${scoreColor(agent.current_score)}`}>
+                      {agent.current_score.toFixed(1)}<span className="text-xs font-normal text-muted-foreground">/10</span>
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Avg Latency</p>
+                    <p className="text-lg font-bold">{formatLatency(agent.mean_latency_ms)}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Executions</p>
+                    <p className="text-lg font-bold">{agent.total_executions}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Last Run</p>
+                    <p>{timeAgo(agent.last_execution_at)}</p>
+                  </div>
+                </div>
+              )}
             </div>
 
             <Separator />
@@ -260,6 +363,40 @@ function ManagedAgentDetail({ agent }: { agent: ManagedAgent }) {
                 <p className="text-muted-foreground">Memory</p>
                 <p>{agent.memory ? "Yes" : "No"}</p>
               </div>
+            </div>
+
+            <Separator />
+
+            {/* Performance */}
+            <div>
+              <h4 className="mb-2 text-sm font-semibold flex items-center gap-2">
+                <Activity className="h-4 w-4" />
+                Performance
+              </h4>
+              {agent.total_executions === 0 ? (
+                <p className="text-sm text-muted-foreground">No executions recorded yet.</p>
+              ) : (
+                <div className="grid grid-cols-4 gap-4 text-sm">
+                  <div>
+                    <p className="text-muted-foreground">Score</p>
+                    <p className={`text-lg font-bold ${scoreColor(agent.current_score)}`}>
+                      {agent.current_score.toFixed(1)}<span className="text-xs font-normal text-muted-foreground">/10</span>
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Avg Latency</p>
+                    <p className="text-lg font-bold">{formatLatency(agent.mean_latency_ms)}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Executions</p>
+                    <p className="text-lg font-bold">{agent.total_executions}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Last Run</p>
+                    <p>{timeAgo(agent.last_execution_at)}</p>
+                  </div>
+                </div>
+              )}
             </div>
 
             <Separator />
@@ -612,6 +749,7 @@ export default function AgentsPage() {
                       <TableHead>Agent ID</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead>Instance</TableHead>
+                      <TableHead>Performance</TableHead>
                       <TableHead>Role</TableHead>
                       <TableHead>Capabilities</TableHead>
                       <TableHead className="text-right">Actions</TableHead>
@@ -621,7 +759,7 @@ export default function AgentsPage() {
                     {filteredManaged.length === 0 ? (
                       <TableRow>
                         <TableCell
-                          colSpan={8}
+                          colSpan={9}
                           className="py-8 text-center text-muted-foreground"
                         >
                           No managed agents found.
@@ -672,6 +810,13 @@ export default function AgentsPage() {
                                     Offline
                                   </span>
                                 )}
+                              </TableCell>
+                              <TableCell>
+                                <AgentStatsInline
+                                  score={agent.current_score}
+                                  latencyMs={agent.mean_latency_ms}
+                                  executions={agent.total_executions}
+                                />
                               </TableCell>
                               <TableCell className="max-w-[200px] truncate text-sm">
                                 {agent.role}
@@ -845,6 +990,7 @@ export default function AgentsPage() {
                         <TableHead>Agent ID</TableHead>
                         <TableHead>Status</TableHead>
                         <TableHead>Version</TableHead>
+                        <TableHead>Performance</TableHead>
                         <TableHead>Capabilities</TableHead>
                         <TableHead>Tags</TableHead>
                         <TableHead>Last Connected</TableHead>
@@ -855,7 +1001,7 @@ export default function AgentsPage() {
                       {filteredPersistent.length === 0 ? (
                         <TableRow>
                           <TableCell
-                            colSpan={7}
+                            colSpan={8}
                             className="py-8 text-center text-muted-foreground"
                           >
                             No persistent agents match your filters.
@@ -879,6 +1025,13 @@ export default function AgentsPage() {
                             </TableCell>
                             <TableCell>
                               <Badge variant="outline">v{agent.version}</Badge>
+                            </TableCell>
+                            <TableCell>
+                              <AgentStatsInline
+                                score={agent.current_score}
+                                latencyMs={agent.mean_latency_ms}
+                                executions={agent.total_executions}
+                              />
                             </TableCell>
                             <TableCell>
                               <span className="text-sm">

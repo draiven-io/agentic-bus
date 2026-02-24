@@ -275,7 +275,7 @@ class NegotiationEngine:
 
         if not self.check_convergence(offers, initial_entropy):
             # First attempt: recursive simplification (Φ' ⊂ Φ)
-            if round_num <= self._max_rounds:
+            if round_num == self._max_rounds:
                 return "recursive_simplification"
             # Beyond max rounds: solidify to Σ_core
             return "solidification"

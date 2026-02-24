@@ -190,6 +190,57 @@ class ManagedAgentRepository:
             return list(q.all())
 
     # ------------------------------------------------------------------
+    # Performance stats
+    # ------------------------------------------------------------------
+
+    def record_execution(
+        self,
+        agent_id: str,
+        quality_score: float,
+        latency_ms: float,
+    ) -> None:
+        """Update the agent's running performance statistics.
+
+        Uses an incremental running-average so we never need to recompute
+        from the full history::
+
+            n = total_executions + 1
+            mean_latency = mean_latency + (latency - mean_latency) / n
+            current_score = current_score + (score - current_score) / n
+
+        This is safe for concurrent writers because the entire update is
+        within a single SQLAlchemy session / transaction.
+        """
+        with get_session() as session:
+            agent = (
+                session.query(ManagedAgent)
+                .filter(ManagedAgent.agent_id == agent_id)
+                .first()
+            )
+            if agent is None:
+                logger.debug(
+                    "record_execution: managed agent %r not found — skipping",
+                    agent_id,
+                )
+                return
+
+            n = agent.total_executions + 1
+            agent.mean_latency_ms = agent.mean_latency_ms + (latency_ms - agent.mean_latency_ms) / n
+            agent.current_score = agent.current_score + (quality_score - agent.current_score) / n
+            agent.total_executions = n
+            agent.last_execution_at = datetime.now(timezone.utc)
+
+            session.commit()
+
+        logger.debug(
+            "Managed agent %r stats updated: score=%.2f, latency=%.1fms, n=%d",
+            agent_id,
+            agent.current_score,
+            agent.mean_latency_ms,
+            n,
+        )
+
+    # ------------------------------------------------------------------
     # Update
     # ------------------------------------------------------------------
 
