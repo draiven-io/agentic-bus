@@ -245,6 +245,10 @@ class EventPayload(BaseModel):
     summary: str = ""
     detail: dict[str, Any] = Field(default_factory=dict)
     agent_id: str = ""
+    step_index: int | None = Field(
+        default=None,
+        description="Index of the execution plan step (0-based). Used to distinguish multiple invocations of the same agent.",
+    )
     progress: float | None = Field(
         default=None,
         description="Optional progress indicator between 0.0 and 1.0",

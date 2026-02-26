@@ -261,7 +261,7 @@ class ManagedAgentServer(BaseAgent):
         prior_feedback = context.get("_validation_feedback", [])
         if prior_feedback:
             fb_lines = [
-                f"Round {fb['round']}: REJECTED — {fb['reason']}\n"
+                f"Round {fb['round_num']}: REJECTED — {fb['reason']}\n"
                 f"  Suggestions: {', '.join(fb.get('suggestions', []))}"
                 for fb in prior_feedback
             ]

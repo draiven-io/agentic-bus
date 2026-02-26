@@ -81,6 +81,7 @@ import {
   type TimelineEvent,
   type FlowAgent,
   type ExecutionPlan,
+  type PlanExplanation,
 } from "@/hooks/use-intent-ws";
 
 // ---------------------------------------------------------------------------
@@ -223,6 +224,7 @@ function AgentNode({
     label: string;
     agentId: string;
     description: string;
+    stepRole?: string;
     status: FlowAgent["status"];
     estimatedCost?: number;
     estimatedLatency?: number;
@@ -262,6 +264,12 @@ function AgentNode({
       {data.description && (
         <p className="mt-1.5 text-[10px] text-zinc-400 leading-relaxed line-clamp-2">
           {data.description}
+        </p>
+      )}
+
+      {data.stepRole && (
+        <p className="mt-1 text-[10px] text-orange-400/80 leading-relaxed line-clamp-3 italic">
+          {data.stepRole}
         </p>
       )}
 
@@ -393,12 +401,14 @@ const nodeTypes = {
 function ExecutionGraph({
   plan,
   agents,
+  stepStatuses,
   currentPhase,
   result,
   assignedAgentId,
 }: {
   plan: ExecutionPlan | null;
   agents: Map<string, FlowAgent>;
+  stepStatuses: Map<number, FlowAgent["status"]>;
   currentPhase: SessionPhase;
   result: ReturnType<typeof useIntentWs>["result"];
   assignedAgentId: string;
@@ -435,6 +445,7 @@ function ExecutionGraph({
     // can appear in multiple steps of the composition plan.
     plan.steps.forEach((step, i) => {
       const agentData = agents.get(step.agentId);
+      const stepRole = plan.explanation?.stepRoles.find((sr) => sr.stepNumber === i + 1)?.role;
       const nodeId = `step-${i}`;
       n.push({
         id: nodeId,
@@ -444,7 +455,10 @@ function ExecutionGraph({
           label: step.agentId,
           agentId: step.agentId,
           description: step.description || agentData?.description || "",
-          status: agentData?.status || "accepted",
+          stepRole: stepRole || "",
+          status: stepStatuses.size > 0
+            ? (stepStatuses.get(i) ?? "accepted")
+            : (agentData?.status ?? "accepted"),
           estimatedCost: agentData?.estimatedCost,
           estimatedLatency: agentData?.estimatedLatency,
           stepIndex: i,
@@ -625,7 +639,7 @@ function ExecutionGraph({
     }
 
     return { nodes: n, edges: e };
-  }, [plan, agents, currentPhase, result, assignedAgentId]);
+  }, [plan, agents, stepStatuses, currentPhase, result, assignedAgentId]);
 
   return (
     <div className="h-full w-full [&_.react-flow__attribution]:hidden">
@@ -673,6 +687,7 @@ const categoryConfig: Record<
   system: { icon: Terminal, color: "text-zinc-400", bgColor: "bg-zinc-500/10" },
   complete: { icon: CheckCircle2, color: "text-emerald-400", bgColor: "bg-emerald-500/10" },
   validation: { icon: Shield, color: "text-cyan-400", bgColor: "bg-cyan-500/10" },
+  plan_explanation: { icon: FileText, color: "text-orange-400", bgColor: "bg-orange-500/10" },
   dissolve: { icon: Circle, color: "text-zinc-400", bgColor: "bg-zinc-500/10" },
 };
 
@@ -1250,11 +1265,13 @@ function ResultPanel({
 
 function ApprovalBanner({
   plan,
+  planExplanation,
   onApprove,
   onReject,
   onRenegotiate,
 }: {
   plan: ExecutionPlan;
+  planExplanation: PlanExplanation | null;
   onApprove: () => void;
   onReject: (reason: string) => void;
   onRenegotiate: (reason: string, hint?: Record<string, unknown>) => void;
@@ -1263,6 +1280,10 @@ function ApprovalBanner({
   const [renegOpen, setRenegOpen] = useState(false);
   const [reason, setReason] = useState("");
   const [hint, setHint] = useState("");
+  const [stepsExpanded, setStepsExpanded] = useState(false);
+
+  // Merge explanation into plan if available
+  const explanation = planExplanation ?? plan.explanation ?? null;
 
   return (
     <>
@@ -1291,6 +1312,71 @@ function ApprovalBanner({
                 </Badge>
               ))}
             </div>
+
+            {/* Plan rationale */}
+            {explanation && (
+              <div className="mt-3 rounded-lg border border-orange-500/20 bg-orange-500/5 p-3">
+                <div className="flex items-center gap-1.5 mb-1.5">
+                  <FileText className="size-3.5 text-orange-400" />
+                  <span className="text-[11px] font-semibold text-orange-300">Plan Rationale</span>
+                </div>
+                <p className="text-[11px] text-zinc-300 leading-relaxed">
+                  {explanation.planRationale}
+                </p>
+
+                {/* Per-step roles */}
+                {explanation.stepRoles.length > 0 && (
+                  <div className="mt-2">
+                    <button
+                      type="button"
+                      onClick={() => setStepsExpanded(!stepsExpanded)}
+                      className="flex items-center gap-1 text-[10px] text-orange-400 hover:text-orange-300 transition-colors"
+                    >
+                      {stepsExpanded ? (
+                        <ChevronUp className="size-3" />
+                      ) : (
+                        <ChevronDown className="size-3" />
+                      )}
+                      {stepsExpanded ? "Hide step details" : `Show ${explanation.stepRoles.length} step details`}
+                    </button>
+                    <AnimatePresence>
+                      {stepsExpanded && (
+                        <motion.div
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: "auto", opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          transition={{ duration: 0.2 }}
+                          className="mt-2 space-y-1.5 overflow-hidden"
+                        >
+                          {explanation.stepRoles.map((sr) => (
+                            <div
+                              key={sr.stepNumber}
+                              className="flex items-start gap-2 rounded-md bg-zinc-900/60 border border-zinc-800 px-2.5 py-1.5"
+                            >
+                              <Badge
+                                variant="outline"
+                                className="shrink-0 text-[8px] px-1 py-0 h-4 border-orange-500/30 text-orange-400 mt-0.5"
+                              >
+                                Step {sr.stepNumber}
+                              </Badge>
+                              <div className="min-w-0">
+                                <span className="text-[10px] font-semibold text-zinc-300">
+                                  {sr.agentId}
+                                  <span className="text-zinc-500">:{sr.capabilityId}</span>
+                                </span>
+                                <p className="text-[10px] text-zinc-400 leading-relaxed mt-0.5">
+                                  {sr.role}
+                                </p>
+                              </div>
+                            </div>
+                          ))}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
           <div className="flex shrink-0 gap-2">
             <Button
@@ -1525,7 +1611,9 @@ export default function IntentPage() {
     progress,
     events,
     agents,
+    stepStatuses,
     plan,
+    planExplanation,
     awaitingApproval,
     result,
     intentText,
@@ -1561,6 +1649,7 @@ export default function IntentPage() {
             {awaitingApproval && plan && (
               <ApprovalBanner
                 plan={plan}
+                planExplanation={planExplanation}
                 onApprove={() => sendDecision("approve")}
                 onReject={(reason) => sendDecision("reject", reason)}
                 onRenegotiate={(reason, hint) =>
@@ -1591,6 +1680,7 @@ export default function IntentPage() {
                     <ExecutionGraph
                       plan={plan}
                       agents={agents}
+                      stepStatuses={stepStatuses}
                       currentPhase={currentPhase}
                       result={result}
                       assignedAgentId={assignedAgentId}

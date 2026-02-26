@@ -54,7 +54,8 @@ export interface TimelineEvent {
     | "error"
     | "system"
     | "complete"
-    | "dissolve";
+    | "dissolve"
+    | "plan_explanation";
   phase: SessionPhase;
   summary: string;
   detail?: Record<string, unknown>;
@@ -85,6 +86,18 @@ export interface FlowAgent {
   retries?: number;
 }
 
+export interface PlanStepRole {
+  stepNumber: number;
+  agentId: string;
+  capabilityId: string;
+  role: string;
+}
+
+export interface PlanExplanation {
+  planRationale: string;
+  stepRoles: PlanStepRole[];
+}
+
 export interface ExecutionPlan {
   steps: {
     agentId: string;
@@ -98,6 +111,7 @@ export interface ExecutionPlan {
   flowDescription: string;
   compositionPlan?: Record<string, unknown>;
   mergedOutputSchema?: Record<string, unknown>;
+  explanation?: PlanExplanation;
 }
 
 export interface ExecutionResult {
@@ -120,11 +134,13 @@ export function useIntentWs() {
   const [events, setEvents] = useState<TimelineEvent[]>([]);
   const [agents, setAgents] = useState<Map<string, FlowAgent>>(new Map());
   const [plan, setPlan] = useState<ExecutionPlan | null>(null);
+  const [planExplanation, setPlanExplanation] = useState<PlanExplanation | null>(null);
   const [awaitingApproval, setAwaitingApproval] = useState(false);
   const [result, setResult] = useState<ExecutionResult | null>(null);
   const [intentText, setIntentText] = useState<string>("");
   const [decomposition, setDecomposition] = useState<Record<string, unknown> | null>(null);
   const [assignedAgentId, setAssignedAgentId] = useState<string>("");
+  const [stepStatuses, setStepStatuses] = useState<Map<number, FlowAgent["status"]>>(new Map());
 
   const wsRef = useRef<WebSocket | null>(null);
   const senderRef = useRef<SenderInfo>({
@@ -147,6 +163,17 @@ export function useIntentWs() {
           status: "discovered" as const,
         };
         next.set(agentId, { ...existing, ...update });
+        return next;
+      });
+    },
+    [],
+  );
+
+  const updateStepStatus = useCallback(
+    (stepIndex: number, status: FlowAgent["status"]) => {
+      setStepStatuses((prev) => {
+        const next = new Map(prev);
+        next.set(stepIndex, status);
         return next;
       });
     },
@@ -290,6 +317,15 @@ export function useIntentWs() {
           setResult(execResult);
           setCurrentPhase("complete");
 
+          // Mark all step statuses as completed
+          setStepStatuses((prev) => {
+            const next = new Map(prev);
+            for (const [idx] of next) {
+              next.set(idx, "completed");
+            }
+            return next;
+          });
+
           // Build a lookup from agent_metrics so we can enrich agent cards
           const metricsByAgent = new Map<string, {
             quality_score: number;
@@ -405,6 +441,32 @@ export function useIntentWs() {
             setDecomposition(evtPayload.detail);
           }
 
+          // Capture plan explanation events
+          if (evtPayload.category === "plan_explanation") {
+            const detail = evtPayload.detail || {};
+            if (detail.plan_rationale && detail.step_roles) {
+              const explanation: PlanExplanation = {
+                planRationale: detail.plan_rationale as string,
+                stepRoles: (detail.step_roles as Array<{
+                  step_number: number;
+                  agent_id: string;
+                  capability_id: string;
+                  role: string;
+                }>).map((sr) => ({
+                  stepNumber: sr.step_number,
+                  agentId: sr.agent_id,
+                  capabilityId: sr.capability_id,
+                  role: sr.role,
+                })),
+              };
+              setPlanExplanation(explanation);
+              // Also attach to the current plan if available
+              setPlan((prev) =>
+                prev ? { ...prev, explanation } : prev
+              );
+            }
+          }
+
           if (evtPayload.category === "negotiation" && evtPayload.agent_id) {
             const summary = evtPayload.summary.toLowerCase();
             if (summary.includes("accepted")) {
@@ -417,6 +479,15 @@ export function useIntentWs() {
           if (evtPayload.agent_id) {
             if (evtPayload.category === "execution") {
               updateAgent(evtPayload.agent_id, { status: "executing" });
+              // Track per-step status when step_index is available
+              if (evtPayload.step_index != null) {
+                const summary = evtPayload.summary.toLowerCase();
+                if (summary.includes("completed")) {
+                  updateStepStatus(evtPayload.step_index, "completed");
+                } else {
+                  updateStepStatus(evtPayload.step_index, "executing");
+                }
+              }
             }
             if (evtPayload.category === "validation") {
               const summary = evtPayload.summary.toLowerCase();
@@ -427,6 +498,9 @@ export function useIntentWs() {
               } else {
                 updateAgent(evtPayload.agent_id, { status: "executing" });
               }
+            }
+            if (evtPayload.category === "error" && evtPayload.step_index != null) {
+              updateStepStatus(evtPayload.step_index, "error");
             }
           }
 
@@ -445,7 +519,7 @@ export function useIntentWs() {
         }
       }
     },
-    [addEvent, updateAgent],
+    [addEvent, updateAgent, updateStepStatus],
   );
 
   const submitIntent = useCallback(
@@ -459,7 +533,9 @@ export function useIntentWs() {
       setProgress(0);
       setEvents([]);
       setAgents(new Map());
+      setStepStatuses(new Map());
       setPlan(null);
+      setPlanExplanation(null);
       setAwaitingApproval(false);
       setResult(null);
       setDecomposition(null);
@@ -582,6 +658,7 @@ export function useIntentWs() {
         if (action === "renegotiate") {
           setCurrentPhase("discovery");
           setPlan(null);
+          setPlanExplanation(null);
         }
       }
     },
@@ -600,7 +677,9 @@ export function useIntentWs() {
     setCurrentPhase("idle");
     setProgress(0);
     setAgents(new Map());
+    setStepStatuses(new Map());
     setPlan(null);
+    setPlanExplanation(null);
     setAwaitingApproval(false);
     setResult(null);
     setIntentText("");
@@ -616,7 +695,9 @@ export function useIntentWs() {
     progress,
     events,
     agents,
+    stepStatuses,
     plan,
+    planExplanation,
     awaitingApproval,
     result,
     intentText,

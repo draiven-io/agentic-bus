@@ -249,6 +249,7 @@ class CoordinatorRuntime:
         phase: str = "",
         detail: dict[str, Any] | None = None,
         agent_id: str = "",
+        step_index: int | None = None,
         progress: float | None = None,
     ) -> None:
         """Send a progress / status event to the requester over WebSocket.
@@ -273,6 +274,7 @@ class CoordinatorRuntime:
                 summary=summary,
                 detail=detail or {},
                 agent_id=agent_id,
+                step_index=step_index,
                 progress=progress,
             ),
             inject_trace_context(),
@@ -806,6 +808,9 @@ class CoordinatorRuntime:
             progress=0.70,
         )
 
+        # Explain the role of each step in the execution plan
+        await self._explain_execution_plan(session, plan)
+
         # Send the full plan to the requester as an OFFER for approval
         from app.core.protocol.envelope import OfferPayload
         plan_offer = OfferPayload(
@@ -837,6 +842,117 @@ class CoordinatorRuntime:
 
         # Transition to awaiting approval – execution is blocked
         self.sessions.transition(session.session_id, SessionPhase.AWAITING_APPROVAL)
+
+    # -----------------------------------------------------------------------
+    # Execution plan explanation
+    # -----------------------------------------------------------------------
+
+    _PLAN_EXPLANATION_SYSTEM = """\
+You are the coordinator of the Agentic Bus Protocol.
+Given a user intent and an execution plan (a sequence of agent steps), explain
+WHY each step is necessary and what role it plays in fulfilling the intent.
+
+For each step, provide:
+- A short role description (what this step accomplishes toward the intent).
+- Why this specific agent/capability was chosen.
+- If an agent appears multiple times, explain clearly why each invocation
+  is distinct and what different aspect of the intent it addresses.
+
+Return ONLY a JSON object (no markdown fences, no commentary):
+{{
+  "plan_rationale": "<one-paragraph summary of the overall strategy>",
+  "steps": [
+    {{
+      "step_number": 1,
+      "agent_id": "<agent>",
+      "capability_id": "<capability>",
+      "role": "<what this step does and why it is needed>"
+    }}
+  ]
+}}
+"""
+
+    _PLAN_EXPLANATION_HUMAN = """\
+Intent: {intent_text}
+Context: {context}
+
+Execution plan steps:
+{steps_description}
+"""
+
+    async def _explain_execution_plan(
+        self,
+        session: SessionState,
+        plan: dict[str, Any],
+    ) -> None:
+        """Use the coordinator LLM to explain each step's role in the plan.
+
+        Emits a ``plan_explanation`` event so the UI can display the
+        rationale for why each agent is called and, in particular, why an
+        agent may appear multiple times with different responsibilities.
+        """
+        steps = plan.get("steps", [])
+        if not steps:
+            return
+
+        steps_text = "\n".join(
+            f"  Step {i+1}: agent={s['agent_id']}, "
+            f"capability={s['capability_id']}, "
+            f"description={s.get('description', 'N/A')}"
+            for i, s in enumerate(steps)
+        )
+
+        try:
+            from app.core.llm import get_llm
+            from langchain_core.prompts import ChatPromptTemplate
+            from langchain_core.output_parsers import JsonOutputParser
+
+            llm = get_llm()
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", self._PLAN_EXPLANATION_SYSTEM),
+                ("human", self._PLAN_EXPLANATION_HUMAN),
+            ])
+            chain = prompt | llm | JsonOutputParser()
+
+            result = await chain.ainvoke({
+                "intent_text": session.intent.intent_text if session.intent else "",
+                "context": str(session.intent.context if session.intent else {}),
+                "steps_description": steps_text,
+            })
+
+            rationale = result.get("plan_rationale", "")
+            step_roles = result.get("steps", [])
+
+            # Emit overall rationale
+            await self._emit_event(
+                session.session_id,
+                "plan_explanation",
+                f"Plan rationale: {rationale}",
+                phase="plan_proposed",
+                detail={"plan_rationale": rationale, "step_roles": step_roles},
+            )
+
+            # Emit per-step role explanations
+            for sr in step_roles:
+                step_num = sr.get("step_number", "?")
+                agent_id = sr.get("agent_id", "")
+                capability_id = sr.get("capability_id", "")
+                role = sr.get("role", "")
+                await self._emit_event(
+                    session.session_id,
+                    "plan_explanation",
+                    f"Step {step_num} — {agent_id}:{capability_id}: {role}",
+                    phase="plan_proposed",
+                    agent_id=agent_id,
+                    detail=sr,
+                )
+
+        except Exception:
+            logger.warning(
+                "Failed to generate plan explanation for session %s",
+                session.session_id,
+                exc_info=True,
+            )
 
     async def _finalize_negotiation(self, session: SessionState) -> None:
         """Build the composition plan and proceed to execution.
@@ -1183,6 +1299,7 @@ class CoordinatorRuntime:
         # Reset negotiation state
         session.offers.clear()
         session.accepted_offers.clear()
+        session.solicited_agents.clear()
         session.execution_results.clear()
 
         # Preserve validation context and inject feedback
@@ -1482,6 +1599,7 @@ class CoordinatorRuntime:
         # Reset negotiation state but preserve intent and hints
         session.offers.clear()
         session.accepted_offers.clear()
+        session.solicited_agents.clear()
         session.composition_plan = {
             "renegotiation_round": round_num,
             "renegotiation_hints": reject_payload.renegotiation_hint,
@@ -1951,6 +2069,7 @@ class CoordinatorRuntime:
 
         async def _executor(state: AgBusGraphState) -> AgBusGraphState:
             session_id = state.get("session_id", "")
+            step_index = state.get("_current_step_index")
 
             await runtime._emit_event(
                 session_id,
@@ -1958,6 +2077,7 @@ class CoordinatorRuntime:
                 f"Dispatching task to agent '{agent_id}'…",
                 phase="execution",
                 agent_id=agent_id,
+                step_index=step_index,
             )
 
             peer_id = runtime._agent_peers.get(agent_id)
@@ -1997,6 +2117,7 @@ class CoordinatorRuntime:
                 f"Waiting for agent '{agent_id}' to complete…",
                 phase="execution",
                 agent_id=agent_id,
+                step_index=step_index,
             )
 
             # Wait for the agent's COMPLETE routed through the main message loop
@@ -2010,6 +2131,7 @@ class CoordinatorRuntime:
                     f"Agent '{agent_id}' completed with status: {response_status}",
                     phase="execution",
                     agent_id=agent_id,
+                    step_index=step_index,
                     detail={"status": response_status},
                 )
 
@@ -2024,6 +2146,7 @@ class CoordinatorRuntime:
                     f"Agent '{agent_id}' timed out during execution (120s)",
                     phase="execution",
                     agent_id=agent_id,
+                    step_index=step_index,
                 )
                 raise RuntimeError(f"Agent {agent_id} timed out during execution") from exc
 

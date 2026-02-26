@@ -95,6 +95,7 @@ export interface EventPayload {
   summary: string;
   detail: Record<string, unknown>;
   agent_id: string;
+  step_index: number | null;
   progress: number | null;
 }
 

@@ -104,7 +104,7 @@ class DynamicGraphBuilder:
                 executor = self._make_missing_executor(agent_id)
 
             # Wrap the executor to capture results keyed by agent_id
-            wrapped = self._wrap_executor(agent_id, step, executor)
+            wrapped = self._wrap_executor(agent_id, step, executor, step_index=i)
             graph.add_node(node_name, wrapped)
 
         # Wire edges: sequential chain by default
@@ -131,12 +131,17 @@ class DynamicGraphBuilder:
         agent_id: str,
         step: dict[str, Any],
         executor: AgentExecutor,
+        *,
+        step_index: int = 0,
     ) -> AgentExecutor:
         """Wrap an agent executor to store results in the graph state."""
 
         async def _node(state: AgBusGraphState) -> dict[str, Any]:
             try:
-                updated = await executor(state)
+                # Inject the current step index so the executor (and events)
+                # can distinguish between multiple invocations of the same agent.
+                state_with_step = {**state, "_current_step_index": step_index}
+                updated = await executor(state_with_step)
                 results = dict(state.get("step_results", {}))
                 results[agent_id] = updated.get("step_results", {}).get(agent_id, "ok")
                 return {"step_results": results}
