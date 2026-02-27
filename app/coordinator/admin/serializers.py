@@ -7,6 +7,8 @@ from app.coordinator.admin.schemas import (
     EphemeralAgentDTO,
     IBACRuleDTO,
     LLMConfigDTO,
+    MCPServerDTO,
+    MCPToolOverrideDTO,
     ManagedAgentCapabilityDTO,
     ManagedAgentDTO,
     PersistentAgentDTO,
@@ -19,6 +21,7 @@ from app.coordinator.admin.schemas import (
 from app.core.persistence.models import (
     IBACRule,
     LLMConfig,
+    MCPServer,
     ManagedAgent,
     ManagedAgentCapability,
     PersistentAgent,
@@ -304,4 +307,59 @@ def session_archive_to_detail_dto(archive: SessionArchive) -> SessionArchiveDeta
         created_at=archive.created_at.isoformat() if archive.created_at else "",
         dissolved_at=archive.dissolved_at.isoformat() if archive.dissolved_at else "",
         duration_seconds=archive.duration_seconds or 0.0,
+    )
+
+
+# ---------------------------------------------------------------------------
+# MCP Server serializers
+# ---------------------------------------------------------------------------
+
+
+def mcp_server_to_dto(
+    mcp: MCPServer,
+    *,
+    is_connected: bool = False,
+    discovered_tools: list[str] | None = None,
+) -> MCPServerDTO:
+    """Convert an ``MCPServer`` ORM record to an API DTO.
+
+    Parameters
+    ----------
+    mcp:
+        The database record.
+    is_connected:
+        Whether the bridge agent is currently online (populated by the API
+        handler from runtime state).
+    discovered_tools:
+        Tool names currently known to the bridge (populated at runtime).
+    """
+    overrides: dict[str, MCPToolOverrideDTO] = {}
+    raw_overrides = mcp.tool_overrides_json or {}
+    for tool_name, ovr in raw_overrides.items():
+        if isinstance(ovr, dict):
+            overrides[tool_name] = MCPToolOverrideDTO(**ovr)
+        else:
+            overrides[tool_name] = ovr
+
+    return MCPServerDTO(
+        id=mcp.id,
+        server_id=mcp.server_id,
+        server_url=mcp.server_url,
+        transport=mcp.transport,
+        agent_id=mcp.agent_id,
+        semantic_description=mcp.semantic_description or "",
+        mode=mcp.mode or "persistent",
+        tool_overrides=overrides,
+        status=mcp.status.value if hasattr(mcp.status, "value") else str(mcp.status),
+        total_executions=mcp.total_executions or 0,
+        current_score=mcp.current_score or 0.0,
+        mean_latency_ms=mcp.mean_latency_ms or 0.0,
+        last_execution_at=(
+            mcp.last_execution_at.isoformat() if mcp.last_execution_at else None
+        ),
+        created_at=mcp.created_at.isoformat() if mcp.created_at else "",
+        updated_at=mcp.updated_at.isoformat() if mcp.updated_at else "",
+        created_by=mcp.created_by or "",
+        is_connected=is_connected,
+        discovered_tools=discovered_tools or [],
     )

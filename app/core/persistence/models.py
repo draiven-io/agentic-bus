@@ -588,3 +588,104 @@ class SessionArchive(Base):
         default=lambda: datetime.now(timezone.utc),
     )
     duration_seconds: float = Column(Float, nullable=False, default=0.0)
+
+
+# ---------------------------------------------------------------------------
+# MCP Server Bridges – external MCP servers bridged into the bus
+# ---------------------------------------------------------------------------
+
+
+class MCPServerStatus(str, PyEnum):
+    """Lifecycle status for an MCP server bridge."""
+
+    ACTIVE = "active"
+    DISABLED = "disabled"
+
+
+class MCPServer(Base):
+    """An external MCP server registered to participate on the Agentic Bus.
+
+    MCP servers expose *tools* via the Model Context Protocol.  The bridge
+    agent connects to the MCP server, discovers its tools, and maps each
+    tool to an ``AgentCapability`` so the coordinator can discover, negotiate
+    with, and delegate to MCP tools exactly like any native agent.
+
+    Bus-specific metadata (IBAC scopes, cost estimates, data domains) is
+    NOT part of the MCP protocol — the admin provides it here as overrides.
+    """
+
+    __tablename__ = "mcp_servers"
+
+    id: int = Column(Integer, primary_key=True, autoincrement=True)
+    server_id: str = Column(String(256), nullable=False, unique=True, index=True)
+
+    # ── Connection ─────────────────────────────────────────────────────
+    server_url: str = Column(Text, nullable=False)
+    transport: str = Column(
+        String(32), nullable=False, default="http",
+        doc="MCP transport type: 'http' (Streamable HTTP) or 'stdio'.",
+    )
+    auth_headers_json: dict = Column(
+        JSON, nullable=False, default=dict,
+        doc="HTTP headers for authenticated MCP connections (e.g. Bearer tokens).",
+    )
+    # stdio-specific fields
+    command: str = Column(
+        String(512), nullable=False, default="",
+        doc="Command to launch stdio MCP server (e.g. 'python').",
+    )
+    args_json: list = Column(
+        JSON, nullable=False, default=list,
+        doc="Arguments for the stdio command (e.g. ['/path/to/server.py']).",
+    )
+    env_json: dict = Column(
+        JSON, nullable=False, default=dict,
+        doc="Extra environment variables for the stdio subprocess.",
+    )
+
+    # ── Bus identity ───────────────────────────────────────────────────
+    agent_id: str = Column(
+        String(256), nullable=False, unique=True, index=True,
+        doc="The agent ID under which this MCP server appears on the bus.",
+    )
+    semantic_description: str = Column(Text, nullable=False, default="")
+    mode: str = Column(
+        String(32), nullable=False, default="persistent",
+        doc="Registration mode: 'ephemeral' or 'persistent'.",
+    )
+
+    # ── Per-tool bus metadata overrides (keyed by MCP tool name) ───────
+    tool_overrides_json: dict = Column(
+        JSON, nullable=False, default=dict,
+        doc=(
+            "Dict mapping MCP tool names to bus-specific metadata overrides. "
+            "Each value is a dict with optional keys: required_scopes, "
+            "supported_data_domains, operational_constraints, "
+            "expected_artifacts, estimated_cost, estimated_latency."
+        ),
+    )
+
+    # ── Lifecycle ──────────────────────────────────────────────────────
+    status: MCPServerStatus = Column(
+        Enum(MCPServerStatus),
+        nullable=False,
+        default=MCPServerStatus.ACTIVE,
+    )
+    created_at: datetime = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: datetime = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    created_by: str = Column(String(256), nullable=False, default="admin")
+
+    # ── Performance statistics ─────────────────────────────────────────
+    total_executions: int = Column(Integer, nullable=False, default=0)
+    current_score: float = Column(Float, nullable=False, default=0.0)
+    mean_latency_ms: float = Column(Float, nullable=False, default=0.0)
+    last_execution_at: datetime | None = Column(DateTime(timezone=True), nullable=True)

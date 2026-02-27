@@ -44,6 +44,10 @@ from app.core.session.manager import (
     SessionState,
     NegotiationRecord,
 )
+from app.core.session.memory import (
+    MemoryAccessPolicy,
+    MemoryWriteRequest,
+)
 from app.core.registry.capability_registry import (
     CapabilityRegistry,
     AgentRegistration,
@@ -74,6 +78,7 @@ from app.coordinator.validation.engine import AnswerValidationEngine, Validation
 from app.coordinator.admin.audit import AuditLog
 from app.core.persistence.managed_agent_repository import ManagedAgentRepository
 from app.core.persistence.session_archive_repository import SessionArchiveRepository
+from app.core.persistence.mcp_server_repository import MCPServerRepository
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +110,7 @@ class CoordinatorRuntime:
         self.admin = AdminService(repo=self.agent_repo, policy=self.admin_policy)
         self.managed_repo = ManagedAgentRepository()
         self.archive_repo = SessionArchiveRepository()
+        self.mcp_repo = MCPServerRepository()
         self.audit_log = AuditLog()
 
         # User & tenant management
@@ -151,6 +157,9 @@ class CoordinatorRuntime:
         self._session_requester_peers: dict[str, str] = {}
         # Managed agent tasks: agent_id -> asyncio.Task
         self._managed_tasks: dict[str, asyncio.Task] = {}
+        # MCP bridge tracking: server_id -> asyncio.Task / agent instance
+        self._mcp_bridge_tasks: dict[str, asyncio.Task] = {}
+        self._mcp_bridge_agents: dict[str, Any] = {}
         # Pending execution completions: (session_id, agent_id) -> Future
         self._pending_completions: dict[tuple[str, str], asyncio.Future[AgBusEnvelope]] = {}
 
@@ -189,6 +198,8 @@ class CoordinatorRuntime:
         await self._server.start()
         # Start active managed agents as independent server tasks
         await self._start_managed_agents()
+        # Start active MCP bridge agents
+        await self._start_mcp_bridges()
         self.audit_log.log(
             action="system.startup",
             actor="coordinator",
@@ -200,6 +211,8 @@ class CoordinatorRuntime:
         logger.info("Coordinator runtime started")
 
     async def stop(self) -> None:
+        # Stop all MCP bridge tasks
+        await self._stop_all_mcp_bridges()
         # Stop all managed agent tasks
         await self._stop_all_managed_agents()
         # Dissolve all active sessions
@@ -1017,6 +1030,31 @@ Execution plan steps:
 
         with agbus_span("agbus.graph.build", attributes={"session_id": session.session_id}):
             plan = session.composition_plan
+
+            # --- Initialise session memory with inferred policies ---
+            memory_policies = self.negotiation.infer_memory_policies(plan)
+            for mp in memory_policies:
+                session.memory.set_policy(MemoryAccessPolicy(**mp))
+
+            # Seed the memory with intent context so agents can read it
+            session.memory.coordinator_write(
+                "shared.intent_text",
+                session.intent.intent_text if session.intent else "",
+            )
+            session.memory.coordinator_write(
+                "shared.intent_context",
+                session.intent.context if session.intent else {},
+            )
+
+            await self._emit_event(
+                session.session_id,
+                "memory",
+                f"Session memory initialised with {len(memory_policies)} agent policy/ies",
+                phase="execution",
+                detail={"policies": memory_policies},
+                progress=0.76,
+            )
+
             graph = self.graph_builder.build(plan)
             compiled = graph.compile()
 
@@ -1648,6 +1686,23 @@ Execution plan steps:
             if session is None:
                 return
 
+            # --- Archive memory summary before destruction ---
+            memory_summary = session.memory.audit_summary()
+
+            if memory_summary["total_operations"] > 0:
+                await self._emit_event(
+                    session_id,
+                    "memory",
+                    f"Session memory dissolution: {memory_summary['writes']} write(s), "
+                    f"{memory_summary['reads']} read(s), {memory_summary['denied']} denied "
+                    f"across {len(memory_summary['keys_at_dissolution'])} key(s)",
+                    phase="dissolution",
+                    detail={"memory_summary": memory_summary},
+                )
+
+            # Destroy session memory (Invariant II: R_c(A,B) = 0)
+            session.memory.clear()
+
             await self._emit_event(
                 session_id,
                 "phase",
@@ -1946,6 +2001,106 @@ Execution plan steps:
         for agent_id in agent_ids:
             await self.stop_managed_agent(agent_id)
 
+    # -----------------------------------------------------------------------
+    # MCP bridge agent lifecycle
+    # -----------------------------------------------------------------------
+
+    async def _start_mcp_bridges(self) -> None:
+        """Spawn bridge agents for all active MCP servers.
+
+        Each MCP bridge connects to its external MCP server, discovers
+        tools, then connects back to the coordinator via WebSocket and
+        registers its capabilities like any other agent.
+        """
+        from app.core.persistence.models import MCPServerStatus
+
+        active = self.mcp_repo.list_all(status=MCPServerStatus.ACTIVE)
+        for mcp in active:
+            await self.start_mcp_bridge(mcp.server_id)
+        logger.info(
+            "Spawned %d MCP bridge agent(s)",
+            len(active),
+        )
+
+    async def start_mcp_bridge(self, server_id: str) -> bool:
+        """Start a single MCP bridge agent.
+
+        Returns ``True`` if the bridge was started, ``False`` if it was
+        already running or couldn't be found.
+        """
+        if server_id in self._mcp_bridge_tasks and not self._mcp_bridge_tasks[server_id].done():
+            logger.info("MCP bridge %s is already running", server_id)
+            return False
+
+        mcp = self.mcp_repo.get(server_id)
+        if mcp is None:
+            logger.error("MCP server %r not found in database", server_id)
+            return False
+
+        from app.agents.mcp_bridge import MCPBridgeAgent
+
+        uri = f"ws://{self._server.host}:{self._server.port}"
+        if self._server.host == "0.0.0.0":
+            uri = f"ws://127.0.0.1:{self._server.port}"
+
+        bridge = MCPBridgeAgent(mcp, coordinator_uri=uri)
+        self._mcp_bridge_agents[server_id] = bridge
+
+        async def _run_bridge() -> None:
+            max_retries = 5
+            for attempt in range(1, max_retries + 1):
+                try:
+                    await bridge.run_forever()
+                    return
+                except asyncio.CancelledError:
+                    logger.info("MCP bridge %s task cancelled", server_id)
+                    return
+                except ConnectionRefusedError:
+                    if attempt < max_retries:
+                        wait = attempt * 0.5
+                        logger.warning(
+                            "MCP bridge %s connection refused (attempt %d/%d), "
+                            "retrying in %.1fs…",
+                            server_id, attempt, max_retries, wait,
+                        )
+                        await asyncio.sleep(wait)
+                    else:
+                        logger.exception(
+                            "MCP bridge %s failed after %d attempts",
+                            server_id, max_retries,
+                        )
+                except Exception:
+                    logger.exception("MCP bridge %s crashed", server_id)
+                    return
+
+        task = asyncio.create_task(_run_bridge(), name=f"mcp-bridge-{server_id}")
+        self._mcp_bridge_tasks[server_id] = task
+        logger.info("Started MCP bridge %s → agent %s", server_id, mcp.agent_id)
+        return True
+
+    async def stop_mcp_bridge(self, server_id: str) -> bool:
+        """Stop a running MCP bridge agent.
+
+        Returns ``True`` if the bridge was stopped.
+        """
+        self._mcp_bridge_agents.pop(server_id, None)
+        task = self._mcp_bridge_tasks.pop(server_id, None)
+        if task is None or task.done():
+            return False
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        logger.info("Stopped MCP bridge %s", server_id)
+        return True
+
+    async def _stop_all_mcp_bridges(self) -> None:
+        """Stop all running MCP bridge tasks (called during shutdown)."""
+        server_ids = list(self._mcp_bridge_tasks.keys())
+        for server_id in server_ids:
+            await self.stop_mcp_bridge(server_id)
+
     @staticmethod
     def _persistent_agent_to_registration(pa: PersistentAgent) -> AgentRegistration:
         """Convert a ``PersistentAgent`` DB record to an ``AgentRegistration``."""
@@ -2088,6 +2243,12 @@ Execution plan steps:
             if not peer:
                 raise RuntimeError(f"Peer {peer_id} not found for agent {agent_id}")
 
+            # --- Build filtered memory snapshot for this agent ---
+            memory_snapshot: dict[str, Any] = {}
+            session = runtime.sessions.get(session_id)
+            if session:
+                memory_snapshot = session.memory.snapshot_for_agent(agent_id)
+
             # Send execute message to agent
             execute_env = build_envelope(
                 MessageType.EXECUTE,
@@ -2100,6 +2261,7 @@ Execution plan steps:
                         "prior_results": state.get("step_results", {}),
                     },
                     "authorized_scopes": [],
+                    "memory_snapshot": memory_snapshot,
                 },
                 inject_trace_context(),
             )
@@ -2110,6 +2272,17 @@ Execution plan steps:
             runtime._pending_completions[key] = fut
 
             await peer.send_envelope(execute_env)
+
+            if memory_snapshot:
+                await runtime._emit_event(
+                    session_id,
+                    "memory",
+                    f"Injected {len(memory_snapshot)} memory key(s) into '{agent_id}' execution payload",
+                    phase="execution",
+                    agent_id=agent_id,
+                    step_index=step_index,
+                    detail={"keys": list(memory_snapshot.keys())},
+                )
 
             await runtime._emit_event(
                 session_id,
@@ -2125,6 +2298,39 @@ Execution plan steps:
                 response = await asyncio.wait_for(fut, timeout=120.0)
 
                 response_status = response.payload.get("status", "unknown")
+
+                # --- Apply memory writes from the agent's response ---
+                raw_writes = response.payload.get("memory_writes", {})
+                if raw_writes and session:
+                    write_requests = [
+                        MemoryWriteRequest(key=k, value=v)
+                        for k, v in raw_writes.items()
+                    ]
+                    write_results = session.memory.write_batch(write_requests, agent_id)
+                    accepted = sum(write_results)
+                    denied = len(write_results) - accepted
+
+                    await runtime._emit_event(
+                        session_id,
+                        "memory",
+                        f"Agent '{agent_id}' memory writes: {accepted} accepted, {denied} denied",
+                        phase="execution",
+                        agent_id=agent_id,
+                        step_index=step_index,
+                        detail={
+                            "accepted_keys": [
+                                w.key
+                                for w, ok in zip(write_requests, write_results)
+                                if ok
+                            ],
+                            "denied_keys": [
+                                w.key
+                                for w, ok in zip(write_requests, write_results)
+                                if not ok
+                            ],
+                        },
+                    )
+
                 await runtime._emit_event(
                     session_id,
                     "execution",

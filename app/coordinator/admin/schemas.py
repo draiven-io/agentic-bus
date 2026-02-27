@@ -221,6 +221,7 @@ class DashboardStatsDTO(BaseModel):
     pending_agents: int
     managed_agents: int
     ephemeral_agents: int
+    mcp_servers: int = 0
     active_sessions: int
     total_sessions_today: int
     llm_provider: str
@@ -414,3 +415,73 @@ class SessionArchiveDetailDTO(BaseModel):
     created_at: str
     dissolved_at: str
     duration_seconds: float = 0.0
+
+
+# ---------------------------------------------------------------------------
+# MCP Server DTOs
+# ---------------------------------------------------------------------------
+
+
+class MCPToolOverrideDTO(BaseModel):
+    """Bus-specific metadata override for a single MCP tool."""
+    description: str | None = None
+    required_scopes: list[str] = Field(default_factory=list)
+    supported_data_domains: list[str] = Field(default_factory=list)
+    operational_constraints: dict[str, Any] = Field(default_factory=dict)
+    expected_artifacts: list[str] = Field(default_factory=list)
+    estimated_cost: float = 0.0
+    estimated_latency: float = 0.0
+    output_schema: dict[str, Any] = Field(default_factory=dict)
+
+
+class MCPServerDTO(BaseModel):
+    """Read model for an MCP server bridge."""
+    id: int
+    server_id: str
+    server_url: str
+    transport: str
+    agent_id: str
+    semantic_description: str = ""
+    mode: str = "persistent"
+    tool_overrides: dict[str, MCPToolOverrideDTO] = Field(default_factory=dict)
+    status: str
+    # Performance statistics
+    total_executions: int = 0
+    current_score: float = 0.0
+    mean_latency_ms: float = 0.0
+    last_execution_at: str | None = None
+    created_at: str
+    updated_at: str
+    created_by: str
+    # Runtime info (populated by the API)
+    is_connected: bool = False
+    discovered_tools: list[str] = Field(default_factory=list)
+
+
+class MCPServerCreateRequest(BaseModel):
+    """Payload for registering a new MCP server bridge."""
+    server_id: str
+    server_url: str
+    agent_id: str
+    transport: str = "http"
+    auth_headers: dict[str, str] = Field(default_factory=dict)
+    command: str = ""
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    semantic_description: str = ""
+    mode: str = "persistent"
+    tool_overrides: dict[str, MCPToolOverrideDTO] = Field(default_factory=dict)
+    activate: bool = True
+
+
+class MCPServerUpdateRequest(BaseModel):
+    """Payload for updating an MCP server bridge.  Only provided fields are changed."""
+    server_url: str | None = None
+    transport: str | None = None
+    auth_headers: dict[str, str] | None = None
+    command: str | None = None
+    args: list[str] | None = None
+    env: dict[str, str] | None = None
+    semantic_description: str | None = None
+    mode: str | None = None
+    tool_overrides: dict[str, MCPToolOverrideDTO] | None = None

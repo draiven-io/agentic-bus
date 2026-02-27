@@ -281,3 +281,61 @@ class NegotiationEngine:
             return "solidification"
 
         return None
+
+    @staticmethod
+    def infer_memory_policies(plan: dict[str, Any]) -> list[dict[str, Any]]:
+        """Auto-infer memory read/write policies from the composition plan.
+
+        Convention:
+          - Every agent can read ``shared.*``
+          - Every agent can write ``shared.<capability_id>`` and ``<own_agent_id>.*``
+          - Agents at step N can read the output namespace of all prior steps
+
+        Steps can override this by declaring explicit ``memory_read`` /
+        ``memory_write`` fields.
+
+        Returns a list of policy dicts ready for ``MemoryAccessPolicy(**p)``.
+        """
+        steps = plan.get("steps", [])
+        policies: list[dict[str, Any]] = []
+
+        for i, step in enumerate(steps):
+            agent_id = step["agent_id"]
+            capability_id = step.get("capability_id", "default")
+
+            # Check for explicit declarations first
+            explicit_read = step.get("memory_read")
+            explicit_write = step.get("memory_write")
+
+            if explicit_read is not None and explicit_write is not None:
+                policies.append(
+                    {
+                        "agent_id": agent_id,
+                        "read_patterns": explicit_read,
+                        "write_patterns": explicit_write,
+                    }
+                )
+                continue
+
+            # Auto-infer
+            read_patterns = ["shared.*"]
+            write_patterns = [
+                f"shared.{capability_id}",
+                f"{agent_id}.*",
+            ]
+
+            # Can read prior steps' agent namespaces
+            for j in range(i):
+                prior_agent = steps[j]["agent_id"]
+                if prior_agent != agent_id:
+                    read_patterns.append(f"{prior_agent}.*")
+
+            policies.append(
+                {
+                    "agent_id": agent_id,
+                    "read_patterns": read_patterns,
+                    "write_patterns": write_patterns,
+                }
+            )
+
+        return policies

@@ -22,6 +22,7 @@ from app.core.protocol.envelope import (
     AgBusEnvelope,
     OfferPayload,
 )
+from app.core.session.memory import SessionMemory
 
 
 class SessionPhase(StrEnum):
@@ -109,6 +110,12 @@ class SessionState(BaseModel):
 
     # Audit trail – every Agentic Bus envelope exchanged in the session
     audit_log: list[AgBusEnvelope] = Field(default_factory=list)
+
+    # Shared session memory (coordinator-owned KV store for inter-agent
+    # communication during execution).  Destroyed at dissolution.
+    memory: SessionMemory = Field(default_factory=SessionMemory)
+
+    model_config = {"arbitrary_types_allowed": True}
 
 
 class SessionManager:
