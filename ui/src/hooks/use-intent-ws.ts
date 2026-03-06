@@ -5,6 +5,7 @@ import type {
   AgBusEnvelope,
   MessageType,
   OfferPayload,
+  EventPayload,
   SenderInfo,
 } from "@/lib/protocol";
 import { makeEnvelope } from "@/lib/protocol";
@@ -13,19 +14,110 @@ import { makeEnvelope } from "@/lib/protocol";
 // Types
 // ---------------------------------------------------------------------------
 
-export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
+export type ConnectionStatus =
+  | "disconnected"
+  | "connecting"
+  | "connected"
+  | "error";
 
 export type PlanAction = "approve" | "reject" | "renegotiate";
 
-/** A single entry in the chat timeline. */
-export interface ChatMessage {
+export type SessionPhase =
+  | "idle"
+  | "created"
+  | "intent_admission"
+  | "intent_received"
+  | "decomposition"
+  | "discovery"
+  | "negotiation"
+  | "plan_proposed"
+  | "approved"
+  | "execution"
+  | "validation"
+  | "complete"
+  | "dissolution"
+  | "error";
+
+export interface TimelineEvent {
   id: string;
   timestamp: string;
-  role: "user" | "system" | "offer" | "plan" | "accept" | "reject" | "execute" | "complete" | "dissolve" | "error";
-  content: string;
+  category:
+    | "user"
+    | "phase"
+    | "ibac"
+    | "discovery"
+    | "negotiation"
+    | "execution"
+    | "validation"
+    | "agent"
+    | "warning"
+    | "error"
+    | "system"
+    | "complete"
+    | "dissolve"
+    | "plan_explanation";
+  phase: SessionPhase;
+  summary: string;
+  detail?: Record<string, unknown>;
+  agentId?: string;
+  progress?: number;
   envelope?: AgBusEnvelope;
-  /** For plan messages – waiting for user decision */
-  awaitingDecision?: boolean;
+}
+
+export interface FlowAgent {
+  agentId: string;
+  capabilityId?: string;
+  description?: string;
+  suitabilityScore?: number;
+  status:
+    | "discovered"
+    | "offered"
+    | "accepted"
+    | "rejected"
+    | "executing"
+    | "completed"
+    | "error";
+  estimatedCost?: number;
+  estimatedLatency?: number;
+  outputSchema?: Record<string, unknown>;
+  qualityScore?: number;
+  qualityRationale?: string;
+  latencyMs?: number;
+  retries?: number;
+}
+
+export interface PlanStepRole {
+  stepNumber: number;
+  agentId: string;
+  capabilityId: string;
+  role: string;
+}
+
+export interface PlanExplanation {
+  planRationale: string;
+  stepRoles: PlanStepRole[];
+}
+
+export interface ExecutionPlan {
+  steps: {
+    agentId: string;
+    capabilityId: string;
+    description: string;
+    constraints?: Record<string, unknown>;
+    outputSchema?: Record<string, unknown>;
+  }[];
+  viable: boolean;
+  participatingAgents: string[];
+  flowDescription: string;
+  compositionPlan?: Record<string, unknown>;
+  mergedOutputSchema?: Record<string, unknown>;
+  explanation?: PlanExplanation;
+}
+
+export interface ExecutionResult {
+  status: "success" | "error" | "partial_failure" | "denied";
+  artifacts: Record<string, unknown>[];
+  metadata: Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -36,8 +128,20 @@ const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8765";
 
 export function useIntentWs() {
   const [status, setStatus] = useState<ConnectionStatus>("disconnected");
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [currentPhase, setCurrentPhase] = useState<SessionPhase>("idle");
+  const [progress, setProgress] = useState(0);
+  const [events, setEvents] = useState<TimelineEvent[]>([]);
+  const [agents, setAgents] = useState<Map<string, FlowAgent>>(new Map());
+  const [plan, setPlan] = useState<ExecutionPlan | null>(null);
+  const [planExplanation, setPlanExplanation] = useState<PlanExplanation | null>(null);
+  const [awaitingApproval, setAwaitingApproval] = useState(false);
+  const [result, setResult] = useState<ExecutionResult | null>(null);
+  const [intentText, setIntentText] = useState<string>("");
+  const [decomposition, setDecomposition] = useState<Record<string, unknown> | null>(null);
+  const [assignedAgentId, setAssignedAgentId] = useState<string>("");
+  const [stepStatuses, setStepStatuses] = useState<Map<number, FlowAgent["status"]>>(new Map());
+
   const wsRef = useRef<WebSocket | null>(null);
   const senderRef = useRef<SenderInfo>({
     kind: "requester",
@@ -45,33 +149,42 @@ export function useIntentWs() {
     oidc_subject: "",
   });
 
-  // -----------------------------------------------------------------------
-  // helpers
-  // -----------------------------------------------------------------------
-
-  const addMessage = useCallback((msg: ChatMessage) => {
-    setMessages((prev) => [...prev, msg]);
+  const addEvent = useCallback((evt: TimelineEvent) => {
+    setEvents((prev) => [...prev, evt]);
+    if (evt.progress != null) setProgress(evt.progress);
   }, []);
 
-  const updateLastPlan = useCallback((decided: boolean) => {
-    setMessages((prev) =>
-      prev.map((m) =>
-        m.role === "plan" && m.awaitingDecision ? { ...m, awaitingDecision: !decided } : m,
-      ),
-    );
-  }, []);
+  const updateAgent = useCallback(
+    (agentId: string, update: Partial<FlowAgent>) => {
+      setAgents((prev) => {
+        const next = new Map(prev);
+        const existing = next.get(agentId) || {
+          agentId,
+          status: "discovered" as const,
+        };
+        next.set(agentId, { ...existing, ...update });
+        return next;
+      });
+    },
+    [],
+  );
 
-  // -----------------------------------------------------------------------
-  // Message handler
-  // -----------------------------------------------------------------------
+  const updateStepStatus = useCallback(
+    (stepIndex: number, status: FlowAgent["status"]) => {
+      setStepStatuses((prev) => {
+        const next = new Map(prev);
+        next.set(stepIndex, status);
+        return next;
+      });
+    },
+    [],
+  );
 
   const handleEnvelope = useCallback(
     (envelope: AgBusEnvelope) => {
       const ts = envelope.timestamp;
       const id = envelope.message_id;
 
-      // Adopt the coordinator's authoritative session_id so that
-      // subsequent messages (accept / reject) reference the correct session.
       if (envelope.session_id) {
         setSessionId(envelope.session_id);
       }
@@ -80,22 +193,68 @@ export function useIntentWs() {
         case "offer": {
           const payload = envelope.payload as unknown as OfferPayload;
           if (payload.capability_id === "__composed_plan__") {
-            addMessage({
+            const steps =
+              (payload.composition_plan?.steps as {
+                agent_id: string;
+                capability_id: string;
+                description: string;
+                constraints?: Record<string, unknown>;
+                output_schema?: Record<string, unknown>;
+              }[]) || [];
+            const execPlan: ExecutionPlan = {
+              steps: steps.map((s) => ({
+                agentId: s.agent_id,
+                capabilityId: s.capability_id,
+                description: s.description,
+                constraints: s.constraints,
+                outputSchema: s.output_schema,
+              })),
+              viable: true,
+              participatingAgents: payload.participating_agents || [],
+              flowDescription: payload.capability_description || "",
+              compositionPlan: payload.composition_plan,
+              mergedOutputSchema: payload.output_schema,
+            };
+            setPlan(execPlan);
+            setAwaitingApproval(true);
+            setCurrentPhase("plan_proposed");
+
+            for (const step of steps) {
+              updateAgent(step.agent_id, {
+                status: "accepted",
+                capabilityId: step.capability_id,
+                description: step.description,
+              });
+            }
+
+            addEvent({
               id,
               timestamp: ts,
-              role: "plan",
-              content: payload.capability_description || "Execution plan proposed",
+              category: "phase",
+              phase: "plan_proposed",
+              summary: `Execution plan proposed: ${payload.capability_description}`,
+              detail: payload.composition_plan,
+              progress: 0.7,
               envelope,
-              awaitingDecision: true,
             });
           } else {
-            addMessage({
+            updateAgent(envelope.sender.id, {
+              status: "offered",
+              capabilityId: payload.capability_id,
+              description: payload.capability_description,
+              estimatedCost: payload.estimated_cost ?? undefined,
+              estimatedLatency: payload.estimated_latency ?? undefined,
+              outputSchema: payload.output_schema,
+            });
+
+            addEvent({
               id,
               timestamp: ts,
-              role: "offer",
-              content:
-                payload.capability_description ||
-                `Offer from agent: ${payload.capability_id}`,
+              category: "negotiation",
+              phase: "negotiation",
+              summary: `Offer from ${envelope.sender.id}: ${payload.capability_description}`,
+              agentId: envelope.sender.id,
+              detail: envelope.payload,
               envelope,
             });
           }
@@ -103,90 +262,290 @@ export function useIntentWs() {
         }
 
         case "accept":
-          addMessage({
+          setCurrentPhase("approved");
+          setAwaitingApproval(false);
+          addEvent({
             id,
             timestamp: ts,
-            role: "accept",
-            content:
-              (envelope.payload as Record<string, unknown>).approval_note as string ||
-              "Plan accepted – execution starting…",
+            category: "phase",
+            phase: "approved",
+            summary:
+              ((envelope.payload as Record<string, unknown>)
+                .approval_note as string) ||
+              "Plan approved — execution starting",
+            progress: 0.72,
             envelope,
           });
           break;
 
         case "reject":
-          addMessage({
+          addEvent({
             id,
             timestamp: ts,
-            role: "reject",
-            content:
-              (envelope.payload as Record<string, unknown>).reason as string ||
+            category: "warning",
+            phase: "negotiation",
+            summary:
+              ((envelope.payload as Record<string, unknown>).reason as string) ||
               "Rejected",
             envelope,
           });
           break;
 
         case "execute":
-          addMessage({
+          setCurrentPhase("execution");
+          addEvent({
             id,
             timestamp: ts,
-            role: "execute",
-            content: "Execution in progress…",
+            category: "execution",
+            phase: "execution",
+            summary: "Execution in progress…",
+            progress: 0.85,
             envelope,
           });
           break;
 
         case "complete": {
-          const status = (envelope.payload as Record<string, unknown>).status as string;
-          addMessage({
+          const compPayload = envelope.payload as Record<string, unknown>;
+          const execResult: ExecutionResult = {
+            status:
+              (compPayload.status as ExecutionResult["status"]) || "success",
+            artifacts:
+              (compPayload.artifacts as Record<string, unknown>[]) || [],
+            metadata:
+              (compPayload.metadata as Record<string, unknown>) || {},
+          };
+          setResult(execResult);
+          setCurrentPhase("complete");
+
+          // Mark all step statuses as completed
+          setStepStatuses((prev) => {
+            const next = new Map(prev);
+            for (const [idx] of next) {
+              next.set(idx, "completed");
+            }
+            return next;
+          });
+
+          // Build a lookup from agent_metrics so we can enrich agent cards
+          const metricsByAgent = new Map<string, {
+            quality_score: number;
+            quality_rationale: string;
+            latency_ms: number;
+            retries: number;
+          }>();
+          const rawMetrics = (execResult.metadata.agent_metrics ?? []) as {
+            agent_id: string;
+            quality_score: number;
+            quality_rationale: string;
+            latency_ms: number;
+            retries: number;
+          }[];
+          for (const m of rawMetrics) {
+            metricsByAgent.set(m.agent_id, m);
+          }
+
+          setAgents((prev) => {
+            const next = new Map(prev);
+            for (const [key, agent] of next) {
+              const metrics = metricsByAgent.get(key);
+              if (
+                agent.status === "executing" ||
+                agent.status === "accepted"
+              ) {
+                next.set(key, {
+                  ...agent,
+                  status: "completed",
+                  ...(metrics && {
+                    qualityScore: metrics.quality_score,
+                    qualityRationale: metrics.quality_rationale,
+                    latencyMs: metrics.latency_ms,
+                    retries: metrics.retries,
+                  }),
+                });
+              } else if (metrics) {
+                // Agent already had another status but we still have metrics
+                next.set(key, {
+                  ...agent,
+                  qualityScore: metrics.quality_score,
+                  qualityRationale: metrics.quality_rationale,
+                  latencyMs: metrics.latency_ms,
+                  retries: metrics.retries,
+                });
+              }
+            }
+            return next;
+          });
+
+          addEvent({
             id,
             timestamp: ts,
-            role: "complete",
-            content:
-              status === "success"
+            category: "complete",
+            phase: "complete",
+            summary:
+              execResult.status === "success"
                 ? "Execution completed successfully"
-                : `Execution finished with status: ${status}`,
+                : `Execution finished: ${execResult.status}`,
+            detail: envelope.payload,
+            progress: 0.95,
             envelope,
           });
           break;
         }
 
         case "dissolve":
-          addMessage({
+          setCurrentPhase("dissolution");
+          addEvent({
             id,
             timestamp: ts,
-            role: "dissolve",
-            content:
-              (envelope.payload as Record<string, unknown>).reason as string ||
+            category: "dissolve",
+            phase: "dissolution",
+            summary:
+              ((envelope.payload as Record<string, unknown>).reason as string) ||
               "Session dissolved",
+            progress: 1.0,
             envelope,
           });
           setStatus("disconnected");
           wsRef.current?.close();
           wsRef.current = null;
           break;
+
+        case "event": {
+          const evtPayload = envelope.payload as unknown as EventPayload;
+          const phase = (evtPayload.phase || undefined) as SessionPhase | undefined;
+
+          // Only advance the phase forward — never regress to "idle" or an
+          // earlier phase because of a stale / out-of-order event message.
+          // "idle" is reserved for the explicit reset() action.
+          if (phase && phase !== "idle") {
+            setCurrentPhase(phase);
+          }
+
+          if (
+            evtPayload.category === "discovery" &&
+            evtPayload.detail?.agents
+          ) {
+            const discoveredAgents = evtPayload.detail.agents as string[];
+            for (const agentId of discoveredAgents) {
+              updateAgent(agentId, { status: "discovered" });
+            }
+          }
+
+          if (
+            evtPayload.category === "phase" &&
+            evtPayload.detail?.sub_intents
+          ) {
+            setDecomposition(evtPayload.detail);
+          }
+          if (phase === "decomposition" && evtPayload.detail) {
+            setDecomposition(evtPayload.detail);
+          }
+
+          // Capture plan explanation events
+          if (evtPayload.category === "plan_explanation") {
+            const detail = evtPayload.detail || {};
+            if (detail.plan_rationale && detail.step_roles) {
+              const explanation: PlanExplanation = {
+                planRationale: detail.plan_rationale as string,
+                stepRoles: (detail.step_roles as Array<{
+                  step_number: number;
+                  agent_id: string;
+                  capability_id: string;
+                  role: string;
+                }>).map((sr) => ({
+                  stepNumber: sr.step_number,
+                  agentId: sr.agent_id,
+                  capabilityId: sr.capability_id,
+                  role: sr.role,
+                })),
+              };
+              setPlanExplanation(explanation);
+              // Also attach to the current plan if available
+              setPlan((prev) =>
+                prev ? { ...prev, explanation } : prev
+              );
+            }
+          }
+
+          if (evtPayload.category === "negotiation" && evtPayload.agent_id) {
+            const summary = evtPayload.summary.toLowerCase();
+            if (summary.includes("accepted")) {
+              updateAgent(evtPayload.agent_id, { status: "accepted" });
+            } else if (summary.includes("rejected")) {
+              updateAgent(evtPayload.agent_id, { status: "rejected" });
+            }
+          }
+
+          if (evtPayload.agent_id) {
+            if (evtPayload.category === "execution") {
+              updateAgent(evtPayload.agent_id, { status: "executing" });
+              // Track per-step status when step_index is available
+              if (evtPayload.step_index != null) {
+                const summary = evtPayload.summary.toLowerCase();
+                if (summary.includes("completed")) {
+                  updateStepStatus(evtPayload.step_index, "completed");
+                } else {
+                  updateStepStatus(evtPayload.step_index, "executing");
+                }
+              }
+            }
+            if (evtPayload.category === "validation") {
+              const summary = evtPayload.summary.toLowerCase();
+              if (summary.includes("approved")) {
+                updateAgent(evtPayload.agent_id, { status: "completed" });
+              } else if (summary.includes("rejected")) {
+                updateAgent(evtPayload.agent_id, { status: "rejected" });
+              } else {
+                updateAgent(evtPayload.agent_id, { status: "executing" });
+              }
+            }
+            if (evtPayload.category === "error" && evtPayload.step_index != null) {
+              updateStepStatus(evtPayload.step_index, "error");
+            }
+          }
+
+          addEvent({
+            id,
+            timestamp: ts,
+            category: evtPayload.category as TimelineEvent["category"],
+            phase: phase ?? "idle",
+            summary: evtPayload.summary || "Progress update",
+            detail: evtPayload.detail,
+            agentId: evtPayload.agent_id || undefined,
+            progress: evtPayload.progress ?? undefined,
+            envelope,
+          });
+          break;
+        }
       }
     },
-    [addMessage],
+    [addEvent, updateAgent, updateStepStatus],
   );
 
-  // -----------------------------------------------------------------------
-  // Submit intent
-  // -----------------------------------------------------------------------
-
   const submitIntent = useCallback(
-    (intentText: string, context?: Record<string, unknown>) => {
-      // Generate session id (mirrors Python IntentClient._generate_session_id)
+    (text: string, context?: Record<string, unknown>, assignedAgentId?: string) => {
       const sid = `${senderRef.current.id}-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
       setSessionId(sid);
       setStatus("connecting");
+      setIntentText(text);
+      setAssignedAgentId(assignedAgentId ?? "");
+      setCurrentPhase("created");
+      setProgress(0);
+      setEvents([]);
+      setAgents(new Map());
+      setStepStatuses(new Map());
+      setPlan(null);
+      setPlanExplanation(null);
+      setAwaitingApproval(false);
+      setResult(null);
+      setDecomposition(null);
 
-      // Reset chat for new session (keep old messages for history, add separator)
-      addMessage({
+      addEvent({
         id: `user-${Date.now()}`,
         timestamp: new Date().toISOString(),
-        role: "user",
-        content: intentText,
+        category: "user",
+        phase: "created",
+        summary: text,
       });
 
       const ws = new WebSocket(WS_URL);
@@ -196,18 +555,21 @@ export function useIntentWs() {
         setStatus("connected");
 
         const envelope = makeEnvelope("intent", sid, senderRef.current, {
-          intent_text: intentText,
+          intent_text: text,
           context: context ?? {},
           requested_outputs: [],
           ibac_claims_requested: [],
+          ...(assignedAgentId ? { assigned_agent_id: assignedAgentId } : {}),
         });
         ws.send(JSON.stringify(envelope));
 
-        addMessage({
+        addEvent({
           id: `system-${Date.now()}`,
           timestamp: new Date().toISOString(),
-          role: "system",
-          content: "Intent submitted – waiting for coordinator…",
+          category: "system",
+          phase: "created",
+          summary: "Intent submitted — waiting for coordinator…",
+          progress: 0.05,
         });
       };
 
@@ -216,22 +578,25 @@ export function useIntentWs() {
           const envelope: AgBusEnvelope = JSON.parse(event.data as string);
           handleEnvelope(envelope);
         } catch {
-          addMessage({
+          addEvent({
             id: `error-${Date.now()}`,
             timestamp: new Date().toISOString(),
-            role: "error",
-            content: `Failed to parse message: ${event.data}`,
+            category: "error",
+            phase: "error",
+            summary: `Failed to parse message: ${event.data}`,
           });
         }
       };
 
       ws.onerror = () => {
         setStatus("error");
-        addMessage({
+        setCurrentPhase("error");
+        addEvent({
           id: `error-${Date.now()}`,
           timestamp: new Date().toISOString(),
-          role: "error",
-          content: "WebSocket connection error – is the coordinator running?",
+          category: "error",
+          phase: "error",
+          summary: "WebSocket connection error — is the coordinator running?",
         });
       };
 
@@ -241,19 +606,19 @@ export function useIntentWs() {
         }
       };
     },
-    [addMessage, handleEnvelope, status],
+    [addEvent, handleEnvelope, status],
   );
 
-  // -----------------------------------------------------------------------
-  // Plan decisions
-  // -----------------------------------------------------------------------
-
   const sendDecision = useCallback(
-    (action: PlanAction, reason = "", renegotiationHint?: Record<string, unknown>) => {
+    (
+      action: PlanAction,
+      reason = "",
+      renegotiationHint?: Record<string, unknown>,
+    ) => {
       const ws = wsRef.current;
       if (!ws || ws.readyState !== WebSocket.OPEN || !sessionId) return;
 
-      updateLastPlan(true);
+      setAwaitingApproval(false);
 
       if (action === "approve") {
         const envelope = makeEnvelope("accept", sessionId, senderRef.current, {
@@ -264,11 +629,12 @@ export function useIntentWs() {
           approval_note: reason,
         });
         ws.send(JSON.stringify(envelope));
-        addMessage({
+        addEvent({
           id: `user-decision-${Date.now()}`,
           timestamp: new Date().toISOString(),
-          role: "user",
-          content: reason ? `Approved: ${reason}` : "Plan approved ✓",
+          category: "user",
+          phase: "approved",
+          summary: reason ? `Approved: ${reason}` : "Plan approved ✓",
         });
       } else {
         const envelope = makeEnvelope("reject", sessionId, senderRef.current, {
@@ -278,23 +644,26 @@ export function useIntentWs() {
           renegotiate: action === "renegotiate",
         });
         ws.send(JSON.stringify(envelope));
-        addMessage({
+        addEvent({
           id: `user-decision-${Date.now()}`,
           timestamp: new Date().toISOString(),
-          role: "user",
-          content:
+          category: "user",
+          phase: "negotiation",
+          summary:
             action === "renegotiate"
               ? `Renegotiation requested: ${reason}`
               : `Plan rejected: ${reason}`,
         });
+
+        if (action === "renegotiate") {
+          setCurrentPhase("discovery");
+          setPlan(null);
+          setPlanExplanation(null);
+        }
       }
     },
-    [sessionId, addMessage, updateLastPlan],
+    [sessionId, addEvent],
   );
-
-  // -----------------------------------------------------------------------
-  // Cleanup
-  // -----------------------------------------------------------------------
 
   const disconnect = useCallback(() => {
     wsRef.current?.close();
@@ -302,19 +671,41 @@ export function useIntentWs() {
     setStatus("disconnected");
   }, []);
 
-  const clearChat = useCallback(() => {
-    setMessages([]);
+  const reset = useCallback(() => {
+    setEvents([]);
     setSessionId(null);
+    setCurrentPhase("idle");
+    setProgress(0);
+    setAgents(new Map());
+    setStepStatuses(new Map());
+    setPlan(null);
+    setPlanExplanation(null);
+    setAwaitingApproval(false);
+    setResult(null);
+    setIntentText("");
+    setDecomposition(null);
+    setAssignedAgentId("");
     disconnect();
   }, [disconnect]);
 
   return {
     status,
-    messages,
     sessionId,
+    currentPhase,
+    progress,
+    events,
+    agents,
+    stepStatuses,
+    plan,
+    planExplanation,
+    awaitingApproval,
+    result,
+    intentText,
+    decomposition,
+    assignedAgentId,
     submitIntent,
     sendDecision,
     disconnect,
-    clearChat,
+    reset,
   } as const;
 }

@@ -11,7 +11,8 @@ import {
   Zap,
   Users,
   Building2,
-  MessageSquare,
+  Network,
+  History,
 } from "lucide-react";
 
 import {
@@ -25,11 +26,20 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarMenuSub,
+  SidebarMenuSubButton,
+  SidebarMenuSubItem,
 } from "@/components/ui/sidebar";
+import { Badge } from "@/components/ui/badge";
+
+const highlightedItem = {
+  title: "Negotiation",
+  href: "/intent",
+  icon: Network,
+};
 
 const navItems = [
   { title: "Dashboard", href: "/", icon: LayoutDashboard },
-  { title: "Intent Chat", href: "/intent", icon: MessageSquare },
   { title: "Agents", href: "/agents", icon: Bot },
   { title: "Tenants", href: "/tenants", icon: Building2 },
   { title: "Users", href: "/users", icon: Users },
@@ -67,6 +77,45 @@ export function AppSidebar() {
       </SidebarHeader>
 
       <SidebarContent>
+        <SidebarGroup>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  asChild
+                  isActive={pathname.startsWith(highlightedItem.href)}
+                  tooltip={highlightedItem.title}
+                  className="bg-primary/10 border border-primary/30 hover:bg-primary/20 font-semibold text-primary h-9"
+                >
+                  <Link href={highlightedItem.href}>
+                    <highlightedItem.icon className="!text-primary" />
+                    <span>{highlightedItem.title}</span>
+                    <Badge
+                      variant="default"
+                      className="ml-auto text-[10px] px-1.5 py-0 h-4"
+                    >
+                      Core
+                    </Badge>
+                  </Link>
+                </SidebarMenuButton>
+                <SidebarMenuSub>
+                  <SidebarMenuSubItem>
+                    <SidebarMenuSubButton
+                      asChild
+                      isActive={pathname.startsWith("/history")}
+                    >
+                      <Link href="/history">
+                        <History className="size-3.5" />
+                        <span>History</span>
+                      </Link>
+                    </SidebarMenuSubButton>
+                  </SidebarMenuSubItem>
+                </SidebarMenuSub>
+              </SidebarMenuItem>
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
         <SidebarGroup>
           <SidebarGroupLabel>Platform</SidebarGroupLabel>
           <SidebarGroupContent>

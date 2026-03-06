@@ -11,6 +11,7 @@ from app.core.protocol.envelope import (
     RejectPayload,
     CompletePayload,
     DissolvePayload,
+    EventPayload,
     TraceContext,
     build_envelope,
     PAYLOAD_TYPES,
@@ -21,7 +22,7 @@ class TestMessageTypes:
     """Verify that all Agentic Bus message types are defined per §4.1.1."""
 
     def test_all_types_exist(self):
-        expected = {"intent", "offer", "accept", "reject", "execute", "complete", "dissolve"}
+        expected = {"intent", "offer", "accept", "reject", "execute", "complete", "dissolve", "event"}
         actual = {m.value for m in MessageType}
         assert actual == expected
 

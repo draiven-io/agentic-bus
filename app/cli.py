@@ -762,16 +762,25 @@ def cmd_agent_list(args: argparse.Namespace) -> None:
 
     print()
     print(f"  {_c('AGENT ID', _DIM):<40s}  {_c('TYPE', _DIM):<14s}  "
-          f"{_c('STATUS', _DIM):<22s}  {_c('DETAILS', _DIM)}")
-    print(f"  {'─' * 40}  {'─' * 12}  {'─' * 10}  {'─' * 28}")
+          f"{_c('STATUS', _DIM):<22s}  {_c('SCORE', _DIM):<8s}  "
+          f"{_c('LATENCY', _DIM):<10s}  {_c('RUNS', _DIM):<6s}  "
+          f"{_c('DETAILS', _DIM)}")
+    print(f"  {'─' * 40}  {'─' * 12}  {'─' * 10}  {'─' * 6}  "
+          f"{'─' * 8}  {'─' * 4}  {'─' * 28}")
 
     for agent in registered:
         badge = _status_badge(agent.status.value)
         detail = f"v{agent.version}"
+        score = f"{agent.current_score:.1f}" if getattr(agent, "current_score", None) else "—"
+        latency = f"{agent.mean_latency_ms:.0f}ms" if getattr(agent, "mean_latency_ms", None) else "—"
+        runs = str(getattr(agent, "total_executions", 0) or 0)
         print(
             f"  {_c(agent.agent_id, _BOLD):<40s}  "
             f"{_c('registered', _CYAN):<14s}  "
             f"{badge:<22s}  "
+            f"{score:<8s}  "
+            f"{latency:<10s}  "
+            f"{runs:<6s}  "
             f"{detail}"
         )
 
@@ -781,10 +790,16 @@ def cmd_agent_list(args: argparse.Namespace) -> None:
         n_caps = len(agent.capabilities) if agent.capabilities else 0
         n_tools = len(agent.tools_json) if agent.tools_json else 0
         detail = f"{n_caps} cap · {n_tools} tools"
+        score = f"{agent.current_score:.1f}" if getattr(agent, "current_score", None) else "—"
+        latency = f"{agent.mean_latency_ms:.0f}ms" if getattr(agent, "mean_latency_ms", None) else "—"
+        runs = str(getattr(agent, "total_executions", 0) or 0)
         print(
             f"  {_c(agent.agent_id, _BOLD):<40s}  "
             f"{_c('managed', _YELLOW):<14s}  "
             f"{badge:<22s}  "
+            f"{score:<8s}  "
+            f"{latency:<10s}  "
+            f"{runs:<6s}  "
             f"{detail}"
         )
 

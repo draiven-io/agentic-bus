@@ -13,7 +13,8 @@ export type MessageType =
   | "reject"
   | "execute"
   | "complete"
-  | "dissolve";
+  | "dissolve"
+  | "event";
 
 export type SenderKind = "requester" | "coordinator" | "agent";
 
@@ -47,6 +48,7 @@ export interface IntentPayload {
   context: Record<string, unknown>;
   requested_outputs: string[];
   ibac_claims_requested: string[];
+  assigned_agent_id?: string;
 }
 
 export interface OfferPayload {
@@ -85,6 +87,16 @@ export interface CompletePayload {
 
 export interface DissolvePayload {
   reason: string;
+}
+
+export interface EventPayload {
+  category: string;
+  phase: string;
+  summary: string;
+  detail: Record<string, unknown>;
+  agent_id: string;
+  step_index: number | null;
+  progress: number | null;
 }
 
 // ---------------------------------------------------------------------------

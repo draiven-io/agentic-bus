@@ -11,6 +11,11 @@ import {
   Users,
   Zap,
   Loader2,
+  CheckCircle2,
+  XCircle,
+  Ban,
+  ShieldX,
+  Network,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -34,7 +39,7 @@ import {
   fetchAuditLog,
   fetchDashboardStats,
   fetchPersistentAgents,
-  fetchSessions,
+  fetchSessionArchives,
   rejectAgent,
 } from "@/lib/api";
 
@@ -49,6 +54,22 @@ function timeAgo(dateStr: string): string {
   return `${days}d ago`;
 }
 
+const negotiationOutcome: Record<
+  string,
+  {
+    icon: typeof CheckCircle2;
+    label: string;
+    badgeVariant: "default" | "secondary" | "destructive" | "outline";
+  }
+> = {
+  success: { icon: CheckCircle2, label: "Success", badgeVariant: "default" },
+  error: { icon: XCircle, label: "Error", badgeVariant: "destructive" },
+  partial_failure: { icon: AlertTriangle, label: "Partial", badgeVariant: "outline" },
+  denied: { icon: ShieldX, label: "Denied", badgeVariant: "destructive" },
+  rejected: { icon: Ban, label: "Rejected", badgeVariant: "outline" },
+  cancelled: { icon: Ban, label: "Cancelled", badgeVariant: "secondary" },
+};
+
 export default function DashboardPage() {
   const {
     data: stats,
@@ -60,8 +81,8 @@ export default function DashboardPage() {
     loading: agentsLoading,
     refetch: refetchAgents,
   } = useAsync(() => fetchPersistentAgents());
-  const { data: sessions, loading: sessionsLoading } = useAsync(() =>
-    fetchSessions(),
+  const { data: negotiations, loading: negotiationsLoading } = useAsync(() =>
+    fetchSessionArchives({ limit: 5 }),
   );
   const { data: auditLog, loading: auditLoading } = useAsync(() =>
     fetchAuditLog(),
@@ -84,7 +105,7 @@ export default function DashboardPage() {
     refetchStats();
   };
 
-  const isLoading = statsLoading || agentsLoading || sessionsLoading || auditLoading;
+  const isLoading = statsLoading || agentsLoading || negotiationsLoading || auditLoading;
 
   return (
     <>
@@ -130,7 +151,7 @@ export default function DashboardPage() {
                 {stats?.managed_agents ?? "—"}
               </div>
               <p className="text-xs text-muted-foreground">
-                CrewAI-powered agents
+                AgBus-powered agents
               </p>
             </CardContent>
           </Card>
@@ -247,52 +268,54 @@ export default function DashboardPage() {
             </CardContent>
           </Card>
 
-          {/* ── Active Sessions ──────────────────────────────────── */}
+          {/* ── Recent Negotiations ─────────────────────────────── */}
           <Card>
             <CardHeader className="flex flex-row items-center justify-between">
               <CardTitle className="flex items-center gap-2">
-                <Clock className="h-4 w-4" />
-                Recent Sessions
+                <Network className="h-4 w-4 text-primary" />
+                Recent Negotiations
               </CardTitle>
-              <Badge variant="secondary">
-                {(sessions ?? []).length}
-              </Badge>
+              <Button variant="ghost" size="sm" asChild>
+                <Link href="/history">
+                  View all
+                  <ArrowUpRight className="ml-1 h-3 w-3" />
+                </Link>
+              </Button>
             </CardHeader>
             <CardContent>
               <div className="space-y-3">
-                {(sessions ?? []).map((session) => (
-                  <div
-                    key={session.session_id}
-                    className="flex items-center justify-between rounded-lg border p-3"
-                  >
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-sm">
-                          {session.session_id}
-                        </span>
-                        <Badge
-                          variant={
-                            session.phase === "execution"
-                              ? "default"
-                              : "secondary"
-                          }
-                        >
-                          {session.phase}
-                        </Badge>
+                {(negotiations ?? []).map((neg) => {
+                  const outcomeConf = negotiationOutcome[neg.outcome] ?? negotiationOutcome.error;
+                  const OutcomeIcon = outcomeConf.icon;
+                  return (
+                    <div
+                      key={neg.session_id}
+                      className="flex items-center justify-between rounded-lg border p-3"
+                    >
+                      <div className="space-y-1 min-w-0 flex-1 mr-3">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium truncate">
+                            {neg.intent_text || neg.session_id}
+                          </span>
+                          <Badge variant={outcomeConf.badgeVariant} className="gap-1 shrink-0">
+                            <OutcomeIcon className="size-3" />
+                            {outcomeConf.label}
+                          </Badge>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          {neg.agent_count} agent{neg.agent_count !== 1 ? "s" : ""} · {neg.step_count} step{neg.step_count !== 1 ? "s" : ""}
+                          {neg.intent_domain ? ` · ${neg.intent_domain}` : ""}
+                        </p>
                       </div>
-                      <p className="text-xs text-muted-foreground">
-                        Requester: {session.requester_id} ·{" "}
-                        {session.discovered_agents.length} agents discovered
-                      </p>
+                      <span className="text-xs text-muted-foreground whitespace-nowrap">
+                        {timeAgo(neg.created_at)}
+                      </span>
                     </div>
-                    <span className="text-xs text-muted-foreground">
-                      {timeAgo(session.created_at)}
-                    </span>
-                  </div>
-                ))}
-                {(sessions ?? []).length === 0 && !sessionsLoading && (
+                  );
+                })}
+                {(negotiations ?? []).length === 0 && !negotiationsLoading && (
                   <p className="text-sm text-muted-foreground">
-                    No active sessions
+                    No negotiations yet
                   </p>
                 )}
               </div>

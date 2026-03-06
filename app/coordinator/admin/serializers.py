@@ -7,9 +7,13 @@ from app.coordinator.admin.schemas import (
     EphemeralAgentDTO,
     IBACRuleDTO,
     LLMConfigDTO,
+    MCPServerDTO,
+    MCPToolOverrideDTO,
     ManagedAgentCapabilityDTO,
     ManagedAgentDTO,
     PersistentAgentDTO,
+    SessionArchiveDetailDTO,
+    SessionArchiveListDTO,
     SessionDTO,
     TenantDTO,
     UserDTO,
@@ -17,9 +21,11 @@ from app.coordinator.admin.schemas import (
 from app.core.persistence.models import (
     IBACRule,
     LLMConfig,
+    MCPServer,
     ManagedAgent,
     ManagedAgentCapability,
     PersistentAgent,
+    SessionArchive,
     Tenant,
     User,
 )
@@ -51,6 +57,12 @@ def persistent_agent_to_dto(agent: PersistentAgent) -> PersistentAgentDTO:
         approved_by=agent.approved_by,
         last_connected_at=(
             agent.last_connected_at.isoformat() if agent.last_connected_at else None
+        ),
+        total_executions=agent.total_executions or 0,
+        current_score=agent.current_score or 0.0,
+        mean_latency_ms=agent.mean_latency_ms or 0.0,
+        last_execution_at=(
+            agent.last_execution_at.isoformat() if agent.last_execution_at else None
         ),
     )
 
@@ -90,6 +102,12 @@ def managed_agent_to_dto(agent: ManagedAgent) -> ManagedAgentDTO:
         created_at=agent.created_at.isoformat() if agent.created_at else "",
         updated_at=agent.updated_at.isoformat() if agent.updated_at else "",
         created_by=agent.created_by or "",
+        total_executions=agent.total_executions or 0,
+        current_score=agent.current_score or 0.0,
+        mean_latency_ms=agent.mean_latency_ms or 0.0,
+        last_execution_at=(
+            agent.last_execution_at.isoformat() if agent.last_execution_at else None
+        ),
     )
 
 
@@ -223,4 +241,125 @@ def user_to_dto(user: User) -> UserDTO:
         created_by=user.created_by or "",
         tenant_ids=tenant_ids,
         tenant_slugs=tenant_slugs,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Session Archive serializers
+# ---------------------------------------------------------------------------
+
+
+def session_archive_to_list_dto(archive: SessionArchive) -> SessionArchiveListDTO:
+    """Convert a SessionArchive ORM object to a lightweight list DTO."""
+    plan = archive.composition_plan_json or {}
+    steps = plan.get("steps", [])
+    agents = archive.agents_json or {}
+    discovered = archive.discovered_agents_json or []
+    # agents_json has detail per agent; fall back to unique discovered agents
+    agent_count = len(agents) if agents else len(set(discovered))
+    return SessionArchiveListDTO(
+        id=archive.id,
+        session_id=archive.session_id,
+        requester_id=archive.requester_id,
+        intent_text=archive.intent_text or "",
+        intent_domain=archive.intent_domain or "",
+        outcome=(
+            archive.outcome.value
+            if hasattr(archive.outcome, "value")
+            else str(archive.outcome)
+        ),
+        outcome_summary=archive.outcome_summary or "",
+        agent_count=agent_count,
+        step_count=len(steps),
+        created_at=archive.created_at.isoformat() if archive.created_at else "",
+        dissolved_at=archive.dissolved_at.isoformat() if archive.dissolved_at else "",
+        duration_seconds=archive.duration_seconds or 0.0,
+    )
+
+
+def session_archive_to_detail_dto(archive: SessionArchive) -> SessionArchiveDetailDTO:
+    """Convert a SessionArchive ORM object to a full detail DTO."""
+    return SessionArchiveDetailDTO(
+        id=archive.id,
+        session_id=archive.session_id,
+        requester_id=archive.requester_id,
+        requester_oidc_subject=archive.requester_oidc_subject or "",
+        intent_text=archive.intent_text or "",
+        intent_domain=archive.intent_domain or "",
+        decomposition=archive.decomposition_json or {},
+        outcome=(
+            archive.outcome.value
+            if hasattr(archive.outcome, "value")
+            else str(archive.outcome)
+        ),
+        outcome_summary=archive.outcome_summary or "",
+        discovered_agents=archive.discovered_agents_json or [],
+        accepted_agents=archive.accepted_agents_json or [],
+        agents=archive.agents_json or {},
+        composition_plan=archive.composition_plan_json or {},
+        execution_results=archive.execution_results_json or [],
+        timeline_events=archive.timeline_events_json or [],
+        audit_trail=archive.audit_trail_json or [],
+        ibac_decisions=archive.ibac_decisions_json or [],
+        output=getattr(archive, "output", None) or None,
+        output_summary=getattr(archive, "output_summary", None) or None,
+        agent_metrics=getattr(archive, "agent_metrics_json", None) or [],
+        created_at=archive.created_at.isoformat() if archive.created_at else "",
+        dissolved_at=archive.dissolved_at.isoformat() if archive.dissolved_at else "",
+        duration_seconds=archive.duration_seconds or 0.0,
+    )
+
+
+# ---------------------------------------------------------------------------
+# MCP Server serializers
+# ---------------------------------------------------------------------------
+
+
+def mcp_server_to_dto(
+    mcp: MCPServer,
+    *,
+    is_connected: bool = False,
+    discovered_tools: list[str] | None = None,
+) -> MCPServerDTO:
+    """Convert an ``MCPServer`` ORM record to an API DTO.
+
+    Parameters
+    ----------
+    mcp:
+        The database record.
+    is_connected:
+        Whether the bridge agent is currently online (populated by the API
+        handler from runtime state).
+    discovered_tools:
+        Tool names currently known to the bridge (populated at runtime).
+    """
+    overrides: dict[str, MCPToolOverrideDTO] = {}
+    raw_overrides = mcp.tool_overrides_json or {}
+    for tool_name, ovr in raw_overrides.items():
+        if isinstance(ovr, dict):
+            overrides[tool_name] = MCPToolOverrideDTO(**ovr)
+        else:
+            overrides[tool_name] = ovr
+
+    return MCPServerDTO(
+        id=mcp.id,
+        server_id=mcp.server_id,
+        server_url=mcp.server_url,
+        transport=mcp.transport,
+        agent_id=mcp.agent_id,
+        semantic_description=mcp.semantic_description or "",
+        mode=mcp.mode or "persistent",
+        tool_overrides=overrides,
+        status=mcp.status.value if hasattr(mcp.status, "value") else str(mcp.status),
+        total_executions=mcp.total_executions or 0,
+        current_score=mcp.current_score or 0.0,
+        mean_latency_ms=mcp.mean_latency_ms or 0.0,
+        last_execution_at=(
+            mcp.last_execution_at.isoformat() if mcp.last_execution_at else None
+        ),
+        created_at=mcp.created_at.isoformat() if mcp.created_at else "",
+        updated_at=mcp.updated_at.isoformat() if mcp.updated_at else "",
+        created_by=mcp.created_by or "",
+        is_connected=is_connected,
+        discovered_tools=discovered_tools or [],
     )

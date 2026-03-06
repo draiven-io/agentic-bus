@@ -33,9 +33,14 @@ from app.coordinator.admin.schemas import (
     LLMConfigCreateRequest,
     LLMConfigDTO,
     LLMConfigUpdateRequest,
+    MCPServerCreateRequest,
+    MCPServerDTO,
+    MCPServerUpdateRequest,
     ManagedAgentCreateRequest,
     ManagedAgentDTO,
     PersistentAgentDTO,
+    SessionArchiveDetailDTO,
+    SessionArchiveListDTO,
     SessionDTO,
     TenantCreateRequest,
     TenantDTO,
@@ -48,15 +53,18 @@ from app.coordinator.admin.serializers import (
     ibac_rule_to_dto,
     llm_config_to_dto,
     managed_agent_to_dto,
+    mcp_server_to_dto,
     persistent_agent_to_dto,
     registration_to_ephemeral_dto,
+    session_archive_to_detail_dto,
+    session_archive_to_list_dto,
     session_to_dto,
     tenant_to_dto,
     user_to_dto,
 )
 from app.core.auth.admin import AdminPolicy
 from app.core.auth.oidc import DevVerifier, OIDCIdentity, OIDCVerifier
-from app.core.persistence.models import ManagedAgentStatus, UserRole
+from app.core.persistence.models import MCPServerStatus, ManagedAgentStatus, UserRole
 
 logger = logging.getLogger(__name__)
 
@@ -221,6 +229,7 @@ def create_admin_api(runtime: Any) -> FastAPI:
 
         persistent = await _run_sync(rt.admin.list_agents)
         managed = await _run_sync(rt.managed_repo.list_all)
+        mcp_servers = await _run_sync(rt.mcp_repo.list_all)
         ephemeral = [
             r for r in rt.registry.all_agents() if r.mode == "ephemeral"
         ]
@@ -228,6 +237,7 @@ def create_admin_api(runtime: Any) -> FastAPI:
         if visible is not None:
             persistent = [a for a in persistent if a.agent_id in visible]
             managed = [a for a in managed if a.agent_id in visible]
+            mcp_servers = [m for m in mcp_servers if m.agent_id in visible]
             ephemeral = [e for e in ephemeral if e.agent_id in visible]
 
         approved = [a for a in persistent if a.status.value == "approved"]
@@ -253,11 +263,12 @@ def create_admin_api(runtime: Any) -> FastAPI:
                     pass
 
         return DashboardStatsDTO(
-            total_agents=len(persistent) + len(managed) + len(ephemeral),
+            total_agents=len(persistent) + len(managed) + len(ephemeral) + len(mcp_servers),
             approved_agents=len(approved),
             pending_agents=len(pending),
             managed_agents=len(managed),
             ephemeral_agents=len(ephemeral),
+            mcp_servers=len(mcp_servers),
             active_sessions=len(sessions),
             total_sessions_today=today_sessions,
             llm_provider=llm_provider,
@@ -599,6 +610,234 @@ def create_admin_api(runtime: Any) -> FastAPI:
         if visible is not None:
             ephemerals = [e for e in ephemerals if e.agent_id in visible]
         return [registration_to_ephemeral_dto(r) for r in ephemerals]
+
+    # ==================================================================
+    # MCP Server Bridges
+    # ==================================================================
+
+    def _enrich_mcp_dto(rt, mcp) -> MCPServerDTO:
+        """Build an MCPServerDTO with live runtime info."""
+        agent_id = mcp.agent_id
+        is_connected = agent_id in rt._agent_peers
+        discovered: list[str] = []
+        task = rt._mcp_bridge_tasks.get(mcp.server_id)
+        if task and not task.done():
+            # Try to get discovered tools from the bridge agent
+            bridge = rt._mcp_bridge_agents.get(mcp.server_id)
+            if bridge is not None:
+                discovered = list(bridge._tool_names)
+        return mcp_server_to_dto(
+            mcp,
+            is_connected=is_connected,
+            discovered_tools=discovered,
+        )
+
+    @app.get("/api/admin/agents/mcp", response_model=list[MCPServerDTO])
+    async def list_mcp_servers(
+        request: Request,
+        identity: OIDCIdentity = Depends(_get_identity),
+    ):
+        rt = _rt(request)
+        is_admin, tenant_ids = await _resolve_user(identity, request)
+        visible = await _visible_agent_ids(is_admin, tenant_ids, request)
+
+        servers = await _run_sync(rt.mcp_repo.list_all)
+        if visible is not None:
+            servers = [s for s in servers if s.agent_id in visible]
+        return [_enrich_mcp_dto(rt, s) for s in servers]
+
+    @app.get("/api/admin/agents/mcp/{server_id}", response_model=MCPServerDTO)
+    async def get_mcp_server(
+        request: Request,
+        server_id: str,
+        _identity: OIDCIdentity = Depends(_get_identity),
+    ):
+        rt = _rt(request)
+        mcp = await _run_sync(rt.mcp_repo.get, server_id)
+        if mcp is None:
+            raise HTTPException(status_code=404, detail=f"MCP server {server_id!r} not found")
+        return _enrich_mcp_dto(rt, mcp)
+
+    @app.post("/api/admin/agents/mcp", response_model=MCPServerDTO, status_code=201)
+    async def create_mcp_server(
+        request: Request,
+        body: MCPServerCreateRequest,
+        identity: OIDCIdentity = Depends(_require_admin),
+    ):
+        rt = _rt(request)
+        status = (
+            MCPServerStatus.ACTIVE if body.activate
+            else MCPServerStatus.DISABLED
+        )
+        tool_overrides_raw = {
+            name: ovr.model_dump() for name, ovr in body.tool_overrides.items()
+        }
+        try:
+            mcp = await _run_sync(
+                rt.mcp_repo.create,
+                server_id=body.server_id,
+                server_url=body.server_url,
+                agent_id=body.agent_id,
+                transport=body.transport,
+                auth_headers=body.auth_headers,
+                command=body.command,
+                args=body.args,
+                env=body.env,
+                semantic_description=body.semantic_description,
+                mode=body.mode,
+                tool_overrides=tool_overrides_raw,
+                status=status,
+                created_by=identity.subject,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+        # If created as active, start the bridge immediately
+        if status == MCPServerStatus.ACTIVE:
+            await rt.start_mcp_bridge(body.server_id)
+
+        rt.audit_log.log(
+            action="mcp.server_created",
+            actor=identity.subject,
+            target=body.server_id,
+            target_type="mcp_server",
+            details=f"MCP server bridge created → agent {body.agent_id} (status={status.value})",
+            severity="info",
+        )
+        return _enrich_mcp_dto(rt, mcp)
+
+    @app.patch("/api/admin/agents/mcp/{server_id}", response_model=MCPServerDTO)
+    async def update_mcp_server(
+        request: Request,
+        server_id: str,
+        body: MCPServerUpdateRequest,
+        identity: OIDCIdentity = Depends(_require_admin),
+    ):
+        rt = _rt(request)
+        updates: dict = {}
+        for field in (
+            "server_url", "transport", "auth_headers", "command",
+            "args", "env", "semantic_description", "mode",
+        ):
+            val = getattr(body, field, None)
+            if val is not None:
+                updates[field] = val
+        if body.tool_overrides is not None:
+            updates["tool_overrides"] = {
+                name: ovr.model_dump() for name, ovr in body.tool_overrides.items()
+            }
+        try:
+            mcp = await _run_sync(rt.mcp_repo.update, server_id, **updates)
+        except Exception as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+        rt.audit_log.log(
+            action="mcp.server_updated",
+            actor=identity.subject,
+            target=server_id,
+            target_type="mcp_server",
+            details=f"MCP server bridge updated (fields: {list(updates.keys())})",
+            severity="info",
+        )
+        return _enrich_mcp_dto(rt, mcp)
+
+    @app.post("/api/admin/agents/mcp/{server_id}/activate", response_model=MCPServerDTO)
+    async def activate_mcp_server(
+        request: Request,
+        server_id: str,
+        identity: OIDCIdentity = Depends(_require_admin),
+    ):
+        rt = _rt(request)
+        try:
+            mcp = await _run_sync(
+                rt.mcp_repo.set_status, server_id, MCPServerStatus.ACTIVE
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        await rt.start_mcp_bridge(server_id)
+        rt.audit_log.log(
+            action="mcp.server_activated",
+            actor=identity.subject,
+            target=server_id,
+            target_type="mcp_server",
+            details="MCP server bridge activated and started",
+            severity="info",
+        )
+        return _enrich_mcp_dto(rt, mcp)
+
+    @app.post("/api/admin/agents/mcp/{server_id}/disable", response_model=MCPServerDTO)
+    async def disable_mcp_server(
+        request: Request,
+        server_id: str,
+        identity: OIDCIdentity = Depends(_require_admin),
+    ):
+        rt = _rt(request)
+        await rt.stop_mcp_bridge(server_id)
+        try:
+            mcp = await _run_sync(
+                rt.mcp_repo.set_status, server_id, MCPServerStatus.DISABLED
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        rt.audit_log.log(
+            action="mcp.server_disabled",
+            actor=identity.subject,
+            target=server_id,
+            target_type="mcp_server",
+            details="MCP server bridge disabled and stopped",
+            severity="warning",
+        )
+        return _enrich_mcp_dto(rt, mcp)
+
+    @app.post("/api/admin/agents/mcp/{server_id}/rediscover")
+    async def rediscover_mcp_tools(
+        request: Request,
+        server_id: str,
+        identity: OIDCIdentity = Depends(_require_admin),
+    ):
+        rt = _rt(request)
+        bridge = rt._mcp_bridge_agents.get(server_id)
+        if bridge is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"MCP bridge {server_id!r} is not running",
+            )
+        try:
+            new_tools = await bridge.rediscover_tools()
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+        rt.audit_log.log(
+            action="mcp.tools_rediscovered",
+            actor=identity.subject,
+            target=server_id,
+            target_type="mcp_server",
+            details=f"Rediscovered {len(new_tools)} tool(s)",
+            severity="info",
+        )
+        return {"server_id": server_id, "tools": new_tools}
+
+    @app.delete("/api/admin/agents/mcp/{server_id}")
+    async def delete_mcp_server(
+        request: Request,
+        server_id: str,
+        identity: OIDCIdentity = Depends(_require_admin),
+    ):
+        rt = _rt(request)
+        await rt.stop_mcp_bridge(server_id)
+        deleted = await _run_sync(rt.mcp_repo.delete, server_id)
+        if not deleted:
+            raise HTTPException(
+                status_code=404, detail=f"MCP server {server_id!r} not found"
+            )
+        rt.audit_log.log(
+            action="mcp.server_deleted",
+            actor=identity.subject,
+            target=server_id,
+            target_type="mcp_server",
+            details="MCP server bridge permanently deleted",
+            severity="warning",
+        )
+        return {"ok": True}
 
     # ==================================================================
     # Sessions
@@ -1208,6 +1447,69 @@ def create_admin_api(runtime: Any) -> FastAPI:
             target=rule_id,
             target_type="ibac_rule",
             details=f"IBAC rule '{rule_id}' deleted",
+            severity="warning",
+        )
+        return {"ok": True}
+
+    # ==================================================================
+    # Session Archives (History)
+    # ==================================================================
+
+    @app.get("/api/admin/history", response_model=list[SessionArchiveListDTO])
+    async def list_session_archives(
+        request: Request,
+        limit: int = Query(default=100, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
+        outcome: str | None = Query(default=None),
+        _identity: OIDCIdentity = Depends(_get_identity),
+    ):
+        rt = _rt(request)
+        archives = await _run_sync(
+            rt.archive_repo.list_all,
+            limit=limit,
+            offset=offset,
+            outcome=outcome,
+        )
+        return [session_archive_to_list_dto(a) for a in archives]
+
+    @app.get("/api/admin/history/count")
+    async def count_session_archives(
+        request: Request,
+        outcome: str | None = Query(default=None),
+        _identity: OIDCIdentity = Depends(_get_identity),
+    ):
+        rt = _rt(request)
+        total = await _run_sync(rt.archive_repo.count, outcome=outcome)
+        return {"count": total}
+
+    @app.get("/api/admin/history/{session_id}", response_model=SessionArchiveDetailDTO)
+    async def get_session_archive(
+        request: Request,
+        session_id: str,
+        _identity: OIDCIdentity = Depends(_get_identity),
+    ):
+        rt = _rt(request)
+        archive = await _run_sync(rt.archive_repo.get, session_id)
+        if archive is None:
+            raise HTTPException(status_code=404, detail=f"Archive '{session_id}' not found")
+        return session_archive_to_detail_dto(archive)
+
+    @app.delete("/api/admin/history/{session_id}")
+    async def delete_session_archive(
+        request: Request,
+        session_id: str,
+        identity: OIDCIdentity = Depends(_require_admin),
+    ):
+        rt = _rt(request)
+        deleted = await _run_sync(rt.archive_repo.delete, session_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"Archive '{session_id}' not found")
+        rt.audit_log.log(
+            action="history.archive_deleted",
+            actor=identity.subject,
+            target=session_id,
+            target_type="session",
+            details=f"Session archive '{session_id}' deleted",
             severity="warning",
         )
         return {"ok": True}

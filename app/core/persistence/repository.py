@@ -211,6 +211,49 @@ class AgentRepository:
     def list_approved(self) -> list[PersistentAgent]:
         return self.list_all(status=AgentStatus.APPROVED)
 
+    # ------------------------------------------------------------------
+    # Performance stats
+    # ------------------------------------------------------------------
+
+    def record_execution(
+        self,
+        agent_id: str,
+        quality_score: float,
+        latency_ms: float,
+    ) -> None:
+        """Update a persistent agent's running performance statistics.
+
+        Uses an incremental running-average::
+
+            n = total_executions + 1
+            mean_latency = mean_latency + (latency - mean_latency) / n
+            current_score = current_score + (score - current_score) / n
+        """
+        with get_session() as session:
+            agent = session.get(PersistentAgent, agent_id)
+            if agent is None:
+                logger.debug(
+                    "record_execution: persistent agent %r not found — skipping",
+                    agent_id,
+                )
+                return
+
+            n = agent.total_executions + 1
+            agent.mean_latency_ms = agent.mean_latency_ms + (latency_ms - agent.mean_latency_ms) / n
+            agent.current_score = agent.current_score + (quality_score - agent.current_score) / n
+            agent.total_executions = n
+            agent.last_execution_at = datetime.now(timezone.utc)
+
+            session.commit()
+
+        logger.debug(
+            "Persistent agent %r stats updated: score=%.2f, latency=%.1fms, n=%d",
+            agent_id,
+            agent.current_score,
+            agent.mean_latency_ms,
+            n,
+        )
+
     def delete(self, agent_id: str) -> bool:
         """Permanently remove an agent record."""
         with get_session() as session:

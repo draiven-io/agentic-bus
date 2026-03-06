@@ -22,6 +22,7 @@ from app.core.protocol.envelope import (
     AgBusEnvelope,
     OfferPayload,
 )
+from app.core.session.memory import SessionMemory
 
 
 class SessionPhase(StrEnum):
@@ -80,6 +81,27 @@ class SessionState(BaseModel):
     # IBAC
     ibac_decisions: list[dict[str, Any]] = Field(default_factory=list)
 
+    # Validation – agent-based answer validation (§ assigned agent validation)
+    assigned_agent_id: str = Field(
+        default="",
+        description="Agent assigned to validate the final output.",
+    )
+    validation_rounds: int = Field(
+        default=0,
+        description="Number of validation-triggered renegotiation rounds completed.",
+    )
+    max_validation_rounds: int = Field(
+        default=3,
+        description="Maximum validation renegotiation rounds before final rejection.",
+    )
+    validation_history: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "History of validation attempts.  Each entry records the round, "
+            "the validator agent, the decision, and the rejection reason."
+        ),
+    )
+
     # Timestamps
     created_at: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
@@ -88,6 +110,12 @@ class SessionState(BaseModel):
 
     # Audit trail – every Agentic Bus envelope exchanged in the session
     audit_log: list[AgBusEnvelope] = Field(default_factory=list)
+
+    # Shared session memory (coordinator-owned KV store for inter-agent
+    # communication during execution).  Destroyed at dissolution.
+    memory: SessionMemory = Field(default_factory=SessionMemory)
+
+    model_config = {"arbitrary_types_allowed": True}
 
 
 class SessionManager:

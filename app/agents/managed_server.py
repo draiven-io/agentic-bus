@@ -28,6 +28,7 @@ Usage (CLI)::
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import signal
@@ -44,8 +45,56 @@ from app.core.persistence.database import init_db
 from app.core.persistence.managed_agent_repository import ManagedAgentRepository
 from app.core.persistence.models import ManagedAgent, ManagedAgentStatus
 from app.core.registry.capability_registry import AgentCapability
+from app.core.llm import get_llm
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Validation prompt for managed agents
+# ---------------------------------------------------------------------------
+
+_VALIDATION_SYSTEM = """\
+You are a validation agent with the following identity:
+
+**Role**: {role}
+**Goal**: {goal}
+**Backstory**: {backstory}
+
+## IBAC Governance Rules
+{ibac_rules}
+
+## Your Task
+You must validate whether the answer below correctly fulfils the original
+intent.  Evaluate the answer against:
+
+1. **Your expertise** – does the answer align with your role and goal?
+2. **Completeness** – does it address all aspects of the intent?
+3. **Accuracy** – does the information appear correct?
+4. **IBAC compliance** – does the answer violate any of the governance rules
+   listed above?  Even if the content seems technically correct, it MUST
+   comply with all active IBAC rules.
+5. **Quality** – is the answer well-structured and actionable?
+
+Return ONLY a JSON object (no markdown fences, no commentary):
+{{
+  "approved": true or false,
+  "reason": "one-sentence explanation of your decision",
+  "suggestions": ["improvement suggestion 1", "..."]
+}}
+
+Be strict.  If IBAC rules are violated, you MUST reject.
+If the answer is vague, incomplete, or off-topic, reject with clear suggestions.
+"""
+
+_VALIDATION_HUMAN = """\
+Original intent: {intent_text}
+Context: {context}
+
+{prior_feedback_block}
+
+Answer to validate:
+{answer}
+"""
 
 
 class ManagedAgentServer(BaseAgent):
@@ -182,6 +231,94 @@ class ManagedAgentServer(BaseAgent):
                 result["json"] = pydantic_obj.model_dump()
 
         return result
+
+    # -- Answer validation (managed agents use LLM + role/goal/IBAC) -------
+
+    async def validate_answer(
+        self,
+        answer: dict[str, Any],
+        intent_text: str,
+        context: dict[str, Any],
+        ibac_rules_summary: str = "",
+    ) -> dict[str, Any]:
+        """Validate an execution answer using the agent's role, goal, backstory, and IBAC rules.
+
+        Managed agents have rich identity information (role, goal, backstory)
+        from their CrewAI configuration.  This method builds a validation
+        prompt that incorporates all of that context plus any active IBAC
+        rules, and asks the LLM to judge whether the answer is acceptable.
+        """
+        from langchain_core.prompts import ChatPromptTemplate
+        from langchain_core.output_parsers import JsonOutputParser
+
+        # Serialise the answer
+        if isinstance(answer, dict):
+            answer_text = json.dumps(answer, default=str, indent=2)[:4000]
+        else:
+            answer_text = str(answer)[:4000]
+
+        # Build prior feedback block from context
+        prior_feedback = context.get("_validation_feedback", [])
+        if prior_feedback:
+            fb_lines = [
+                f"Round {fb['round_num']}: REJECTED — {fb['reason']}\n"
+                f"  Suggestions: {', '.join(fb.get('suggestions', []))}"
+                for fb in prior_feedback
+            ]
+            prior_feedback_block = (
+                "## Prior Validation Feedback (the answer was previously rejected):\n"
+                + "\n".join(fb_lines)
+            )
+        else:
+            prior_feedback_block = ""
+
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", _VALIDATION_SYSTEM),
+            ("human", _VALIDATION_HUMAN),
+        ])
+        parser = JsonOutputParser()
+
+        try:
+            llm = get_llm()
+        except Exception:
+            logger.warning(
+                "No LLM configured — managed agent %s auto-approving validation",
+                self.agent_id,
+            )
+            return {
+                "approved": True,
+                "reason": "No LLM configured — auto-approved.",
+                "suggestions": [],
+            }
+
+        chain = prompt | llm | parser
+
+        try:
+            result = await chain.ainvoke({
+                "role": self._ma.role,
+                "goal": self._ma.goal,
+                "backstory": self._ma.backstory,
+                "ibac_rules": ibac_rules_summary or "(No IBAC rules configured.)",
+                "intent_text": intent_text,
+                "context": json.dumps(context, default=str)[:2000],
+                "prior_feedback_block": prior_feedback_block,
+                "answer": answer_text,
+            })
+            return {
+                "approved": bool(result.get("approved", True)),
+                "reason": result.get("reason", ""),
+                "suggestions": result.get("suggestions", []),
+            }
+        except Exception:
+            logger.exception(
+                "Validation LLM call failed for agent %s — rejecting as precaution",
+                self.agent_id,
+            )
+            return {
+                "approved": False,
+                "reason": "Validation failed due to an internal error — rejecting as a precaution.",
+                "suggestions": ["Retry the validation."],
+            }
 
 
 # ---------------------------------------------------------------------------

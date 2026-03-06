@@ -29,6 +29,10 @@ from app.core.persistence.managed_agent_repository import (
     ManagedAgentRepository,
     ManagedAgentNotFoundError,
 )
+from app.core.persistence.session_archive_repository import (
+    SessionArchiveRepository,
+    SessionArchiveNotFoundError,
+)
 
 __all__ = [
     "init_db",
@@ -40,4 +44,6 @@ __all__ = [
     "NoCurrentLLMConfigError",
     "ManagedAgentRepository",
     "ManagedAgentNotFoundError",
+    "SessionArchiveRepository",
+    "SessionArchiveNotFoundError",
 ]
