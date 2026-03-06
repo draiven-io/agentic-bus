@@ -20,6 +20,9 @@ import type {
   LLMConfig,
   ManagedAgent,
   ManagedAgentCreatePayload,
+  MCPServer,
+  MCPServerCreatePayload,
+  MCPServerUpdatePayload,
   PersistentAgent,
   SessionArchiveDetail,
   SessionArchiveListItem,
@@ -599,6 +602,94 @@ export async function deleteSessionArchive(
 ): Promise<void> {
   await apiFetch(
     `/api/admin/history/${encodeURIComponent(sessionId)}`,
+    { method: "DELETE" },
+    opts,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// MCP Servers
+// ---------------------------------------------------------------------------
+
+export async function fetchMCPServers(
+  opts?: FetchOptions,
+): Promise<MCPServer[]> {
+  return apiFetch<MCPServer[]>("/api/admin/agents/mcp", undefined, opts);
+}
+
+export async function fetchMCPServer(
+  serverId: string,
+  opts?: FetchOptions,
+): Promise<MCPServer> {
+  return apiFetch<MCPServer>(
+    `/api/admin/agents/mcp/${encodeURIComponent(serverId)}`,
+    undefined,
+    opts,
+  );
+}
+
+export async function createMCPServer(
+  body: MCPServerCreatePayload,
+  opts?: FetchOptions,
+): Promise<MCPServer> {
+  return apiFetch<MCPServer>(
+    "/api/admin/agents/mcp",
+    { method: "POST", body: JSON.stringify(body) },
+    opts,
+  );
+}
+
+export async function updateMCPServer(
+  serverId: string,
+  body: MCPServerUpdatePayload,
+  opts?: FetchOptions,
+): Promise<MCPServer> {
+  return apiFetch<MCPServer>(
+    `/api/admin/agents/mcp/${encodeURIComponent(serverId)}`,
+    { method: "PATCH", body: JSON.stringify(body) },
+    opts,
+  );
+}
+
+export async function activateMCPServer(
+  serverId: string,
+  opts?: FetchOptions,
+): Promise<MCPServer> {
+  return apiFetch<MCPServer>(
+    `/api/admin/agents/mcp/${encodeURIComponent(serverId)}/activate`,
+    { method: "POST" },
+    opts,
+  );
+}
+
+export async function disableMCPServer(
+  serverId: string,
+  opts?: FetchOptions,
+): Promise<MCPServer> {
+  return apiFetch<MCPServer>(
+    `/api/admin/agents/mcp/${encodeURIComponent(serverId)}/disable`,
+    { method: "POST" },
+    opts,
+  );
+}
+
+export async function rediscoverMCPTools(
+  serverId: string,
+  opts?: FetchOptions,
+): Promise<{ server_id: string; tools: string[] }> {
+  return apiFetch<{ server_id: string; tools: string[] }>(
+    `/api/admin/agents/mcp/${encodeURIComponent(serverId)}/rediscover`,
+    { method: "POST" },
+    opts,
+  );
+}
+
+export async function deleteMCPServer(
+  serverId: string,
+  opts?: FetchOptions,
+): Promise<void> {
+  await apiFetch(
+    `/api/admin/agents/mcp/${encodeURIComponent(serverId)}`,
     { method: "DELETE" },
     opts,
   );

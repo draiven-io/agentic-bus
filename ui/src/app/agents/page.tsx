@@ -6,7 +6,6 @@ import {
   ChevronDown,
   ChevronRight,
   Globe,
-  Shield,
   ShieldCheck,
   ShieldX,
   ShieldBan,
@@ -21,6 +20,7 @@ import {
   Star,
   Timer,
   Activity,
+  Cable,
 } from "lucide-react";
 
 import { AppHeader } from "@/components/app-header";
@@ -669,7 +669,6 @@ export default function AgentsPage() {
     await deleteManagedAgent(agentId);
     refetchManaged();
   };
-
   return (
     <>
       <AppHeader
@@ -688,12 +687,20 @@ export default function AgentsPage() {
               Manage managed and external agents on the bus.
             </p>
           </div>
-          <Button asChild>
-            <Link href="/agents/create">
-              <Plus className="mr-2 h-4 w-4" />
-              Create Agent
-            </Link>
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button asChild variant="outline">
+              <Link href="/agents/mcp/create">
+                <Cable className="mr-2 h-4 w-4" />
+                Connect via MCP
+              </Link>
+            </Button>
+            <Button asChild>
+              <Link href="/agents/create">
+                <Plus className="mr-2 h-4 w-4" />
+                Create Agent
+              </Link>
+            </Button>
+          </div>
         </div>
 
         {/* Tabs */}
@@ -944,9 +951,9 @@ export default function AgentsPage() {
                           Persistent ({allPersistent.length})
                         </>
                       : <>
-                          <Zap className="mr-1.5 h-3.5 w-3.5" />
-                          Ephemeral ({standaloneEphemeral.length})
-                        </>}
+                            <Zap className="mr-1.5 h-3.5 w-3.5" />
+                            Ephemeral ({standaloneEphemeral.length})
+                          </>}
                 </Button>
               ))}
 
@@ -1206,6 +1213,7 @@ export default function AgentsPage() {
                 </Card>
               </>
             )}
+
           </TabsContent>
         </Tabs>
       </div>

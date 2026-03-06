@@ -354,3 +354,68 @@ export interface SessionArchiveDetail {
   dissolved_at: string;
   duration_seconds: number;
 }
+
+// ---------------------------------------------------------------------------
+// MCP Servers
+// ---------------------------------------------------------------------------
+
+export type MCPServerStatus = "active" | "disabled";
+
+export interface MCPToolOverride {
+  description?: string;
+  required_scopes: string[];
+  supported_data_domains: string[];
+  operational_constraints: Record<string, unknown>;
+  expected_artifacts: string[];
+  estimated_cost: number;
+  estimated_latency: number;
+  output_schema: Record<string, unknown>;
+}
+
+export interface MCPServer {
+  id: number;
+  server_id: string;
+  server_url: string;
+  transport: string;
+  agent_id: string;
+  semantic_description: string;
+  mode: string;
+  tool_overrides: Record<string, MCPToolOverride>;
+  status: MCPServerStatus;
+  total_executions: number;
+  current_score: number;
+  mean_latency_ms: number;
+  last_execution_at: string | null;
+  created_at: string;
+  updated_at: string;
+  created_by: string;
+  is_connected: boolean;
+  discovered_tools: string[];
+}
+
+export interface MCPServerCreatePayload {
+  server_id: string;
+  server_url: string;
+  agent_id: string;
+  transport?: string;
+  auth_headers?: Record<string, string>;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  semantic_description?: string;
+  mode?: string;
+  tool_overrides?: Record<string, Partial<MCPToolOverride>>;
+  activate?: boolean;
+}
+
+export interface MCPServerUpdatePayload {
+  server_url?: string;
+  transport?: string;
+  auth_headers?: Record<string, string>;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  semantic_description?: string;
+  mode?: string;
+  tool_overrides?: Record<string, Partial<MCPToolOverride>>;
+}
