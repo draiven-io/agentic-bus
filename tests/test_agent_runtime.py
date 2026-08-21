@@ -537,3 +537,52 @@ class TestCredentialRedaction:
         )
         assert "s3cret" not in caplog.text, "password leaked into the log"
         assert "***" in caplog.text, "URI was not redacted at all"
+
+
+class TestEndpointNeverParsesCredentials:
+    """The guarantee behind the CodeQL suppression on the reconnect logging.
+
+    ``_safe_endpoint`` strips credentials *before* parsing, so the password
+    is never present in the value handed to ``urlsplit`` and cannot be read
+    back off the result. These assertions are what make silencing that alert
+    defensible; if they ever fail, the suppression is no longer justified.
+    """
+
+    def test_urlsplit_never_sees_a_password(self, monkeypatch):
+        from agentic_bus.agents.base import agent as agent_module
+
+        seen: list[str] = []
+        real_urlsplit = agent_module.urlsplit
+
+        def recording_urlsplit(value):
+            seen.append(value)
+            return real_urlsplit(value)
+
+        monkeypatch.setattr(agent_module, "urlsplit", recording_urlsplit)
+        agent_module._safe_endpoint("wss://agent:s3cret@host:8765/lip?token=abc")
+
+        assert seen, "urlsplit was not called at all"
+        for value in seen:
+            assert "s3cret" not in value, f"password reached urlsplit: {value!r}"
+
+    def test_query_and_path_are_dropped_from_the_result(self):
+        """The query still reaches urlsplit — it is discarded when the
+        endpoint is rebuilt from scheme, host and port, which is where the
+        guarantee actually lives."""
+        from agentic_bus.agents.base.agent import _safe_endpoint
+
+        endpoint = _safe_endpoint("wss://agent:s3cret@host:8765/lip?token=abc")
+        assert endpoint == "wss://host:8765"
+        assert "abc" not in endpoint
+        assert "/lip" not in endpoint
+
+    def test_result_contains_no_credential_for_any_shape(self):
+        from agentic_bus.agents.base.agent import _safe_endpoint
+
+        for uri in (
+            "ws://agent:s3cret@host:8765",
+            "wss://user:s3cret@host/path?token=s3cret",
+            "ws://s3cret@host:8765",
+            "ws://host:8765",
+        ):
+            assert "s3cret" not in _safe_endpoint(uri), uri

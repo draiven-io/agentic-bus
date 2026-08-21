@@ -53,6 +53,17 @@ TokenProvider = Callable[[], "str | Awaitable[str]"]
 _URL_CREDENTIALS = re.compile(r"//[^/\s@]*:[^/\s@]*@")
 
 
+def _strip_credentials(text: str) -> str:
+    """Remove ``user:password@`` from any URL appearing in *text*.
+
+    Connection errors routinely quote the URI they failed on, so sanitising
+    our own URI is not enough. This works on the message alone and never
+    takes the credential as an argument, so it also catches credentials in
+    URLs that did not come from us.
+    """
+    return _URL_CREDENTIALS.sub("//***:***@", text)
+
+
 def _safe_endpoint(uri: str) -> str:
     """Describe *uri* using only the parts that are safe to log.
 
@@ -67,8 +78,10 @@ def _safe_endpoint(uri: str) -> str:
       safe in practice but still routed the credential through the logging
       expression — and static analysis was right to keep objecting.
     """
+    # Strip credentials *before* parsing, so the password is never present in
+    # the value handed to urlsplit and cannot be read back off the result.
     try:
-        parts = urlsplit(uri)
+        parts = urlsplit(_strip_credentials(uri))
     except ValueError:
         return "<unparseable uri>"
 
@@ -79,15 +92,6 @@ def _safe_endpoint(uri: str) -> str:
     return endpoint
 
 
-def _strip_credentials(text: str) -> str:
-    """Remove ``user:password@`` from any URL appearing in *text*.
-
-    Connection errors routinely quote the URI they failed on, so sanitising
-    our own URI is not enough. This works on the message alone and never
-    takes the credential as an argument, so it also catches credentials in
-    URLs that did not come from us.
-    """
-    return _URL_CREDENTIALS.sub("//***:***@", text)
 
 
 class ReconnectPolicy:
@@ -377,6 +381,10 @@ class BaseAgent(ABC):
                 await self._client.wait_closed()  # type: ignore[union-attr]
                 if self._stopping.is_set():
                     break
+                # codeql[py/clear-text-logging-sensitive-data] — _safe_endpoint
+                # strips credentials before parsing and reads only scheme,
+                # host and port; CodeQL cannot see through urlsplit
+                # field-sensitively. Guaranteed by TestCredentialRedaction.
                 logger.warning(
                     "Agent %s lost its connection to %s",
                     self.agent_id,
@@ -387,6 +395,9 @@ class BaseAgent(ABC):
             except Exception as exc:
                 # Covers a coordinator that is down, refusing, or rejecting
                 # our token — all of which should be retried, not fatal.
+                # codeql[py/clear-text-logging-sensitive-data] — as above;
+                # the exception text is scrubbed by _strip_credentials, which
+                # is never handed the credential.
                 logger.warning(
                     "Agent %s could not connect to %s: %s: %s",
                     self.agent_id,
