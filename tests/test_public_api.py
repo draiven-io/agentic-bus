@@ -24,6 +24,8 @@ PUBLIC_NAMES = [
     "BaseAgent",
     "AgentCapability",
     "AgentRegistration",
+    "ReconnectPolicy",
+    "TokenProvider",
     "IntentClient",
     "IntentResult",
     "PlanDecision",

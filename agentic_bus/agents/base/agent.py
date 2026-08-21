@@ -17,10 +17,13 @@ capability logic.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
+import random
 from abc import ABC, abstractmethod
-from typing import Any
+from collections import defaultdict
+from typing import Any, Awaitable, Callable
 
 from agentic_bus.core.protocol.envelope import (
     AgBusEnvelope,
@@ -38,6 +41,42 @@ from agentic_bus.core.registry.capability_registry import AgentCapability, Agent
 from agentic_bus.core.telemetry.tracing import agbus_span, inject_trace_context
 
 logger = logging.getLogger(__name__)
+
+#: Returns the bearer token used when connecting. May be sync or async, and
+#: is called on every (re)connection so short-lived tokens can be refreshed.
+TokenProvider = Callable[[], "str | Awaitable[str]"]
+
+
+class ReconnectPolicy:
+    """Exponential backoff with full jitter between reconnection attempts.
+
+    Jitter matters more than it looks: when a coordinator restarts, every
+    agent notices at the same instant, and an unjittered backoff marches them
+    all back in lockstep — repeatedly. Randomising the whole interval spreads
+    the retries out.
+    """
+
+    def __init__(
+        self,
+        initial: float = 0.5,
+        maximum: float = 30.0,
+        multiplier: float = 2.0,
+        jitter: bool = True,
+    ):
+        self.initial = initial
+        self.maximum = maximum
+        self.multiplier = multiplier
+        self.jitter = jitter
+        self._attempt = 0
+
+    def reset(self) -> None:
+        """Call after a successful connection, so the next outage starts fresh."""
+        self._attempt = 0
+
+    def next_delay(self) -> float:
+        window = min(self.initial * (self.multiplier**self._attempt), self.maximum)
+        self._attempt += 1
+        return random.uniform(0, window) if self.jitter else window
 
 
 class BaseAgent(ABC):
@@ -61,7 +100,29 @@ class BaseAgent(ABC):
         coordinator_uri: str = "ws://localhost:8765",
         version: str = "0.1.0",
         semantic_description: str = "",
+        *,
+        token_provider: TokenProvider | None = None,
+        reconnect: ReconnectPolicy | None = None,
+        max_concurrent_tasks: int = 8,
     ):
+        """
+        Parameters
+        ----------
+        token_provider:
+            Returns the bearer token for the connection. Called on every
+            (re)connection, so short-lived tokens are refreshed rather than
+            captured once at startup. Defaults to an unsigned development
+            identity, which only a coordinator running ``DevVerifier``
+            accepts — supply one to talk to a coordinator with real OIDC.
+        reconnect:
+            Backoff policy between reconnection attempts. Pass ``None`` for
+            the default; reconnection cannot be disabled, because an agent
+            that stays silently dead after one blip is never the behaviour
+            anyone wants.
+        max_concurrent_tasks:
+            Ceiling on simultaneously executing tasks. Work beyond this
+            queues rather than being refused.
+        """
         self.agent_id = agent_id
         self.coordinator_uri = coordinator_uri
         self.version = version
@@ -69,6 +130,15 @@ class BaseAgent(ABC):
         self._client: WSClient | None = None
         self._peer: WSPeer | None = None
         self._running = False
+
+        self._token_provider = token_provider or self._default_token_provider
+        self._reconnect = reconnect or ReconnectPolicy()
+        self._semaphore = asyncio.Semaphore(max_concurrent_tasks)
+
+        # In-flight work, grouped by session so ``dissolve`` can cancel
+        # exactly the tasks belonging to the session being torn down.
+        self._session_tasks: dict[str, set[asyncio.Task[None]]] = defaultdict(set)
+        self._stopping = asyncio.Event()
 
     # -----------------------------------------------------------------------
     # Abstract methods – implement in subclasses
@@ -214,33 +284,89 @@ class BaseAgent(ABC):
             on_message=self._on_message,
         )
 
-        # Connect with OIDC token in header (dev mode: JSON identity)
-        auth_token = json.dumps({"sub": self.agent_id, "iss": "dev"})
         self._peer = await self._client.connect(
-            extra_headers={"Authorization": f"Bearer {auth_token}"}
+            extra_headers={"Authorization": f"Bearer {await self._auth_token()}"}
         )
         self._running = True
         logger.info("Agent %s connected to coordinator", self.agent_id)
 
-        # Register capabilities
+        # Registration is per-connection, not once per process: the
+        # coordinator holds the capability registry in memory against the
+        # live socket, so a reconnected agent that skipped this would be
+        # connected but invisible to discovery.
         await self._register()
 
+    def _default_token_provider(self) -> str:
+        """Unsigned development identity, accepted only by ``DevVerifier``."""
+        return json.dumps({"sub": self.agent_id, "iss": "dev"})
+
+    async def _auth_token(self) -> str:
+        """Resolve the bearer token, awaiting the provider if it is async."""
+        token = self._token_provider()
+        if inspect.isawaitable(token):
+            token = await token
+        return token
+
     async def stop(self) -> None:
+        """Stop the agent and cancel any work still in flight."""
+        self._stopping.set()
         self._running = False
+        await self._cancel_session_tasks()
         if self._client:
             await self._client.disconnect()
         logger.info("Agent %s disconnected", self.agent_id)
 
     async def run_forever(self) -> None:
-        """Block until the agent is stopped."""
-        await self.start()
-        try:
-            while self._running:
-                await asyncio.sleep(1)
-        except asyncio.CancelledError:
-            pass
-        finally:
-            await self.stop()
+        """Serve until stopped, reconnecting whenever the connection drops.
+
+        A coordinator restart, a network blip or a proxy timeout closes the
+        socket. Previously the receive loop simply exited and this method
+        went on sleeping, so the agent stayed registered in nobody's registry
+        and served nothing — alive to a process supervisor, dead to the bus.
+        """
+        self._stopping.clear()
+
+        while not self._stopping.is_set():
+            try:
+                await self.start()
+                self._reconnect.reset()
+                # Returns when the connection drops, for any reason.
+                await self._client.wait_closed()  # type: ignore[union-attr]
+                if self._stopping.is_set():
+                    break
+                logger.warning(
+                    "Agent %s lost its connection to %s",
+                    self.agent_id,
+                    self.coordinator_uri,
+                )
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                # Covers a coordinator that is down, refusing, or rejecting
+                # our token — all of which should be retried, not fatal.
+                logger.warning(
+                    "Agent %s could not connect to %s: %s",
+                    self.agent_id,
+                    self.coordinator_uri,
+                    exc,
+                )
+
+            if self._stopping.is_set():
+                break
+
+            delay = self._reconnect.next_delay()
+            logger.info("Agent %s reconnecting in %.1fs", self.agent_id, delay)
+            try:
+                # Wake immediately if stop() is called mid-backoff instead of
+                # making the caller wait out the delay.
+                await asyncio.wait_for(self._stopping.wait(), timeout=delay)
+                break
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
+        await self.stop()
 
     # -----------------------------------------------------------------------
     # Registration
@@ -277,23 +403,93 @@ class BaseAgent(ABC):
     # -----------------------------------------------------------------------
 
     async def _on_message(self, envelope: AgBusEnvelope, peer: WSPeer) -> None:
-        """Route messages from the coordinator."""
-        with agbus_span(
-            f"agent.{self.agent_id}.handle.{envelope.message_type}",
-            attributes={"session_id": envelope.session_id},
-        ):
-            if envelope.message_type == MessageType.INTENT:
-                await self._handle_intent(envelope)
-            elif envelope.message_type == MessageType.EXECUTE:
-                await self._handle_execute(envelope)
-            elif envelope.message_type == MessageType.DISSOLVE:
-                await self._handle_dissolve(envelope)
-            else:
-                logger.debug(
-                    "Agent %s ignoring message type %s",
-                    self.agent_id,
-                    envelope.message_type,
-                )
+        """Route messages from the coordinator.
+
+        Work that can take arbitrarily long — offer generation and task
+        execution, both of which routinely call a model — is dispatched onto
+        its own task. This handler runs *inside* the socket's receive loop,
+        so awaiting that work here would stop the agent reading anything
+        else, including the ``dissolve`` telling it to stop.
+        """
+        if envelope.message_type == MessageType.INTENT:
+            self._spawn(envelope.session_id, self._handle_intent(envelope))
+        elif envelope.message_type == MessageType.EXECUTE:
+            self._spawn(envelope.session_id, self._handle_execute(envelope))
+        elif envelope.message_type == MessageType.DISSOLVE:
+            # Handled inline, and first: dissolution is the protocol's
+            # guarantee that nothing survives the session, so it must cancel
+            # in-flight work rather than queue behind it.
+            await self._cancel_session_tasks(envelope.session_id)
+            await self._handle_dissolve(envelope)
+        else:
+            logger.debug(
+                "Agent %s ignoring message type %s",
+                self.agent_id,
+                envelope.message_type,
+            )
+
+    # -----------------------------------------------------------------------
+    # Task lifecycle
+    # -----------------------------------------------------------------------
+
+    def _spawn(self, session_id: str, coro: Any) -> asyncio.Task[None]:
+        """Run *coro* as a tracked task belonging to *session_id*."""
+        task = asyncio.create_task(self._run_tracked(session_id, coro))
+        self._session_tasks[session_id].add(task)
+        task.add_done_callback(
+            lambda t: self._session_tasks.get(session_id, set()).discard(t)
+        )
+        return task
+
+    async def _run_tracked(self, session_id: str, coro: Any) -> None:
+        """Execute *coro* under the concurrency limit, with a trace span."""
+        entered = False
+        try:
+            async with self._semaphore:
+                entered = True
+                with agbus_span(
+                    f"agent.{self.agent_id}.session.{session_id}",
+                    attributes={"session_id": session_id},
+                ):
+                    await coro
+        except asyncio.CancelledError:
+            if not entered:
+                # Cancelled while queued behind the concurrency limit, so the
+                # coroutine never ran. Closing it keeps Python from reporting
+                # "coroutine was never awaited" in the user's logs.
+                coro.close()
+            logger.info(
+                "Agent %s cancelled work for session %s", self.agent_id, session_id
+            )
+            raise
+        except Exception:
+            # A crash in one session must not take down the agent.
+            logger.exception(
+                "Agent %s failed handling session %s", self.agent_id, session_id
+            )
+
+    async def _cancel_session_tasks(self, session_id: str | None = None) -> None:
+        """Cancel in-flight tasks — for one session, or all of them.
+
+        Awaits the cancelled tasks so that ``execute_task`` implementations
+        get their ``CancelledError`` and finish their cleanup before this
+        returns.
+        """
+        if session_id is None:
+            sessions = list(self._session_tasks)
+        else:
+            sessions = [session_id]
+
+        pending: list[asyncio.Task[None]] = []
+        for sid in sessions:
+            tasks = self._session_tasks.pop(sid, set())
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+                    pending.append(task)
+
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def _handle_intent(self, envelope: AgBusEnvelope) -> None:
         """Respond to an intent with offers for each matching capability."""

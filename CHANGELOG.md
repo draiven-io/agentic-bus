@@ -7,6 +7,39 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The **protocol** version (`LIP_PROTOCOL_VERSION`) is versioned separately
 from this package; protocol changes are called out explicitly below.
 
+## [Unreleased]
+
+### Fixed
+
+- **Agents now reconnect.** When the connection dropped — a coordinator
+  restart, a network blip, a proxy timeout — the receive loop exited while
+  `run_forever` went on sleeping, so the agent was alive to a process
+  supervisor and invisible to the bus, permanently. It now reconnects with
+  exponential backoff and full jitter, and re-registers its capabilities each
+  time (the coordinator's registry is per-connection, so a reconnect without
+  re-registration is connected but undiscoverable). An agent started before
+  its coordinator now retries instead of failing.
+- **One slow task no longer blocks the whole agent.** Handlers were awaited
+  inside the socket's receive loop, so a long `execute_task` stopped the agent
+  reading anything else — including the `dissolve` telling it to stop. Intent
+  and execute handling now dispatch onto their own tasks, bounded by
+  `max_concurrent_tasks` (default 8).
+- **`dissolve` cancels in-flight work.** It previously only logged, despite
+  `BaseAgent` documenting that agents must support cancellation and the
+  protocol specifying dissolution as *mandatory* cleanup. `execute_task` now
+  receives `CancelledError` for the dissolved session only; other sessions
+  keep running.
+
+### Added
+
+- `token_provider` on `BaseAgent`: supply a bearer token (sync or async) for
+  coordinators running real OIDC. The dev identity was previously hardcoded,
+  so the SDK could not authenticate against a secured bus at all. Called on
+  every reconnection, so short-lived tokens refresh.
+- `ReconnectPolicy` for tuning backoff, exported from the public API.
+- `WSClient.wait_closed()` / `is_connected`, so a dropped connection is
+  observable by the code that owns the client.
+
 ## [0.2.0]
 
 ### Changed — breaking

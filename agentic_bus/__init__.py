@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 
-from agentic_bus.agents.base.agent import BaseAgent
+from agentic_bus.agents.base.agent import BaseAgent, ReconnectPolicy, TokenProvider
 from agentic_bus.agents.requester import (
     IntentClient,
     IntentResult,
@@ -74,6 +74,8 @@ __all__ = [
     "BaseAgent",
     "AgentCapability",
     "AgentRegistration",
+    "ReconnectPolicy",
+    "TokenProvider",
     # Submitting intents
     "IntentClient",
     "IntentResult",

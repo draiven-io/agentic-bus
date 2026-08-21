@@ -260,6 +260,27 @@ It connects to a coordinator (`AGBUS_COORDINATOR_URI`, default
 participates in discovery, negotiation, IBAC governance and execution. You
 never write an endpoint, a schema or a route.
 
+The runtime handles the parts that bite in production:
+
+- **Reconnects** with exponential backoff and jitter, and **re-registers** on
+  every reconnect — a coordinator restart doesn't leave the agent silently
+  orphaned.
+- **Runs tasks concurrently** (bounded by `max_concurrent_tasks`, default 8),
+  so one slow task doesn't stop the agent answering anything else.
+- **Cancels in-flight work on `dissolve`**, so `execute_task` receives
+  `CancelledError` and can clean up — the protocol's ephemerality guarantee
+  is actually enforced, not just documented.
+
+For a coordinator with real OIDC, supply a token provider. It's called on
+every reconnect, so short-lived tokens refresh rather than going stale:
+
+```python
+WeatherAgent(
+    agent_id="weather-01",
+    token_provider=lambda: my_oidc_client.access_token(),   # may be async
+)
+```
+
 Submitting an intent is the other half:
 
 ```python
