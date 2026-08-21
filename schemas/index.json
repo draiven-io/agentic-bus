@@ -1,10 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://liquidinterfaces.org/schemas/0.1.0/index.json",
+  "$id": "https://liquidinterfaces.org/schemas/0.2.0/index.json",
   "title": "Liquid Interfaces Protocol schema index",
-  "x-lip-version": "0.1.0",
+  "x-lip-version": "0.2.0",
   "envelope": "envelope.json",
   "payloads": {
+    "register": "register-payload.json",
+    "registered": "registered-payload.json",
     "intent": "intent-payload.json",
     "offer": "offer-payload.json",
     "accept": "accept-payload.json",

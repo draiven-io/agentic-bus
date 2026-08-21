@@ -43,7 +43,7 @@ class WSPeer:
         """Receive and deserialise an Agentic Bus envelope."""
         raw = await self.ws.recv()
         data = json.loads(raw)
-        return AgBusEnvelope.model_validate(data)
+        return AgBusEnvelope.from_wire(data)
 
     async def close(self) -> None:
         await self.ws.close()
@@ -119,7 +119,7 @@ class WSServer:
             async for raw in ws:
                 try:
                     data = json.loads(raw)
-                    envelope = AgBusEnvelope.model_validate(data)
+                    envelope = AgBusEnvelope.from_wire(data)
                     if self._on_message:
                         await self._on_message(envelope, peer)
                 except Exception:
@@ -187,7 +187,7 @@ class WSClient:
             async for raw in self._peer.ws:
                 try:
                     data = json.loads(raw)
-                    envelope = AgBusEnvelope.model_validate(data)
+                    envelope = AgBusEnvelope.from_wire(data)
                     if self._on_message:
                         await self._on_message(envelope, self._peer)
                 except Exception:

@@ -35,6 +35,8 @@ from agentic_bus.core.protocol.envelope import (
     OfferPayload,
     CompletePayload,
     EventPayload,
+    RegisterPayload,
+    RegisteredPayload,
     build_envelope,
 )
 from agentic_bus.core.transport.ws import WSClient, WSPeer
@@ -126,6 +128,7 @@ class BaseAgent(ABC):
         token_provider: TokenProvider | None = None,
         reconnect: ReconnectPolicy | None = None,
         max_concurrent_tasks: int = 8,
+        registration_timeout: float = 10.0,
     ):
         """
         Parameters
@@ -144,6 +147,10 @@ class BaseAgent(ABC):
         max_concurrent_tasks:
             Ceiling on simultaneously executing tasks. Work beyond this
             queues rather than being refused.
+        registration_timeout:
+            How long to wait for the coordinator's ``registered`` answer
+            before carrying on regardless. A coordinator older than LIP
+            0.2.0 never sends one.
         """
         self.agent_id = agent_id
         self.coordinator_uri = coordinator_uri
@@ -161,6 +168,9 @@ class BaseAgent(ABC):
         # exactly the tasks belonging to the session being torn down.
         self._session_tasks: dict[str, set[asyncio.Task[None]]] = defaultdict(set)
         self._stopping = asyncio.Event()
+
+        self.registration_timeout = registration_timeout
+        self._registration_ack: asyncio.Future[RegisteredPayload] | None = None
 
     # -----------------------------------------------------------------------
     # Abstract methods – implement in subclasses
@@ -394,7 +404,14 @@ class BaseAgent(ABC):
     # -----------------------------------------------------------------------
 
     async def _register(self) -> None:
-        """Send capability registration to the coordinator."""
+        """Declare this agent and its capabilities, then await the answer.
+
+        Uses the ``register`` performative (LIP 0.2.0). Before that existed,
+        agents registered by sending ``complete`` with
+        ``session_id="__registration__"`` and a magic payload — which the
+        specification never described, so nobody could write an interoperable
+        agent from the spec alone.
+        """
         caps = self.capabilities()
 
         registration = AgentRegistration(
@@ -406,18 +423,78 @@ class BaseAgent(ABC):
             supported_data_domains=[d for c in caps for d in c.supported_data_domains],
         )
 
-        # Send registration as a special payload in an intent-like envelope
-        # (The coordinator recognises registrations by sender kind + payload shape)
+        loop = asyncio.get_running_loop()
+        self._registration_ack = loop.create_future()
+
         env = build_envelope(
-            message_type=MessageType.COMPLETE,  # Re-use complete as registration ack vehicle
+            message_type=MessageType.REGISTER,
             sender=SenderInfo(kind=SenderKind.AGENT, id=self.agent_id),
-            session_id="__registration__",
-            payload={"registration": registration.model_dump()},
+            session_id="",
+            payload=RegisterPayload(
+                agent_id=registration.agent_id,
+                version=registration.version,
+                mode=registration.mode,
+                capabilities=registration.model_dump()["capabilities"],
+                semantic_description=registration.semantic_description,
+                required_scopes=registration.required_scopes,
+                supported_data_domains=registration.supported_data_domains,
+                operational_constraints=registration.operational_constraints,
+            ),
             trace=inject_trace_context(),
         )
         if self._peer:
             await self._peer.send_envelope(env)
-        logger.info("Agent %s registered %d capabilities", self.agent_id, len(caps))
+
+        await self._await_registration_ack(len(caps))
+
+    async def _await_registration_ack(self, capability_count: int) -> None:
+        """Wait for ``registered``, and say plainly what happened."""
+        try:
+            ack: RegisteredPayload = await asyncio.wait_for(
+                self._registration_ack, timeout=self.registration_timeout
+            )
+        except asyncio.TimeoutError:
+            # Not fatal: the agent stays connected and keeps serving. A
+            # coordinator older than LIP 0.2.0 does not answer at all, and
+            # refusing to run against one would be a worse failure than
+            # running without confirmation.
+            logger.warning(
+                "Agent %s got no 'registered' answer within %.0fs — continuing, "
+                "but the coordinator may predate LIP 0.2.0 or may have dropped "
+                "the registration",
+                self.agent_id,
+                self.registration_timeout,
+            )
+            return
+        finally:
+            self._registration_ack = None
+
+        if ack.accepted:
+            logger.info(
+                "Agent %s registered %d capabilities",
+                self.agent_id,
+                len(ack.registered_capabilities) or capability_count,
+            )
+            return
+
+        # Refusal is a normal outcome — an unapproved agent, or one offering
+        # a capability it may not. Loud, because the agent is now connected
+        # and will never be asked to do anything.
+        logger.error(
+            "Agent %s was refused registration: %s",
+            self.agent_id,
+            ack.reason or "no reason given",
+        )
+        await self.on_registration_refused(ack)
+
+    async def on_registration_refused(self, ack: RegisteredPayload) -> None:
+        """Hook for a refused registration. Override to react.
+
+        The default keeps the connection open, since refusals are often
+        transient — an agent awaiting admin approval becomes valid the moment
+        someone approves it, and the next reconnection will succeed.
+        """
+        return None
 
     # -----------------------------------------------------------------------
     # Message handling
@@ -432,7 +509,9 @@ class BaseAgent(ABC):
         so awaiting that work here would stop the agent reading anything
         else, including the ``dissolve`` telling it to stop.
         """
-        if envelope.message_type == MessageType.INTENT:
+        if envelope.message_type == MessageType.REGISTERED:
+            self._handle_registered(envelope)
+        elif envelope.message_type == MessageType.INTENT:
             self._spawn(envelope.session_id, self._handle_intent(envelope))
         elif envelope.message_type == MessageType.EXECUTE:
             self._spawn(envelope.session_id, self._handle_execute(envelope))
@@ -448,6 +527,19 @@ class BaseAgent(ABC):
                 self.agent_id,
                 envelope.message_type,
             )
+
+    def _handle_registered(self, envelope: AgBusEnvelope) -> None:
+        """Resolve the pending registration future with the coordinator's answer."""
+        future = self._registration_ack
+        if future is None or future.done():
+            logger.debug(
+                "Agent %s received an unexpected 'registered' message", self.agent_id
+            )
+            return
+        try:
+            future.set_result(RegisteredPayload.model_validate(envelope.payload))
+        except Exception as exc:
+            future.set_exception(exc)
 
     # -----------------------------------------------------------------------
     # Task lifecycle

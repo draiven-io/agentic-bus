@@ -9,7 +9,35 @@ from this package; protocol changes are called out explicitly below.
 
 ## [Unreleased]
 
+### Changed — protocol
+
+- **LIP 0.2.0: agent registration is now a protocol act.** Agents send
+  `register` and receive `registered`; previously they sent `complete` with
+  `session_id="__registration__"` and a nested payload — a shape the
+  specification never described, so an agent written from the spec alone
+  would connect and never be discovered. See
+  [RFC 0001](https://github.com/draiven-io/liquid-interfaces/blob/main/rfcs/0001-register-performative.md).
+- **Registration can now fail visibly.** It was fire-and-forget, so a
+  coordinator that refused an agent said nothing and the agent stayed
+  connected believing it was live. `registered` carries `accepted`, a
+  `reason`, the capabilities actually accepted (which may be a subset), and
+  the coordinator's protocol version. `BaseAgent.on_registration_refused()`
+  is the hook for reacting.
+- **Compatibility is asymmetric — upgrade coordinators before agents.** A
+  0.2.0 coordinator still accepts the deprecated form, so old agents keep
+  working; a 0.2.0 agent cannot register with a 0.1.0 coordinator. A missing
+  `registered` is never fatal: the agent warns and carries on, because
+  refusing to run against an older coordinator is worse than running without
+  confirmation.
+
 ### Fixed
+
+- **An envelope with no `protocol_version` is read as `0.1.0` again.**
+  Bumping the version constant silently changed what a legacy peer's message
+  parsed as, since the field's default tracked the current version.
+  `AgBusEnvelope.from_wire()` now applies the fixed `LIP_LEGACY_VERSION` when
+  the field is absent, while envelopes we construct are still stamped with
+  the current version. The transport parses through it.
 
 - **Agents now reconnect.** When the connection dropped — a coordinator
   restart, a network blip, a proxy timeout — the receive loop exited while

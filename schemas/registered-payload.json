@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://liquidinterfaces.org/schemas/0.2.0/registered-payload.json",
+  "x-lip-version": "0.2.0",
+  "description": "Payload for ``message_type='registered'``.\n\nThe coordinator's answer to ``register``. Registration can legitimately\nbe refused \u2014 an agent may not be approved, or may declare a capability\nit is not permitted to offer \u2014 and without this answer the agent has no\nway to tell refusal from success, so it would keep serving nothing while\nbelieving it was live.",
+  "properties": {
+    "accepted": {
+      "title": "Accepted",
+      "type": "boolean"
+    },
+    "agent_id": {
+      "default": "",
+      "title": "Agent Id",
+      "type": "string"
+    },
+    "reason": {
+      "default": "",
+      "description": "Why registration was refused. Empty when accepted.",
+      "title": "Reason",
+      "type": "string"
+    },
+    "registered_capabilities": {
+      "description": "Capability IDs the coordinator actually accepted.",
+      "items": {
+        "type": "string"
+      },
+      "title": "Registered Capabilities",
+      "type": "array"
+    },
+    "coordinator_protocol_version": {
+      "default": "",
+      "description": "The LIP version the coordinator implements, so an agent can detect a mismatch rather than inferring it from failures.",
+      "title": "Coordinator Protocol Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "accepted"
+  ],
+  "title": "LIP registered payload",
+  "type": "object"
+}

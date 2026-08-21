@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://liquidinterfaces.org/schemas/0.2.0/register-payload.json",
+  "x-lip-version": "0.2.0",
+  "description": "Payload for ``message_type='register'``.\n\nAn agent's declaration of itself: who it is, and what it can be asked to\ndo. Sent once per connection \u2014 the coordinator's capability registry is\nheld against the live socket, so a reconnecting agent must register\nagain or it is connected but undiscoverable.",
+  "properties": {
+    "agent_id": {
+      "title": "Agent Id",
+      "type": "string"
+    },
+    "version": {
+      "default": "0.1.0",
+      "title": "Version",
+      "type": "string"
+    },
+    "mode": {
+      "default": "ephemeral",
+      "description": "'ephemeral' keeps the registration in memory only, discarded when the connection ends; 'persistent' also records the agent in the coordinator's database.",
+      "title": "Mode",
+      "type": "string"
+    },
+    "capabilities": {
+      "description": "Capability descriptors this agent is offering.",
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Capabilities",
+      "type": "array"
+    },
+    "semantic_description": {
+      "default": "",
+      "title": "Semantic Description",
+      "type": "string"
+    },
+    "required_scopes": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Required Scopes",
+      "type": "array"
+    },
+    "supported_data_domains": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Supported Data Domains",
+      "type": "array"
+    },
+    "operational_constraints": {
+      "additionalProperties": true,
+      "title": "Operational Constraints",
+      "type": "object"
+    }
+  },
+  "required": [
+    "agent_id"
+  ],
+  "title": "LIP register payload",
+  "type": "object"
+}

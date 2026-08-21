@@ -1,11 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://liquidinterfaces.org/schemas/0.1.0/envelope.json",
-  "x-lip-version": "0.1.0",
+  "$id": "https://liquidinterfaces.org/schemas/0.2.0/envelope.json",
+  "x-lip-version": "0.2.0",
   "$defs": {
     "MessageType": {
       "description": "Performative message types defined by the Liquid Interfaces Protocol.\n\nSee \u00a74.1.1 of the paper (``lip.md``) for their normative semantics.",
       "enum": [
+        "register",
+        "registered",
         "intent",
         "offer",
         "accept",
@@ -72,7 +74,7 @@
   "description": "Common message envelope for every Liquid Interfaces Protocol message.\n\nEvery message that flows over the transport layer MUST be wrapped in this\nenvelope.  The ``payload`` dict carries type-specific content defined by\nthe individual message schemas below.",
   "properties": {
     "protocol_version": {
-      "default": "0.1.0",
+      "default": "0.2.0",
       "description": "Version of the Liquid Interfaces Protocol this message conforms to.  Absent on messages from pre-versioning peers, which are treated as 0.1.0.",
       "title": "Protocol Version",
       "type": "string"

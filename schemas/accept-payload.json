@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://liquidinterfaces.org/schemas/0.1.0/accept-payload.json",
-  "x-lip-version": "0.1.0",
+  "$id": "https://liquidinterfaces.org/schemas/0.2.0/accept-payload.json",
+  "x-lip-version": "0.2.0",
   "description": "Payload for ``message_type='accept'``.\n\nWhen sent by the coordinator: confirms negotiation is complete.\nWhen sent by the requester: approves the proposed execution plan.",
   "properties": {
     "accepted_offers": {
