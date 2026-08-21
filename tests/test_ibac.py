@@ -1,6 +1,6 @@
 """Tests for the IBAC engine."""
 
-from app.core.ibac.engine import (
+from agentic_bus.core.ibac.engine import (
     IBACEngine,
     IBACPolicy,
     IBACRequest,

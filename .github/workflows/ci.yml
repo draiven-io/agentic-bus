@@ -56,7 +56,7 @@ jobs:
       # Regenerate and fail if the committed schemas drifted from the
       # Pydantic models. The published spec and the implementation must not
       # be allowed to diverge silently.
-      - run: python -m app.core.protocol.export_schemas --check
+      - run: python -m agentic_bus.core.protocol.export_schemas --check
 
   ui:
     name: UI build

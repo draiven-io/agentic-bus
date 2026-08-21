@@ -7,13 +7,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.agents.requester import (
+from agentic_bus.agents.requester import (
     IntentClient,
     IntentResult,
     submit_intent,
     PlanDecision,
 )
-from app.core.protocol.envelope import (
+from agentic_bus.core.protocol.envelope import (
     AgBusEnvelope,
     MessageType,
     SenderInfo,
@@ -108,7 +108,7 @@ class TestIntentClient:
 
         mock_ws = create_mock_websocket(messages)
 
-        with patch("app.agents.requester.websockets.connect", return_value=mock_ws):
+        with patch("agentic_bus.agents.requester.websockets.connect", return_value=mock_ws):
             client = IntentClient(requester_id="test-requester")
             result = await client.submit_intent(
                 "Test intent",
@@ -143,7 +143,7 @@ class TestIntentClient:
         messages = [reject_envelope.model_dump_json()]
         mock_ws = create_mock_websocket(messages)
         
-        with patch("app.agents.requester.websockets.connect", return_value=mock_ws):
+        with patch("agentic_bus.agents.requester.websockets.connect", return_value=mock_ws):
             client = IntentClient(requester_id="test-requester")
             result = await client.submit_intent("Test intent")
         
@@ -209,7 +209,7 @@ class TestIntentClient:
             complete_called = True
             assert result["result"] == "done"
 
-        with patch("app.agents.requester.websockets.connect", return_value=mock_ws):
+        with patch("agentic_bus.agents.requester.websockets.connect", return_value=mock_ws):
             client = IntentClient(requester_id="test-requester")
             _result = await client.submit_intent(
                 "Test intent",
@@ -237,7 +237,7 @@ class TestIntentClient:
         mock_ws.__aenter__.return_value = mock_ws
         mock_ws.__aexit__.return_value = AsyncMock(return_value=None)
         
-        with patch("app.agents.requester.websockets.connect", return_value=mock_ws):
+        with patch("agentic_bus.agents.requester.websockets.connect", return_value=mock_ws):
             client = IntentClient(requester_id="test-requester", timeout=0.1)
             result = await client.submit_intent("Test intent")
         
@@ -274,7 +274,7 @@ class TestIntentClient:
         mock_ws = create_mock_websocket(messages_list)
         
         messages = []
-        with patch("app.agents.requester.websockets.connect", return_value=mock_ws):
+        with patch("agentic_bus.agents.requester.websockets.connect", return_value=mock_ws):
             client = IntentClient(requester_id="test-requester")
             async for envelope in client.submit_intent_stream("Test intent"):
                 messages.append(envelope)
@@ -296,7 +296,7 @@ class TestIntentClient:
         messages = [complete_envelope.model_dump_json()]
         mock_ws = create_mock_websocket(messages)
         
-        with patch("app.agents.requester.websockets.connect", return_value=mock_ws):
+        with patch("agentic_bus.agents.requester.websockets.connect", return_value=mock_ws):
             result = await submit_intent(
                 "Test intent",
                 requester_id="test-app",
@@ -349,7 +349,7 @@ class TestIntentClient:
         async def reject_plan(plan, envelope):
             return PlanDecision(action="reject", reason="Too expensive")
 
-        with patch("app.agents.requester.websockets.connect", return_value=mock_ws):
+        with patch("agentic_bus.agents.requester.websockets.connect", return_value=mock_ws):
             client = IntentClient(requester_id="test-requester")
             result = await client.submit_intent(
                 "Test intent",
@@ -433,7 +433,7 @@ class TestIntentClient:
                 )
             return PlanDecision(action="approve")
 
-        with patch("app.agents.requester.websockets.connect", return_value=mock_ws):
+        with patch("agentic_bus.agents.requester.websockets.connect", return_value=mock_ws):
             client = IntentClient(requester_id="test-requester")
             result = await client.submit_intent(
                 "Test intent",

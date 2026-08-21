@@ -20,5 +20,5 @@
 If it does:
 
 - [ ] `LIP_PROTOCOL_VERSION` bumped appropriately
-- [ ] `python -m app.core.protocol.export_schemas` re-run and `schemas/` committed
+- [ ] `python -m agentic_bus.core.protocol.export_schemas` re-run and `schemas/` committed
 - [ ] A matching RFC is open in the [specification repository](https://github.com/draiven-io/liquid-interfaces)

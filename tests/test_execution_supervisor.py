@@ -6,19 +6,19 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.coordinator.execution.supervisor import (
+from agentic_bus.coordinator.execution.supervisor import (
     ExecutionSupervisor,
     StepMetrics,
 )
-from app.core.session.manager import SessionManager, SessionState
-from app.core.ibac.engine import (
+from agentic_bus.core.session.manager import SessionManager, SessionState
+from agentic_bus.core.ibac.engine import (
     IBACEngine,
     IBACResult,
     IBACDecision,
     IBACEvaluationPoint,
 )
-from app.core.protocol.envelope import IntentPayload
-from app.coordinator.graph.builder import AgBusGraphState
+from agentic_bus.core.protocol.envelope import IntentPayload
+from agentic_bus.coordinator.graph.builder import AgBusGraphState
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +219,7 @@ class TestQualityScoring:
         expected = {"score": 8, "rationale": "Very relevant"}
 
         # Patch the entire LangChain chain's ainvoke via ChatPromptTemplate
-        with patch("app.core.llm.get_llm"):
+        with patch("agentic_bus.core.llm.get_llm"):
             # Intercept the chain built inside _score_step
             _original_score = supervisor._score_step
 
@@ -240,7 +240,7 @@ class TestQualityScoring:
         ibac = IBACEngine()
         supervisor = ExecutionSupervisor(sm, ibac)
 
-        with patch("app.core.llm.get_llm", side_effect=RuntimeError("No LLM")):
+        with patch("agentic_bus.core.llm.get_llm", side_effect=RuntimeError("No LLM")):
             result = await supervisor._score_step("test", "agent-1", {"data": "x"})
 
         assert result["score"] == -1
@@ -302,7 +302,7 @@ class TestOutputSynthesis:
             "metadata": {},
         }
 
-        with patch("app.core.llm.get_llm", side_effect=RuntimeError("nope")):
+        with patch("agentic_bus.core.llm.get_llm", side_effect=RuntimeError("nope")):
             result = await supervisor._synthesise_output(session, final_state)
 
         assert "raw data" in result["output"]

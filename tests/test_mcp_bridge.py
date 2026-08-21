@@ -18,8 +18,8 @@ import pytest
 
 os.environ.setdefault("AGBUS_DB_URL", "sqlite:///:memory:")
 
-from app.core.persistence.database import Base, get_engine
-from app.core.persistence.models import MCPServerStatus
+from agentic_bus.core.persistence.database import Base, get_engine
+from agentic_bus.core.persistence.models import MCPServerStatus
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +41,7 @@ class TestMCPServerRepository:
     """CRUD operations on MCP server bridge configurations."""
 
     def _repo(self):
-        from app.core.persistence.mcp_server_repository import MCPServerRepository
+        from agentic_bus.core.persistence.mcp_server_repository import MCPServerRepository
         return MCPServerRepository()
 
     def test_create_and_get(self):
@@ -160,7 +160,7 @@ class TestMCPServerModel:
     """Verify the MCPServer ORM model fields and defaults."""
 
     def test_defaults(self):
-        from app.core.persistence.mcp_server_repository import MCPServerRepository
+        from agentic_bus.core.persistence.mcp_server_repository import MCPServerRepository
         repo = MCPServerRepository()
         mcp = repo.create(
             server_id="defaults",
@@ -179,7 +179,7 @@ class TestMCPServerModel:
         assert mcp.mean_latency_ms == 0.0
 
     def test_stdio_transport_fields(self):
-        from app.core.persistence.mcp_server_repository import MCPServerRepository
+        from agentic_bus.core.persistence.mcp_server_repository import MCPServerRepository
         repo = MCPServerRepository()
         mcp = repo.create(
             server_id="stdio-srv",
@@ -205,8 +205,8 @@ class TestMCPServerSerializer:
     """Verify ORM → DTO conversion for MCP servers."""
 
     def test_basic_conversion(self):
-        from app.core.persistence.mcp_server_repository import MCPServerRepository
-        from app.coordinator.admin.serializers import mcp_server_to_dto
+        from agentic_bus.core.persistence.mcp_server_repository import MCPServerRepository
+        from agentic_bus.coordinator.admin.serializers import mcp_server_to_dto
 
         repo = MCPServerRepository()
         mcp = repo.create(
@@ -224,8 +224,8 @@ class TestMCPServerSerializer:
         assert dto.discovered_tools == []
 
     def test_with_runtime_info(self):
-        from app.core.persistence.mcp_server_repository import MCPServerRepository
-        from app.coordinator.admin.serializers import mcp_server_to_dto
+        from agentic_bus.core.persistence.mcp_server_repository import MCPServerRepository
+        from agentic_bus.coordinator.admin.serializers import mcp_server_to_dto
 
         repo = MCPServerRepository()
         mcp = repo.create(
@@ -243,8 +243,8 @@ class TestMCPServerSerializer:
         assert dto.discovered_tools == ["search", "translate"]
 
     def test_tool_overrides_conversion(self):
-        from app.core.persistence.mcp_server_repository import MCPServerRepository
-        from app.coordinator.admin.serializers import mcp_server_to_dto
+        from agentic_bus.core.persistence.mcp_server_repository import MCPServerRepository
+        from agentic_bus.coordinator.admin.serializers import mcp_server_to_dto
 
         repo = MCPServerRepository()
         mcp = repo.create(
@@ -276,7 +276,7 @@ class TestMCPBridgeCapabilityMapping:
 
     def _make_mcp_record(self, **overrides):
         """Create a minimal MCPServer-like object for testing."""
-        from app.core.persistence.mcp_server_repository import MCPServerRepository
+        from agentic_bus.core.persistence.mcp_server_repository import MCPServerRepository
         repo = MCPServerRepository()
         defaults = dict(
             server_id="bridge-test",
@@ -288,13 +288,13 @@ class TestMCPBridgeCapabilityMapping:
         return repo.create(**defaults)
 
     def test_init_sets_agent_id(self):
-        from app.agents.mcp_bridge import MCPBridgeAgent
+        from agentic_bus.agents.mcp_bridge import MCPBridgeAgent
         mcp = self._make_mcp_record()
         bridge = MCPBridgeAgent(mcp, coordinator_uri="ws://localhost:9999")
         assert bridge.agent_id == "mcp-bridge-test"
 
     def test_capabilities_empty_before_connect(self):
-        from app.agents.mcp_bridge import MCPBridgeAgent
+        from agentic_bus.agents.mcp_bridge import MCPBridgeAgent
         mcp = self._make_mcp_record()
         bridge = MCPBridgeAgent(mcp)
         assert bridge.capabilities() == []
@@ -309,7 +309,7 @@ class TestMCPSchemas:
     """Verify Pydantic schemas for MCP server API."""
 
     def test_create_request_defaults(self):
-        from app.coordinator.admin.schemas import MCPServerCreateRequest
+        from agentic_bus.coordinator.admin.schemas import MCPServerCreateRequest
         req = MCPServerCreateRequest(
             server_id="test",
             server_url="http://x",
@@ -321,14 +321,14 @@ class TestMCPSchemas:
         assert req.tool_overrides == {}
 
     def test_update_request_all_optional(self):
-        from app.coordinator.admin.schemas import MCPServerUpdateRequest
+        from agentic_bus.coordinator.admin.schemas import MCPServerUpdateRequest
         req = MCPServerUpdateRequest()
         assert req.server_url is None
         assert req.transport is None
         assert req.tool_overrides is None
 
     def test_tool_override_dto(self):
-        from app.coordinator.admin.schemas import MCPToolOverrideDTO
+        from agentic_bus.coordinator.admin.schemas import MCPToolOverrideDTO
         ovr = MCPToolOverrideDTO(
             required_scopes=["admin"],
             estimated_cost=0.5,
@@ -338,7 +338,7 @@ class TestMCPSchemas:
         assert ovr.estimated_cost == 0.5
 
     def test_mcp_server_dto(self):
-        from app.coordinator.admin.schemas import MCPServerDTO
+        from agentic_bus.coordinator.admin.schemas import MCPServerDTO
         dto = MCPServerDTO(
             id=1,
             server_id="s1",
@@ -354,7 +354,7 @@ class TestMCPSchemas:
         assert dto.is_connected is False  # default
 
     def test_dashboard_stats_includes_mcp(self):
-        from app.coordinator.admin.schemas import DashboardStatsDTO
+        from agentic_bus.coordinator.admin.schemas import DashboardStatsDTO
         stats = DashboardStatsDTO(
             total_agents=5,
             approved_agents=2,

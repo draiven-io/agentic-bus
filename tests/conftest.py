@@ -2,7 +2,7 @@
 
 Two things made the suite non-hermetic before this file existed:
 
-1. ``app/cli.py`` calls ``load_dotenv(find_dotenv(usecwd=True))`` at *import*
+1. ``agentic_bus/cli.py`` calls ``load_dotenv(find_dotenv(usecwd=True))`` at *import*
    time.  ``find_dotenv`` walks parent directories, so a developer's local
    ``.env`` — or any ``.env`` sitting above the checkout — silently populated
    ``os.environ`` before a single test ran.
@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from app.core.persistence import database as _database
+from agentic_bus.core.persistence import database as _database
 
 #: Environment prefixes and keys that must never leak in from the host.
 _MANAGED_PREFIXES = ("AGBUS_", "AZURE_OPENAI_")
@@ -48,7 +48,7 @@ def _schema_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """
     from sqlalchemy import create_engine
 
-    from app.core.persistence.models import Base
+    from agentic_bus.core.persistence.models import Base
 
     template = tmp_path_factory.mktemp("schema") / "template.db"
     engine = create_engine(f"sqlite:///{template}", future=True)

@@ -8,13 +8,13 @@ from unittest.mock import patch
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.core.persistence.models import (
+from agentic_bus.core.persistence.models import (
     Base,
     ManagedAgent,
     ManagedAgentCapability,
     ManagedAgentStatus,
 )
-from app.core.persistence.managed_agent_repository import (
+from agentic_bus.core.persistence.managed_agent_repository import (
     ManagedAgentRepository,
     ManagedAgentNotFoundError,
 )
@@ -41,7 +41,7 @@ def session_factory(db_engine):
 def _patch_get_session(session_factory):
     """Patch get_session to use our in-memory DB."""
     with patch(
-        "app.core.persistence.managed_agent_repository.get_session",
+        "agentic_bus.core.persistence.managed_agent_repository.get_session",
         side_effect=lambda: session_factory(),
     ):
         yield
@@ -265,7 +265,7 @@ class TestManagedAgentRepository:
 
 class TestFactory:
     def test_list_available_tools(self):
-        from app.agents.factory import list_available_tools
+        from agentic_bus.agents.factory import list_available_tools
 
         tools = list_available_tools()
         assert isinstance(tools, list)
@@ -277,7 +277,7 @@ class TestFactory:
 
     def test_capabilities_from_agent(self, session_factory):
         """Test conversion from DB model to AgentCapability."""
-        from app.agents.factory import capabilities_from_agent
+        from agentic_bus.agents.factory import capabilities_from_agent
 
         session = session_factory()
         agent = ManagedAgent(
@@ -311,7 +311,7 @@ class TestFactory:
 
     def test_capabilities_from_agent_with_output_fields(self, session_factory):
         """When output_fields_json is set, output_schema is auto-derived."""
-        from app.agents.factory import capabilities_from_agent
+        from agentic_bus.agents.factory import capabilities_from_agent
 
         session = session_factory()
         agent = ManagedAgent(
@@ -345,13 +345,13 @@ class TestFactory:
         assert "confidence" in schema["properties"]
 
     def test_resolve_tool_unknown(self):
-        from app.agents.factory import resolve_tool
+        from agentic_bus.agents.factory import resolve_tool
 
         with pytest.raises(ValueError, match="Unknown tool"):
             resolve_tool("NonExistentToolXYZ")
 
     def test_resolve_tools_skips_failures(self):
-        from app.agents.factory import resolve_tools
+        from agentic_bus.agents.factory import resolve_tools
 
         # All tools will fail to import in test env (crewai_tools not installed)
         # but the function should not raise
@@ -361,14 +361,14 @@ class TestFactory:
 
     def test_tool_descriptions_cover_catalogue(self):
         """Every tool in the catalogue should have a description."""
-        from app.agents.factory import CREWAI_TOOL_CATALOGUE, CREWAI_TOOL_DESCRIPTIONS
+        from agentic_bus.agents.factory import CREWAI_TOOL_CATALOGUE, CREWAI_TOOL_DESCRIPTIONS
 
         missing = set(CREWAI_TOOL_CATALOGUE) - set(CREWAI_TOOL_DESCRIPTIONS)
         assert missing == set(), f"Tools missing descriptions: {missing}"
 
     def test_tool_requirements_metadata(self):
         """CREWAI_TOOL_REQUIREMENTS should have valid structure."""
-        from app.agents.factory import (
+        from agentic_bus.agents.factory import (
             CREWAI_TOOL_CATALOGUE,
             CREWAI_TOOL_REQUIREMENTS,
             get_tool_requirements,
@@ -394,7 +394,7 @@ class TestFactory:
     def test_inject_tool_env(self, monkeypatch):
         """_inject_tool_env should set the correct environment variables."""
         import os
-        from app.agents.factory import _inject_tool_env
+        from agentic_bus.agents.factory import _inject_tool_env
 
         # Clear any existing env var
         monkeypatch.delenv("SERPER_API_KEY", raising=False)
@@ -419,7 +419,7 @@ class TestFactory:
 class TestBuildOutputModel:
     def test_basic_model(self):
         """Build a model with str, int, float fields."""
-        from app.agents.factory import build_output_model
+        from agentic_bus.agents.factory import build_output_model
 
         Model = build_output_model("translate_text", [
             {"name": "translated_text", "type": "str", "description": "The translated text"},
@@ -443,7 +443,7 @@ class TestBuildOutputModel:
         assert "confidence" in schema["properties"]
 
     def test_bool_list_dict_types(self):
-        from app.agents.factory import build_output_model
+        from agentic_bus.agents.factory import build_output_model
 
         Model = build_output_model("mixed", [
             {"name": "is_valid", "type": "bool"},
@@ -457,7 +457,7 @@ class TestBuildOutputModel:
 
     def test_type_aliases(self):
         """'string', 'integer', 'number', 'boolean', 'array', 'object' should work."""
-        from app.agents.factory import build_output_model
+        from agentic_bus.agents.factory import build_output_model
 
         Model = build_output_model("alias_test", [
             {"name": "a", "type": "string"},
@@ -473,7 +473,7 @@ class TestBuildOutputModel:
 
     def test_default_type_is_str(self):
         """Omitted or unknown type defaults to str."""
-        from app.agents.factory import build_output_model
+        from agentic_bus.agents.factory import build_output_model
 
         Model = build_output_model("default_type", [
             {"name": "no_type"},
@@ -483,20 +483,20 @@ class TestBuildOutputModel:
         assert instance.no_type == "hello"
 
     def test_empty_fields_raises(self):
-        from app.agents.factory import build_output_model
+        from agentic_bus.agents.factory import build_output_model
 
         with pytest.raises(ValueError, match="non-empty"):
             build_output_model("empty", [])
 
     def test_all_blank_names_raises(self):
-        from app.agents.factory import build_output_model
+        from agentic_bus.agents.factory import build_output_model
 
         with pytest.raises(ValueError, match="No valid fields"):
             build_output_model("blank", [{"name": ""}, {"name": ""}])
 
     def test_model_dump(self):
         """Verify model_dump() produces a clean dict."""
-        from app.agents.factory import build_output_model
+        from agentic_bus.agents.factory import build_output_model
 
         Model = build_output_model("report", [
             {"name": "title", "type": "str"},
@@ -588,7 +588,7 @@ class TestRepositoryOutputFields:
 class TestCheckboxPickerFallback:
     def test_non_interactive_fallback(self, monkeypatch):
         """When stdin is not a tty, _checkbox_picker falls back to text input."""
-        from app.cli import _checkbox_picker
+        from agentic_bus.cli import _checkbox_picker
 
         # Force isatty() to return False
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
@@ -602,7 +602,7 @@ class TestCheckboxPickerFallback:
 
     def test_non_interactive_empty(self, monkeypatch):
         """Empty input in fallback mode returns empty list."""
-        from app.cli import _checkbox_picker
+        from agentic_bus.cli import _checkbox_picker
 
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
         monkeypatch.setattr("builtins.input", lambda prompt: "")
@@ -618,7 +618,7 @@ class TestCheckboxPickerFallback:
 class TestToolSecretMasking:
     def test_mask_secrets(self):
         """Secret values in tool config should be masked in DTO output."""
-        from app.coordinator.admin.serializers import _mask_tool_secrets
+        from agentic_bus.coordinator.admin.serializers import _mask_tool_secrets
 
         config = {
             "SerperDevTool": {"api_key": "serper-key-1234567890"},
@@ -635,7 +635,7 @@ class TestToolSecretMasking:
 
     def test_mask_non_secret_passes_through(self):
         """Non-secret fields should pass through unmasked."""
-        from app.coordinator.admin.serializers import _mask_tool_secrets
+        from agentic_bus.coordinator.admin.serializers import _mask_tool_secrets
 
         config = {
             "GithubSearchTool": {
@@ -651,7 +651,7 @@ class TestToolSecretMasking:
 
     def test_mask_short_secret(self):
         """Very short secrets should be fully masked."""
-        from app.coordinator.admin.serializers import _mask_tool_secrets
+        from agentic_bus.coordinator.admin.serializers import _mask_tool_secrets
 
         config = {"SerperDevTool": {"api_key": "short"}}
         result = _mask_tool_secrets(["SerperDevTool"], config)

@@ -6,12 +6,12 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.core.persistence.models import (
+from agentic_bus.core.persistence.models import (
     Base,
     UserRole,
 )
-from app.core.persistence.tenant_repository import TenantRepository
-from app.core.persistence.user_repository import UserRepository
+from agentic_bus.core.persistence.tenant_repository import TenantRepository
+from agentic_bus.core.persistence.user_repository import UserRepository
 
 
 # ---------------------------------------------------------------------------
@@ -34,7 +34,7 @@ def session_factory(db_engine):
 @pytest.fixture()
 def tenant_repo(session_factory, monkeypatch):
     monkeypatch.setattr(
-        "app.core.persistence.tenant_repository.get_session",
+        "agentic_bus.core.persistence.tenant_repository.get_session",
         lambda: session_factory(),
     )
     return TenantRepository()
@@ -43,7 +43,7 @@ def tenant_repo(session_factory, monkeypatch):
 @pytest.fixture()
 def user_repo(session_factory, monkeypatch):
     monkeypatch.setattr(
-        "app.core.persistence.user_repository.get_session",
+        "agentic_bus.core.persistence.user_repository.get_session",
         lambda: session_factory(),
     )
     return UserRepository()

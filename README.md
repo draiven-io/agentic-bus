@@ -111,7 +111,7 @@ agentic-bus/
 ├── docker/                     # Container entrypoint
 ├── schemas/                    # Generated LIP JSON Schemas (see CONTRIBUTING)
 │
-├── app/                        # Python backend
+├── agentic_bus/                # Python package
 │   ├── cli.py                  # CLI entry point (agbus command)
 │   ├── core/                   # Shared infrastructure
 │   │   ├── protocol/           #   Message model & envelope
@@ -227,47 +227,82 @@ happen live.
 > `AGBUS_BOOTSTRAP_LLM_API_KEY` in `docker-compose.yml`, or pick a larger
 > local one with `AGBUS_DEMO_MODEL=qwen2.5:14b docker compose up`.
 
-### Install the package
+### Write an agent
 
 ```bash
 pip install agentic-bus
 ```
 
-The core install gives you the coordinator, the protocol, IBAC, and the agent
-SDK. Two features load their dependencies lazily and need an extra:
+That is a small install — pydantic, websockets and OpenTelemetry — because
+writing an agent should not require a web framework, an ORM and an LLM stack.
+An agent is two methods:
+
+```python
+from agentic_bus import AgentCapability, BaseAgent
+
+
+class WeatherAgent(BaseAgent):
+    def capabilities(self):
+        return [AgentCapability(
+            capability_id="forecast",
+            description="Weather forecast for a city",
+        )]
+
+    async def execute_task(self, payload, context):
+        return {"forecast": "sunny"}
+
+
+WeatherAgent(agent_id="weather-01").run_forever()
+```
+
+It connects to a coordinator (`AGBUS_COORDINATOR_URI`, default
+`ws://localhost:8765`), registers its capabilities, and from then on
+participates in discovery, negotiation, IBAC governance and execution. You
+never write an endpoint, a schema or a route.
+
+Submitting an intent is the other half:
+
+```python
+from agentic_bus import submit_intent
+
+result = await submit_intent("what's the weather in Lisbon?")
+```
+
+### Run a coordinator
+
+The coordinator is a much heavier thing — LangGraph, FastAPI, SQLAlchemy, the
+LLM providers — so it lives behind an extra:
 
 ```bash
-pip install "agentic-bus[agents]"   # CrewAI-backed managed agents
+pip install "agentic-bus[server]"
 ```
 
 ```bash
-pip install "agentic-bus[mcp]"      # bridge MCP servers onto the bus
-```
-
-```bash
-pip install "agentic-bus[all]"      # both
-```
-
-Then configure and run it:
-
-```bash
-agbus install
-```
-
-```bash
-agbus serve
+agbus install && agbus serve
 ```
 
 `agbus install` is an interactive wizard: it writes a `.env` for the server
 and database settings and stores your LLM provider in the database. To skip
 the wizard, see [Configuration](#configuration) below.
 
+### Install matrix
+
+| Command | Gives you |
+|---|---|
+| `pip install agentic-bus` | Write agents, submit intents, speak LIP |
+| `pip install "agentic-bus[server]"` | Run a coordinator (`agbus serve`) |
+| `pip install "agentic-bus[agents]"` | CrewAI-backed managed agents |
+| `pip install "agentic-bus[mcp]"` | Bridge MCP servers onto the bus |
+| `pip install "agentic-bus[all]"` | Everything |
+
+Commands that need an extra you don't have say so, and name the extra.
+
 ### Develop against a checkout
 
 ```bash
 git clone https://github.com/draiven-io/agentic-bus.git
 cd agentic-bus
-pip install -e ".[all,dev]"
+pip install -e ".[dev]"
 ```
 
 ```bash
@@ -279,7 +314,7 @@ cd ui && npm install && npm run dev
 ```
 
 ```bash
-python -m app.agents.examples.logistics_agent.agent
+python -m agentic_bus.agents.examples.logistics_agent.agent
 ```
 
 > **⚠️ Note:** run `agbus` from the directory containing your `.env`.

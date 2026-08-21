@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentic-bus"
-version = "0.1.0"
+version = "0.2.0"
 description = "Reference implementation of the Liquid Interfaces Protocol (LIP)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -35,25 +35,15 @@ classifiers = [
     "Topic :: System :: Distributed Computing",
 ]
 
+# Base install: everything needed to *write an agent* and talk to a bus.
+# Deliberately small — an agent author should not have to install a web
+# framework, an ORM and an LLM stack to implement two methods.
 dependencies = [
-    "langchain>=1.0.0,<2.0",
-    "langgraph>=1.0.0,<2.0",
-    "langchain-openai>=1.0.0,<2.0",
-    "langchain-anthropic>=1.0,<2.0",
-    "langchain-google-genai>=2.1,<3.0",
-    "langchain-ollama>=1.0,<2.0",
-    "websockets>=15.0,<16.0",
     "pydantic>=2.11,<3.0",
+    "websockets>=15.0,<16.0",
     "opentelemetry-api>=1.33,<2.0",
     "opentelemetry-sdk>=1.33,<2.0",
-    "pyjwt[crypto]>=2.10,<3.0",
-    "httpx>=0.28,<1.0",
-    "uvloop>=0.21,<1.0; sys_platform != 'win32'",
     "python-dotenv>=1.1,<2.0",
-    "sqlalchemy>=2.0,<3.0",
-    "cryptography>=44.0",
-    "fastapi>=0.115,<1.0",
-    "uvicorn[standard]>=0.34,<1.0",
 ]
 
 [project.urls]
@@ -65,14 +55,33 @@ Paper = "https://arxiv.org/abs/2601.21993"
 Issues = "https://github.com/draiven-io/agentic-bus/issues"
 
 [project.scripts]
-agbus = "app.cli:main"
+agbus = "agentic_bus.cli:main"
 
 [project.optional-dependencies]
+# Running a coordinator: the WebSocket bus, the admin REST API, persistence,
+# IBAC, and LLM-driven discovery/negotiation/composition. Required by `agbus
+# serve` and by everything under agentic_bus.coordinator.
+server = [
+    "langchain>=1.0.0,<2.0",
+    "langgraph>=1.0.0,<2.0",
+    "langchain-openai>=1.0.0,<2.0",
+    "langchain-anthropic>=1.0,<2.0",
+    "langchain-google-genai>=2.1,<3.0",
+    "langchain-ollama>=1.0,<2.0",
+    "pyjwt[crypto]>=2.10,<3.0",
+    "httpx>=0.28,<1.0",
+    "uvloop>=0.21,<1.0; sys_platform != 'win32'",
+    "sqlalchemy>=2.0,<3.0",
+    "cryptography>=44.0",
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.34,<1.0",
+]
+
 # Managed agents: the coordinator can create and run CrewAI-backed agents
 # from database records. Imported lazily, so the core install stays lean and
 # a coordinator that never activates a managed agent never needs these.
 #
-# Pinned below 1.0 because app/agents/factory.py patches CrewAI's private
+# Pinned below 1.0 because agentic_bus/agents/factory.py patches CrewAI's private
 # LLM._get_native_provider; the 1.x line has not been validated against it.
 agents = [
     "crewai>=0.193,<1.0",
@@ -84,18 +93,20 @@ mcp = [
     "langchain-mcp-adapters>=0.3,<1.0",
 ]
 
+# Everything: run a coordinator, managed agents and the MCP bridge.
 all = [
-    "agentic-bus[agents,mcp]",
+    "agentic-bus[server,agents,mcp]",
 ]
 
 dev = [
+    "agentic-bus[all]",
     "pytest>=8.0",
     "pytest-asyncio>=1.0",
     "ruff>=0.11",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["app"]
+packages = ["agentic_bus"]
 
 [tool.hatch.build.targets.sdist]
 # Enumerated explicitly. Hatchling's default sdist sweeps the whole project
@@ -106,7 +117,7 @@ packages = ["app"]
 # The dashboard is deliberately absent — it ships as a container image, not
 # inside the Python package.
 only-include = [
-    "app",
+    "agentic_bus",
     "schemas",
     "tests",
     "docker",
@@ -139,5 +150,5 @@ select = ["E4", "E7", "E9", "F"]
 # These modules must call ``load_dotenv()`` before importing anything that
 # reads configuration at import time, so their imports legitimately sit
 # below the first statement.
-"app/coordinator/server.py" = ["E402"]
-"app/agents/examples/*" = ["E402"]
+"agentic_bus/coordinator/server.py" = ["E402"]
+"agentic_bus/agents/examples/*" = ["E402"]

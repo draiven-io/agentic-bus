@@ -2,7 +2,7 @@
 
 from pydantic import BaseModel
 
-from app.core.registry.capability_registry import (
+from agentic_bus.core.registry.capability_registry import (
     CapabilityRegistry,
     AgentRegistration,
     AgentCapability,

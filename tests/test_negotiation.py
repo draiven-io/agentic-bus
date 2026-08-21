@@ -1,9 +1,9 @@
 """Tests for negotiation engine."""
 
 
-from app.core.protocol.envelope import OfferPayload
-from app.core.session.manager import NegotiationRecord
-from app.coordinator.negotiation.engine import (
+from agentic_bus.core.protocol.envelope import OfferPayload
+from agentic_bus.core.session.manager import NegotiationRecord
+from agentic_bus.coordinator.negotiation.engine import (
     NegotiationEngine,
     CandidateScore,
 )

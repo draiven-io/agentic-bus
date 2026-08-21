@@ -6,8 +6,8 @@ from __future__ import annotations
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-from app.cli import build_parser, main
-from app.core.persistence.repository import AgentRepository
+from agentic_bus.cli import build_parser, main
+from agentic_bus.core.persistence.repository import AgentRepository
 
 
 # ---------------------------------------------------------------------------
@@ -27,14 +27,14 @@ def db():
 
     Provisioned by the autouse ``hermetic_env`` fixture in ``conftest.py``.
     Every repository resolves sessions through
-    ``app.core.persistence.database``, so nothing needs patching here — the
+    ``agentic_bus.core.persistence.database``, so nothing needs patching here — the
     CLI, ``AgentRepository`` and ``ManagedAgentRepository`` all share one
     engine.  Patching a single repository (as this fixture used to) left the
     others pointing at the host's database, which is how ``agbus agent list``
     came to fail on ``no such table: managed_agents`` once the CLI grew
     managed-agent support.
     """
-    from app.core.persistence import database
+    from agentic_bus.core.persistence import database
 
     return database.get_session
 
@@ -338,7 +338,7 @@ class TestInstall:
     @staticmethod
     def _active_llm_config():
         """Return the LLM configuration the wizard activated, if any."""
-        from app.core.persistence.llm_repository import LLMConfigRepository
+        from agentic_bus.core.persistence.llm_repository import LLMConfigRepository
 
         return LLMConfigRepository().get_current_or_none()
 

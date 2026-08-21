@@ -1,7 +1,7 @@
 """Tests for session-scoped shared memory."""
 
 
-from app.core.session.memory import (
+from agentic_bus.core.session.memory import (
     InMemoryBackend,
     MemoryAccessPolicy,
     MemoryWriteRequest,
@@ -337,7 +337,7 @@ class TestInferMemoryPolicies:
     """Verify auto-inference of memory policies from composition plans."""
 
     def test_infer_sequential_plan(self):
-        from app.coordinator.negotiation.engine import NegotiationEngine
+        from agentic_bus.coordinator.negotiation.engine import NegotiationEngine
 
         plan = {
             "steps": [
@@ -371,7 +371,7 @@ class TestInferMemoryPolicies:
         assert "analyst.*" in p2["read_patterns"]
 
     def test_infer_explicit_overrides(self):
-        from app.coordinator.negotiation.engine import NegotiationEngine
+        from agentic_bus.coordinator.negotiation.engine import NegotiationEngine
 
         plan = {
             "steps": [
@@ -391,13 +391,13 @@ class TestInferMemoryPolicies:
         assert policies[0]["write_patterns"] == ["specific.output"]
 
     def test_infer_empty_plan(self):
-        from app.coordinator.negotiation.engine import NegotiationEngine
+        from agentic_bus.coordinator.negotiation.engine import NegotiationEngine
 
         policies = NegotiationEngine.infer_memory_policies({"steps": []})
         assert policies == []
 
     def test_infer_same_agent_multiple_steps(self):
-        from app.coordinator.negotiation.engine import NegotiationEngine
+        from agentic_bus.coordinator.negotiation.engine import NegotiationEngine
 
         plan = {
             "steps": [
@@ -424,13 +424,13 @@ class TestSessionStateMemoryIntegration:
     """Verify that SessionState exposes a usable SessionMemory instance."""
 
     def test_session_state_has_memory(self):
-        from app.core.session.manager import SessionState
+        from agentic_bus.core.session.manager import SessionState
 
         session = SessionState()
         assert isinstance(session.memory, SessionMemory)
 
     def test_memory_survives_session_lifecycle(self):
-        from app.core.session.manager import SessionManager
+        from agentic_bus.core.session.manager import SessionManager
 
         mgr = SessionManager()
         session = mgr.create("user-1")
@@ -444,7 +444,7 @@ class TestSessionStateMemoryIntegration:
         assert retrieved.memory.coordinator_read("shared.test") == "hello"
 
     def test_memory_destroyed_on_dissolution(self):
-        from app.core.session.manager import SessionManager
+        from agentic_bus.core.session.manager import SessionManager
 
         mgr = SessionManager()
         session = mgr.create("user-1")

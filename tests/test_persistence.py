@@ -11,10 +11,10 @@ from cryptography.hazmat.primitives.serialization import (
 )
 from sqlalchemy import create_engine
 
-from app.core.persistence.database import init_db
-from app.core.persistence.models import AgentStatus, Base
-from app.core.persistence.repository import AgentRepository
-from app.core.registry.capability_registry import (
+from agentic_bus.core.persistence.database import init_db
+from agentic_bus.core.persistence.models import AgentStatus, Base
+from agentic_bus.core.persistence.repository import AgentRepository
+from agentic_bus.core.registry.capability_registry import (
     AgentCapability,
     AgentRegistration,
     CapabilityRegistry,
@@ -50,7 +50,7 @@ def repo(db_engine, monkeypatch):
 
     # Patch get_session so the repository uses our in-memory DB
     monkeypatch.setattr(
-        "app.core.persistence.repository.get_session",
+        "agentic_bus.core.persistence.repository.get_session",
         lambda: factory(),
     )
     return AgentRepository()

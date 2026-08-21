@@ -1,8 +1,8 @@
 # Agentic Bus coordinator — WebSocket bus (8765) + Admin REST API (8766).
 #
-# Built with the [agents] extra so the coordinator can run the CrewAI-backed
-# managed agents it auto-starts on boot, and [mcp] so MCP servers registered
-# through the dashboard can be bridged onto the bus.
+# Built with [server] (the coordinator stack), [agents] so it can run the
+# CrewAI-backed managed agents it auto-starts on boot, and [mcp] so MCP
+# servers registered through the dashboard can be bridged onto the bus.
 
 FROM python:3.12-slim AS builder
 
@@ -21,9 +21,9 @@ ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 # `license = { file = "LICENSE" }`, and hatchling reads it to fill in the
 # package metadata.
 COPY pyproject.toml README.md LICENSE ./
-COPY app ./app
+COPY agentic_bus ./agentic_bus
 
-RUN pip install --prefix=/install ".[agents,mcp]"
+RUN pip install --prefix=/install ".[server,agents,mcp]"
 
 
 FROM python:3.12-slim AS runtime
@@ -46,7 +46,7 @@ RUN useradd --create-home --uid 10001 agbus \
     && chown agbus:agbus /data
 
 WORKDIR /app
-COPY --chown=agbus:agbus app ./app
+COPY --chown=agbus:agbus agentic_bus ./agentic_bus
 COPY --chown=agbus:agbus docker/coordinator-entrypoint.sh /usr/local/bin/coordinator-entrypoint.sh
 RUN chmod +x /usr/local/bin/coordinator-entrypoint.sh
 

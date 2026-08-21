@@ -13,12 +13,12 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.core.persistence.models import Base, IBACRuleAction
-from app.core.persistence.ibac_repository import (
+from agentic_bus.core.persistence.models import Base, IBACRuleAction
+from agentic_bus.core.persistence.ibac_repository import (
     IBACRuleRepository,
     IBACRuleNotFoundError,
 )
-from app.core.ibac.engine import (
+from agentic_bus.core.ibac.engine import (
     IBACEngine,
     IBACRequest,
     IBACDecision,
@@ -43,7 +43,7 @@ def repo(db_engine, monkeypatch):
     """IBACRuleRepository wired to the in-memory DB."""
     factory = sessionmaker(bind=db_engine, expire_on_commit=False)
     monkeypatch.setattr(
-        "app.core.persistence.ibac_repository.get_session",
+        "agentic_bus.core.persistence.ibac_repository.get_session",
         lambda: factory(),
     )
     return IBACRuleRepository()
@@ -57,7 +57,7 @@ def engine_with_db(db_engine, monkeypatch):
     """
     factory = sessionmaker(bind=db_engine, expire_on_commit=False)
     monkeypatch.setattr(
-        "app.core.persistence.ibac_repository.get_session",
+        "agentic_bus.core.persistence.ibac_repository.get_session",
         lambda: factory(),
     )
     eng = IBACEngine()
@@ -382,7 +382,7 @@ class TestIBACEngineWithPersistedRules:
 
     def test_in_memory_policies_evaluated_before_db_rules(self, engine_with_db):
         """In-memory policies (layer 1) take precedence over DB rules (layer 2)."""
-        from app.core.ibac.engine import IBACPolicy
+        from agentic_bus.core.ibac.engine import IBACPolicy
 
         eng, repo = engine_with_db
         # DB rule that denies "finance:write"
@@ -444,7 +444,7 @@ class TestIBACEngineWithLLM:
     def engine_with_db(self, db_engine, monkeypatch):
         factory = sessionmaker(bind=db_engine, expire_on_commit=False)
         monkeypatch.setattr(
-            "app.core.persistence.ibac_repository.get_session",
+            "agentic_bus.core.persistence.ibac_repository.get_session",
             lambda: factory(),
         )
         eng = IBACEngine()
@@ -491,9 +491,9 @@ class TestIBACEngineWithLLM:
             intent_text="scrape https://example.com to get product data",
         )
 
-        with patch("app.core.ibac.engine.get_llm", return_value=mock_llm), \
-             patch("app.core.ibac.engine.ChatPromptTemplate") as mock_pt, \
-             patch("app.core.ibac.engine.JsonOutputParser"):
+        with patch("agentic_bus.core.ibac.engine.get_llm", return_value=mock_llm), \
+             patch("agentic_bus.core.ibac.engine.ChatPromptTemplate") as mock_pt, \
+             patch("agentic_bus.core.ibac.engine.JsonOutputParser"):
             # Wire the mocked chain pipeline
             mock_pt.from_messages.return_value = MagicMock()
             mock_pt.from_messages.return_value.__or__ = MagicMock(return_value=MagicMock())
@@ -529,9 +529,9 @@ class TestIBACEngineWithLLM:
             intent_text="plan shipping route from warehouse A to warehouse B",
         )
 
-        with patch("app.core.ibac.engine.get_llm", return_value=mock_llm), \
-             patch("app.core.ibac.engine.ChatPromptTemplate") as mock_pt, \
-             patch("app.core.ibac.engine.JsonOutputParser"):
+        with patch("agentic_bus.core.ibac.engine.get_llm", return_value=mock_llm), \
+             patch("agentic_bus.core.ibac.engine.ChatPromptTemplate") as mock_pt, \
+             patch("agentic_bus.core.ibac.engine.JsonOutputParser"):
             mock_pt.from_messages.return_value = MagicMock()
             mock_pt.from_messages.return_value.__or__ = MagicMock(return_value=MagicMock())
             mock_pt.from_messages.return_value.__or__.return_value.__or__ = MagicMock(
@@ -565,9 +565,9 @@ class TestIBACEngineWithLLM:
             intent_text="Transfer $50,000 to supplier account",
         )
 
-        with patch("app.core.ibac.engine.get_llm", return_value=mock_llm), \
-             patch("app.core.ibac.engine.ChatPromptTemplate") as mock_pt, \
-             patch("app.core.ibac.engine.JsonOutputParser"):
+        with patch("agentic_bus.core.ibac.engine.get_llm", return_value=mock_llm), \
+             patch("agentic_bus.core.ibac.engine.ChatPromptTemplate") as mock_pt, \
+             patch("agentic_bus.core.ibac.engine.JsonOutputParser"):
             mock_pt.from_messages.return_value = MagicMock()
             mock_pt.from_messages.return_value.__or__ = MagicMock(return_value=MagicMock())
             mock_pt.from_messages.return_value.__or__.return_value.__or__ = MagicMock(
@@ -596,7 +596,7 @@ class TestIBACEngineWithLLM:
         )
 
         # Simulate no LLM configured
-        with patch("app.core.ibac.engine.get_llm", side_effect=RuntimeError("No LLM")):
+        with patch("agentic_bus.core.ibac.engine.get_llm", side_effect=RuntimeError("No LLM")):
             result = await eng.evaluate_with_llm(req)
 
         # Falls back to programmatic check which catches the keyword
@@ -620,9 +620,9 @@ class TestIBACEngineWithLLM:
             requested_scopes=["admin:write"],
         )
 
-        with patch("app.core.ibac.engine.get_llm", return_value=mock_llm), \
-             patch("app.core.ibac.engine.ChatPromptTemplate") as mock_pt, \
-             patch("app.core.ibac.engine.JsonOutputParser"):
+        with patch("agentic_bus.core.ibac.engine.get_llm", return_value=mock_llm), \
+             patch("agentic_bus.core.ibac.engine.ChatPromptTemplate") as mock_pt, \
+             patch("agentic_bus.core.ibac.engine.JsonOutputParser"):
             # Make the chain raise an error
             mock_chain = MagicMock()
             mock_chain.ainvoke = AsyncMock(side_effect=RuntimeError("LLM timeout"))
@@ -677,7 +677,7 @@ class TestIBACEngineWithLLM:
     async def test_in_memory_policy_checked_before_llm(self, engine_with_db):
         """In-memory policies are checked first – if they deny, LLM is
         never called."""
-        from app.core.ibac.engine import IBACPolicy
+        from agentic_bus.core.ibac.engine import IBACPolicy
 
         eng, repo = engine_with_db
         eng.add_policy(IBACPolicy(
