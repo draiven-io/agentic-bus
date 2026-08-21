@@ -143,9 +143,14 @@ export function useIntentWs() {
   const [stepStatuses, setStepStatuses] = useState<Map<number, FlowAgent["status"]>>(new Map());
 
   const wsRef = useRef<WebSocket | null>(null);
+  // Date.now() must not run inline in useRef's initializer — that
+  // argument is re-evaluated on every render even though only the first
+  // result is kept, which is exactly what React's purity rule flags.
+  // useState's lazy initializer runs it exactly once instead.
+  const [senderId] = useState(() => `ui-${Date.now().toString(36)}`);
   const senderRef = useRef<SenderInfo>({
     kind: "requester",
-    id: `ui-${Date.now().toString(36)}`,
+    id: senderId,
     oidc_subject: "",
   });
 

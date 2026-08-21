@@ -52,7 +52,7 @@ import {
   updateUser,
   deleteUser,
 } from "@/lib/api";
-import type { User, Tenant } from "@/lib/types";
+import type { User, Tenant, UserRole } from "@/lib/types";
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -286,7 +286,10 @@ function EditUserDialog({
           </div>
           <div className="grid gap-2">
             <Label>Role</Label>
-            <Select value={role} onValueChange={setRole}>
+            {/* Select's onValueChange is (value: string) => void; role is
+                the narrower UserRole. The two SelectItems below are the
+                only values it can ever emit, so the cast is safe. */}
+            <Select value={role} onValueChange={(value) => setRole(value as UserRole)}>
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
