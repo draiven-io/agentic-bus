@@ -281,7 +281,6 @@ class AdminService:
         Raises ``PermissionError`` if *identity* is not an admin.
         """
         require_admin(identity, self.policy)
-        from app.core.persistence.models import IBACRule
         rule = self.ibac_repo.add(
             rule_id=rule_id,
             name=name,

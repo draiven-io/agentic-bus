@@ -8,11 +8,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.persistence.models import (
     Base,
-    Tenant,
-    User,
     UserRole,
-    UserTenantAssociation,
-    AgentTenantAssociation,
 )
 from app.core.persistence.tenant_repository import TenantRepository
 from app.core.persistence.user_repository import UserRepository

@@ -19,7 +19,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 
 from app.core.llm import get_llm
-from app.core.protocol.envelope import IntentPayload, OfferPayload
+from app.core.protocol.envelope import IntentPayload
 from app.core.registry.capability_registry import CapabilityRegistry
 from app.core.session.manager import NegotiationRecord
 

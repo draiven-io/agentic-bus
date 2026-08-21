@@ -12,7 +12,6 @@ from sqlalchemy.orm import sessionmaker
 from app.core.persistence.models import (
     Base,
     ManagedAgent,
-    ManagedAgentStatus,
     PersistentAgent,
     AgentStatus,
 )
@@ -130,8 +129,8 @@ class TestManagedAgentStats:
     def test_running_average_three_executions(self, managed_repo, managed_agent):
         scores = [7.0, 9.0, 5.0]
         latencies = [80.0, 120.0, 200.0]
-        for s, l in zip(scores, latencies):
-            managed_repo.record_execution("stats-managed-01", quality_score=s, latency_ms=l)
+        for s, lat in zip(scores, latencies):
+            managed_repo.record_execution("stats-managed-01", quality_score=s, latency_ms=lat)
 
         agent = managed_repo.get("stats-managed-01")
         assert agent.total_executions == 3
@@ -182,8 +181,8 @@ class TestPersistentAgentStats:
     def test_running_average_five_executions(self, persistent_repo, persistent_agent):
         scores = [3.0, 5.0, 7.0, 9.0, 6.0]
         latencies = [100.0, 200.0, 150.0, 80.0, 170.0]
-        for s, l in zip(scores, latencies):
-            persistent_repo.record_execution("stats-persistent-01", quality_score=s, latency_ms=l)
+        for s, lat in zip(scores, latencies):
+            persistent_repo.record_execution("stats-persistent-01", quality_score=s, latency_ms=lat)
 
         agent = persistent_repo.get("stats-persistent-01")
         assert agent.total_executions == 5

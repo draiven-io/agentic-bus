@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://liquidinterfaces.org/schemas/0.1.0/reject-payload.json",
+  "x-lip-version": "0.1.0",
+  "description": "Payload for ``message_type='reject'``.\n\nWhen sent by the coordinator: intent or negotiation failed.\nWhen sent by the requester: rejects the proposed plan.  If\n``renegotiation_hint`` is provided, the coordinator SHOULD attempt\na new discovery/negotiation cycle incorporating the feedback.",
+  "properties": {
+    "rejected_offers": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Rejected Offers",
+      "type": "array"
+    },
+    "reason": {
+      "default": "",
+      "title": "Reason",
+      "type": "string"
+    },
+    "renegotiation_hint": {
+      "additionalProperties": true,
+      "title": "Renegotiation Hint",
+      "type": "object"
+    },
+    "renegotiate": {
+      "default": false,
+      "description": "When True, the requester is requesting renegotiation rather than outright termination.  The coordinator should attempt a new negotiation round incorporating renegotiation_hint.",
+      "title": "Renegotiate",
+      "type": "boolean"
+    }
+  },
+  "title": "LIP reject payload",
+  "type": "object"
+}

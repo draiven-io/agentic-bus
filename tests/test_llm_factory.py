@@ -7,7 +7,7 @@ The factory reads from:
 """
 
 import os
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -120,7 +120,7 @@ class TestGetLLM:
         """When all params are explicit, DB is not consulted."""
         with patch("app.core.llm.factory._load_db_config") as mock_db:
             with patch.dict(os.environ, {"OPENAI_API_KEY": "k"}, clear=False):
-                llm = get_llm(provider="openai", model="gpt-4o-mini", temperature=0.0)
+                _llm = get_llm(provider="openai", model="gpt-4o-mini", temperature=0.0)
             mock_db.assert_not_called()
 
 

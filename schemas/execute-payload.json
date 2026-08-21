@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://liquidinterfaces.org/schemas/0.1.0/execute-payload.json",
+  "x-lip-version": "0.1.0",
+  "description": "Payload for ``message_type='execute'``.",
+  "properties": {
+    "execution_plan": {
+      "additionalProperties": true,
+      "title": "Execution Plan",
+      "type": "object"
+    },
+    "authorized_scopes": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Authorized Scopes",
+      "type": "array"
+    }
+  },
+  "title": "LIP execute payload",
+  "type": "object"
+}

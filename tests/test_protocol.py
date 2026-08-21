@@ -1,6 +1,7 @@
 """Tests for the Agentic Bus protocol envelope."""
 
 from app.core.protocol.envelope import (
+    LIP_PROTOCOL_VERSION,
     AgBusEnvelope,
     MessageType,
     SenderInfo,
@@ -8,14 +9,12 @@ from app.core.protocol.envelope import (
     IntentPayload,
     OfferPayload,
     AcceptPayload,
-    RejectPayload,
-    CompletePayload,
     DissolvePayload,
-    EventPayload,
     TraceContext,
     build_envelope,
     PAYLOAD_TYPES,
 )
+from app.core.protocol.export_schemas import SCHEMA_DIR, build_schemas, check
 
 
 class TestMessageTypes:
@@ -136,3 +135,69 @@ class TestDissolvePayload:
     def test_default_reason(self):
         p = DissolvePayload()
         assert p.reason == "session_complete"
+
+
+class TestProtocolVersion:
+    """Every message carries the wire-format version it conforms to.
+
+    Without it a peer has no way to tell a message it cannot parse from one
+    it merely disagrees with, which makes evolving the protocol a breaking
+    change by default.
+    """
+
+    def test_envelope_defaults_to_current_version(self):
+        env = build_envelope(
+            MessageType.INTENT,
+            SenderInfo(kind=SenderKind.REQUESTER, id="req-1"),
+            "session-1",
+            IntentPayload(intent_text="do the thing"),
+        )
+        assert env.protocol_version == LIP_PROTOCOL_VERSION
+
+    def test_version_survives_serialisation(self):
+        env = build_envelope(
+            MessageType.INTENT,
+            SenderInfo(kind=SenderKind.REQUESTER, id="req-1"),
+            "session-1",
+            IntentPayload(intent_text="do the thing"),
+        )
+        restored = AgBusEnvelope.model_validate_json(env.model_dump_json())
+        assert restored.protocol_version == LIP_PROTOCOL_VERSION
+
+    def test_messages_from_pre_versioning_peers_are_accepted(self):
+        """An envelope without the field is read as the baseline version."""
+        legacy = {
+            "message_id": "m-1",
+            "session_id": "s-1",
+            "message_type": "intent",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "sender": {"kind": "requester", "id": "req-1"},
+            "payload": {"intent_text": "hello"},
+        }
+        env = AgBusEnvelope.model_validate(legacy)
+        assert env.protocol_version == "0.1.0"
+
+
+class TestSchemaExport:
+    """The published JSON Schemas are generated from these models.
+
+    CI runs ``export_schemas --check``; this asserts the generator itself
+    stays consistent so a drift failure means the models changed, not that
+    the exporter broke.
+    """
+
+    def test_every_message_type_has_a_payload_schema(self):
+        schemas = build_schemas()
+        for message_type in MessageType:
+            assert f"{message_type.value}-payload.json" in schemas
+
+    def test_envelope_schema_is_identified_and_versioned(self):
+        schema = build_schemas()["envelope.json"]
+        assert schema["title"] == "LIP Message Envelope"
+        assert schema["x-lip-version"] == LIP_PROTOCOL_VERSION
+        assert LIP_PROTOCOL_VERSION in schema["$id"]
+        assert "protocol_version" in schema["properties"]
+
+    def test_committed_schemas_match_the_models(self):
+        """Guards the same invariant as CI, so a local run catches drift too."""
+        assert check(SCHEMA_DIR) == []

@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.core.persistence.models import Base, LLMConfig
+from app.core.persistence.models import Base
 from app.core.persistence.llm_repository import (
     LLMConfigRepository,
     LLMConfigNotFoundError,
@@ -156,7 +156,7 @@ class TestLLMConfigRepository:
     def test_extra_config_stored(self):
         repo = LLMConfigRepository()
         extras = {"azure_openai_endpoint": "https://test.azure.com/", "azure_openai_api_version": "2024-12-01"}
-        cfg = repo.add(
+        _cfg = repo.add(
             name="azure-cfg",
             provider="azure",
             model="gpt-4o-mini",

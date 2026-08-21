@@ -1093,7 +1093,7 @@ Execution plan steps:
             await self._emit_event(
                 session.session_id,
                 "execution",
-                f"Agent quality scores: "
+                "Agent quality scores: "
                 + ", ".join(
                     f"{m['agent_id']}={m.get('quality_score', '?')}/10 ({m.get('latency_ms', 0):.0f}ms, {m.get('retries', 0)} retries)"
                     for m in agent_metrics
@@ -1539,8 +1539,12 @@ Execution plan steps:
             session.session_id,
         )
 
+        # Validate the requester's payload before acting on it — a malformed
+        # accept must not be treated as approval.  Nothing else is needed
+        # from it, so the parsed value is deliberately discarded.
+        AcceptPayload.model_validate(envelope.payload)
+
         # Acknowledge approval back to the requester
-        accept_payload = AcceptPayload.model_validate(envelope.payload)
         merged_output_schema = self._build_merged_output_schema(session.composition_plan)
 
         ack_env = build_envelope(

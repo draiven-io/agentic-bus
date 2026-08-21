@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 
 from dotenv import load_dotenv, find_dotenv
 

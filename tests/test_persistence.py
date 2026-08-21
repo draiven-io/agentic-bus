@@ -2,21 +2,17 @@
 
 from __future__ import annotations
 
-import os
-from unittest.mock import patch
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import (
     Encoding,
-    NoEncryption,
     PublicFormat,
-    PrivateFormat,
 )
 from sqlalchemy import create_engine
 
-from app.core.persistence.database import init_db, get_engine
-from app.core.persistence.models import AgentStatus, Base, PersistentAgent
+from app.core.persistence.database import init_db
+from app.core.persistence.models import AgentStatus, Base
 from app.core.persistence.repository import AgentRepository
 from app.core.registry.capability_registry import (
     AgentCapability,
@@ -49,7 +45,7 @@ def db_engine(tmp_path):
 @pytest.fixture()
 def repo(db_engine, monkeypatch):
     """Return an AgentRepository wired to the in-memory DB."""
-    from sqlalchemy.orm import sessionmaker, Session
+    from sqlalchemy.orm import sessionmaker
     factory = sessionmaker(bind=db_engine, expire_on_commit=False)
 
     # Patch get_session so the repository uses our in-memory DB

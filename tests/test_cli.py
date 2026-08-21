@@ -2,17 +2,11 @@
 
 from __future__ import annotations
 
-import os
-from unittest.mock import patch
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
 from app.cli import build_parser, main
-from app.core.persistence.models import Base
 from app.core.persistence.repository import AgentRepository
 
 
@@ -28,22 +22,21 @@ def _generate_public_pem() -> str:
 
 
 @pytest.fixture()
-def db(tmp_path, monkeypatch):
-    """Wire up an in-memory SQLite for the CLI to hit."""
-    engine = create_engine("sqlite:///:memory:", echo=False, future=True)
-    Base.metadata.create_all(engine)
-    factory = sessionmaker(bind=engine, expire_on_commit=False)
+def db():
+    """The private, fully-migrated SQLite database for this test.
 
-    monkeypatch.setattr(
-        "app.core.persistence.repository.get_session",
-        lambda: factory(),
-    )
-    # Also patch init_db to be a no-op (tables already exist)
-    monkeypatch.setattr(
-        "app.core.persistence.database.init_db",
-        lambda *a, **kw: None,
-    )
-    return factory
+    Provisioned by the autouse ``hermetic_env`` fixture in ``conftest.py``.
+    Every repository resolves sessions through
+    ``app.core.persistence.database``, so nothing needs patching here — the
+    CLI, ``AgentRepository`` and ``ManagedAgentRepository`` all share one
+    engine.  Patching a single repository (as this fixture used to) left the
+    others pointing at the host's database, which is how ``agbus agent list``
+    came to fail on ``no such table: managed_agents`` once the CLI grew
+    managed-agent support.
+    """
+    from app.core.persistence import database
+
+    return database.get_session
 
 
 @pytest.fixture()
@@ -87,8 +80,17 @@ class TestConfigShow:
         out = capsys.readouterr().out
         assert "AGBUS_HOST" in out
         assert "AGBUS_PORT" in out
-        assert "AGBUS_LLM_PROVIDER" in out
         assert "AGBUS_DATABASE_URL" in out
+
+    def test_config_show_reports_llm_config(self, capsys):
+        """LLM settings live in the database, not the environment.
+
+        ``config show`` therefore renders a dedicated section: either the
+        active configuration or a hint pointing at ``agbus llm add``.
+        """
+        main(["config", "show"])
+        out = capsys.readouterr().out
+        assert "Active LLM Configuration" in out or "agbus llm add" in out
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +188,8 @@ class TestAgentList:
     def test_list_empty(self, capsys, db):
         main(["agent", "list"])
         out = capsys.readouterr().out
-        assert "No persistent agents" in out
+        # ``agent list`` covers registered *and* managed agents.
+        assert "No agents found" in out
 
     def test_list_with_agents(self, capsys, repo, db):
         repo.enrol("agent-1", _generate_public_pem(), semantic_description="First")
@@ -295,55 +298,81 @@ class TestAgentDelete:
 
 
 class TestInstall:
-    """Tests for the ``agbus install`` interactive setup wizard."""
+    """Tests for the ``agbus install`` interactive setup wizard.
+
+    The wizard persists LLM settings to the *database* (the same store
+    ``agbus llm add`` writes to); ``.env`` carries only server, database and
+    authentication configuration.  Provider credentials therefore never touch
+    the generated file.
+    """
 
     @pytest.fixture(autouse=True)
     def _setup(self, tmp_path, monkeypatch, db):
-        """Run every install test in a tmp dir with a patched DB."""
+        """Run every install test in a tmp dir against the per-test database."""
         monkeypatch.chdir(tmp_path)
         self.tmp = tmp_path
 
     # Helper to feed answers to the wizard
     @staticmethod
     def _make_input_fn(answers: list[str]):
-        """Return an ``input()`` replacement that pops answers in order."""
+        """Return an ``input()`` replacement that pops answers in order.
+
+        Running out of answers raises instead of returning ``""``.  The last
+        wizard prompt - "Start the coordinator server now?" - defaults to
+        *yes*, so an answer list that drifted out of sync used to boot a real
+        coordinator and hang the run forever.  Failing loudly turns a silent
+        hang into an ordinary assertion error.
+        """
         it = iter(answers)
+
         def _input(prompt=""):
             try:
                 return next(it)
             except StopIteration:
-                return ""
+                raise AssertionError(
+                    f"wizard asked more questions than the test answered: {prompt!r}"
+                ) from None
+
         return _input
+
+    @staticmethod
+    def _active_llm_config():
+        """Return the LLM configuration the wizard activated, if any."""
+        from app.core.persistence.llm_repository import LLMConfigRepository
+
+        return LLMConfigRepository().get_current_or_none()
 
     def test_install_openai_defaults_no_start(self, capsys, monkeypatch):
         """Walk through with all defaults (openai), decline to start."""
         answers = [
-            "",           # provider choice → default openai
-            "",           # model → gpt-4o-mini
-            "",           # temperature → 0.0
-            "",           # API key (secret → getpass)
-            "",           # host → 0.0.0.0
-            "",           # port → 8765
-            "",           # log level → INFO
-            "",           # db url → sqlite:///agbus_agents.db
-            "n",          # auto-approve → no
-            "n",          # configure OIDC → no
-            "n",          # start server → no
+            "",           # provider choice -> default openai
+            "",           # model -> gpt-4o-mini
+            "",           # temperature -> 0.0
+            "",           # OPENAI_API_KEY -> leave at placeholder
+            "",           # host -> 0.0.0.0
+            "",           # port -> 8765
+            "",           # log level -> INFO
+            "",           # db url -> sqlite:///agbus_agents.db
+            "n",          # auto-approve -> no
+            "n",          # configure OIDC -> no
+            "n",          # start server -> no
         ]
         monkeypatch.setattr("builtins.input", self._make_input_fn(answers))
-        monkeypatch.setattr("getpass.getpass", lambda _: "")
 
         main(["install", "--force"])
 
         env_file = self.tmp / ".env"
         assert env_file.exists()
         content = env_file.read_text()
-        assert "AGBUS_LLM_PROVIDER=openai" in content
-        assert "AGBUS_LLM_MODEL=gpt-4o-mini" in content
         assert "AGBUS_HOST=0.0.0.0" in content
         assert "AGBUS_PORT=8765" in content
         assert "AGBUS_DATABASE_URL=sqlite:///agbus_agents.db" in content
         assert "AGBUS_AGENT_AUTO_APPROVE=false" in content
+
+        cfg = self._active_llm_config()
+        assert cfg is not None
+        assert cfg.provider == "openai"
+        assert cfg.model == "gpt-4o-mini"
 
         out = capsys.readouterr().out
         assert "Setup Wizard" in out
@@ -352,45 +381,50 @@ class TestInstall:
     def test_install_anthropic_with_auth(self, capsys, monkeypatch):
         """Pick anthropic, fill in OIDC, skip start."""
         answers = [
-            "2",                     # provider → anthropic
-            "claude-sonnet-4-20250514",        # model
-            "0.3",                   # temperature
-            # (API key via getpass)
-            "127.0.0.1",             # host
-            "9999",                  # port
-            "2",                     # log level → INFO (default)
-            "sqlite:///test.db",     # db url
-            "y",                     # auto-approve
-            "y",                     # configure OIDC
-            "https://issuer.test",   # oidc issuer
-            "my-audience",           # oidc audience
-            "sub1,sub2",             # admin subjects
-            "admin",                 # admin role
-            "groups",                # admin role claim
-            "n",                     # start → no
+            "2",                         # provider -> anthropic
+            "claude-sonnet-4-20250514",  # model
+            "0.3",                       # temperature
+            "sk-ant-secret",             # ANTHROPIC_API_KEY
+            "127.0.0.1",                 # host
+            "9999",                      # port
+            "2",                         # log level -> INFO (default)
+            "sqlite:///test.db",         # db url
+            "y",                         # auto-approve
+            "y",                         # configure OIDC
+            "https://issuer.test",       # oidc issuer
+            "my-audience",               # oidc audience
+            "sub1,sub2",                 # admin subjects
+            "admin",                     # admin role
+            "groups",                    # admin role claim
+            "n",                         # start -> no
         ]
         monkeypatch.setattr("builtins.input", self._make_input_fn(answers))
-        monkeypatch.setattr("getpass.getpass", lambda _: "sk-ant-secret")
 
         main(["install", "--force"])
 
         content = (self.tmp / ".env").read_text()
-        assert "AGBUS_LLM_PROVIDER=anthropic" in content
-        assert "ANTHROPIC_API_KEY=sk-ant-secret" in content
         assert "AGBUS_HOST=127.0.0.1" in content
         assert "AGBUS_PORT=9999" in content
-        assert "AGBUS_LLM_TEMPERATURE=0.3" in content
         assert "AGBUS_AGENT_AUTO_APPROVE=true" in content
         assert "AGBUS_OIDC_ISSUER=https://issuer.test" in content
         assert "AGBUS_OIDC_AUDIENCE=my-audience" in content
         assert "AGBUS_ADMIN_SUBJECTS=sub1,sub2" in content
         assert "AGBUS_ADMIN_ROLE=admin" in content
         assert "AGBUS_ADMIN_ROLE_CLAIM=groups" in content
+        # Credentials belong in the database, never in the generated file.
+        assert "sk-ant-secret" not in content
+
+        cfg = self._active_llm_config()
+        assert cfg is not None
+        assert cfg.provider == "anthropic"
+        assert cfg.model == "claude-sonnet-4-20250514"
+        assert cfg.temperature == 0.3
+        assert cfg.api_key == "sk-ant-secret"
 
     def test_install_ollama(self, capsys, monkeypatch):
-        """Ollama provider uses base URL instead of API key."""
+        """Ollama provider uses a base URL instead of an API key."""
         answers = [
-            "4",                              # provider → ollama
+            "4",                              # provider -> ollama
             "mistral",                        # model
             "0.7",                            # temperature
             "http://myhost:11434",            # base url (not secret)
@@ -407,19 +441,22 @@ class TestInstall:
         main(["install", "--force"])
 
         content = (self.tmp / ".env").read_text()
-        assert "AGBUS_LLM_PROVIDER=ollama" in content
-        assert "AGBUS_LLM_MODEL=mistral" in content
-        assert "AGBUS_OLLAMA_BASE_URL=http://myhost:11434" in content
-        # Should NOT have any *_API_KEY
         assert "API_KEY" not in content
 
+        cfg = self._active_llm_config()
+        assert cfg is not None
+        assert cfg.provider == "ollama"
+        assert cfg.model == "mistral"
+        assert cfg.api_key is None
+        assert cfg.extra_config["base_url"] == "http://myhost:11434"
+
     def test_install_azure(self, capsys, monkeypatch):
-        """Azure provider needs extra keys."""
+        """Azure provider needs extra deployment metadata."""
         answers = [
-            "5",                              # provider → azure
+            "5",                              # provider -> azure
             "gpt-4",                          # model
             "0.0",                            # temperature
-            # (API key via getpass)
+            "az-key-123",                     # AZURE_OPENAI_API_KEY
             "https://my.openai.azure.com/",   # endpoint
             "gpt-4-deploy",                   # deployment
             "2024-06-01",                     # api version
@@ -432,34 +469,31 @@ class TestInstall:
             "n",                              # start
         ]
         monkeypatch.setattr("builtins.input", self._make_input_fn(answers))
-        monkeypatch.setattr("getpass.getpass", lambda _: "az-key-123")
 
         main(["install", "--force"])
 
         content = (self.tmp / ".env").read_text()
-        assert "AGBUS_LLM_PROVIDER=azure" in content
-        assert "AZURE_OPENAI_API_KEY=az-key-123" in content
-        assert "AZURE_OPENAI_ENDPOINT=https://my.openai.azure.com/" in content
-        assert "AZURE_OPENAI_DEPLOYMENT=gpt-4-deploy" in content
-        assert "AZURE_OPENAI_API_VERSION=2024-06-01" in content
+        assert "az-key-123" not in content
+
+        cfg = self._active_llm_config()
+        assert cfg is not None
+        assert cfg.provider == "azure"
+        assert cfg.api_key == "az-key-123"
+        assert cfg.extra_config["azure_openai_endpoint"] == "https://my.openai.azure.com/"
+        assert cfg.extra_config["azure_openai_deployment"] == "gpt-4-deploy"
+        assert cfg.extra_config["azure_openai_api_version"] == "2024-06-01"
 
     def test_install_refuses_overwrite_without_force(self, capsys, monkeypatch):
-        """If .env exists and user declines overwrite → exit 0."""
+        """If .env exists and the user declines the overwrite -> exit 0."""
         (self.tmp / ".env").write_text("existing")
         answers = [
-            "",    # provider default
-            "",    # model default
-            "",    # temperature default
-            "",    # host
-            "",    # port
-            "",    # log level
-            "",    # db url
-            "n",   # auto-approve
-            "n",   # OIDC
-            "n",   # overwrite → no
+            "", "", "", "",   # provider, model, temperature, key
+            "", "", "", "",   # host, port, log level, db url
+            "n",              # auto-approve
+            "n",              # OIDC
+            "n",              # overwrite -> no
         ]
         monkeypatch.setattr("builtins.input", self._make_input_fn(answers))
-        monkeypatch.setattr("getpass.getpass", lambda _: "")
 
         with pytest.raises(SystemExit) as exc:
             main(["install"])
@@ -471,26 +505,24 @@ class TestInstall:
         """--force skips the overwrite prompt."""
         (self.tmp / ".env").write_text("old")
         answers = [
-            "",  "",  "",   # provider defaults
-            "",  "",  "",  "",  # server defaults
-            "n",             # auto-approve
-            "n",             # OIDC
-            "n",             # start
+            "", "", "", "",   # provider, model, temperature, key
+            "", "", "", "",   # host, port, log level, db url
+            "n",              # auto-approve
+            "n",              # OIDC
+            "n",              # start
         ]
         monkeypatch.setattr("builtins.input", self._make_input_fn(answers))
-        monkeypatch.setattr("getpass.getpass", lambda _: "")
 
         main(["install", "--force"])
 
         content = (self.tmp / ".env").read_text()
-        assert "AGBUS_LLM_PROVIDER=openai" in content
+        assert "AGBUS_HOST=" in content
         assert content != "old"
 
     def test_install_writes_db_init(self, capsys, monkeypatch):
         """Wizard should call init_db and report success."""
-        answers = [""] * 7 + ["n", "n", "n"]
+        answers = [""] * 8 + ["n", "n", "n"]
         monkeypatch.setattr("builtins.input", self._make_input_fn(answers))
-        monkeypatch.setattr("getpass.getpass", lambda _: "")
 
         main(["install", "--force"])
 
@@ -500,35 +532,37 @@ class TestInstall:
     def test_install_custom_output_path(self, capsys, monkeypatch):
         """Can write to a custom path with -o."""
         target = self.tmp / "custom.env"
-        answers = [""] * 7 + ["n", "n", "n"]
+        answers = [""] * 8 + ["n", "n", "n"]
         monkeypatch.setattr("builtins.input", self._make_input_fn(answers))
-        monkeypatch.setattr("getpass.getpass", lambda _: "")
 
         main(["install", "-o", str(target), "--force"])
 
         assert target.exists()
-        assert "AGBUS_LLM_PROVIDER" in target.read_text()
+        assert "AGBUS_HOST" in target.read_text()
 
     def test_install_google_provider(self, capsys, monkeypatch):
-        """Google provider uses GOOGLE_API_KEY."""
+        """Google provider stores its API key in the database."""
         answers = [
-            "3",        # google
-            "",         # model default
-            "",         # temp default
-            # (key via getpass)
-            "",  "",    # host, port
-            "",         # log level
-            "",         # db url
-            "n",        # auto-approve
-            "n",        # OIDC
-            "n",        # start
+            "3",                 # google
+            "",                  # model default
+            "",                  # temperature default
+            "google-key-abc",    # GOOGLE_API_KEY
+            "", "",              # host, port
+            "",                  # log level
+            "",                  # db url
+            "n",                 # auto-approve
+            "n",                 # OIDC
+            "n",                 # start
         ]
         monkeypatch.setattr("builtins.input", self._make_input_fn(answers))
-        monkeypatch.setattr("getpass.getpass", lambda _: "google-key-abc")
 
         main(["install", "--force"])
 
         content = (self.tmp / ".env").read_text()
-        assert "AGBUS_LLM_PROVIDER=google" in content
-        assert "GOOGLE_API_KEY=google-key-abc" in content
-        assert "AGBUS_LLM_MODEL=gemini-2.0-flash" in content
+        assert "google-key-abc" not in content
+
+        cfg = self._active_llm_config()
+        assert cfg is not None
+        assert cfg.provider == "google"
+        assert cfg.model == "gemini-2.0-flash"
+        assert cfg.api_key == "google-key-abc"

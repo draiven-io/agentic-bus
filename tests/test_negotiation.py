@@ -1,6 +1,5 @@
 """Tests for negotiation engine."""
 
-import math
 
 from app.core.protocol.envelope import OfferPayload
 from app.core.session.manager import NegotiationRecord

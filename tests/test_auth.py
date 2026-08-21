@@ -1,7 +1,7 @@
 """Tests for the OIDC auth module."""
 
 import pytest
-from app.core.auth.oidc import DevVerifier, OIDCIdentity
+from app.core.auth.oidc import DevVerifier
 
 
 class TestDevVerifier:

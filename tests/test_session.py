@@ -3,9 +3,7 @@
 from app.core.session.manager import (
     SessionManager,
     SessionPhase,
-    SessionState,
 )
-from app.core.protocol.envelope import IntentPayload
 
 
 class TestSessionManager:
@@ -55,7 +53,7 @@ class TestSessionManager:
     def test_active_sessions(self):
         mgr = SessionManager()
         s1 = mgr.create("user-1")
-        s2 = mgr.create("user-2")
+        _s2 = mgr.create("user-2")
         mgr.dissolve(s1.session_id)
         active = mgr.active_sessions()
         assert len(active) == 1

@@ -16,9 +16,7 @@ Covers:
 
 from __future__ import annotations
 
-import asyncio
-import json
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -29,20 +27,14 @@ from app.core.protocol.envelope import (
     SenderInfo,
     SenderKind,
     CompletePayload,
-    RejectPayload,
     build_envelope,
 )
 from app.core.session.manager import (
     SessionManager,
-    SessionPhase,
     SessionState,
 )
 from app.core.ibac.engine import (
     IBACEngine,
-    IBACRequest,
-    IBACResult,
-    IBACDecision,
-    IBACEvaluationPoint,
 )
 from app.coordinator.validation.engine import (
     AnswerValidationEngine,

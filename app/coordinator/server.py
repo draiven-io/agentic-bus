@@ -59,7 +59,6 @@ async def main() -> None:
     else:
         # On Windows, signal handlers don't work in asyncio.
         # We rely on KeyboardInterrupt (Ctrl+C) instead.
-        import threading
 
         def _wait_for_interrupt():
             try:

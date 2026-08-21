@@ -1,4 +1,4 @@
-"""OIDC authentication layer (§4 of AGENTS.md / §4.1.4 of the Agentic Bus paper).
+"""OIDC authentication layer (§4.1.4 of the Liquid Interfaces paper, lip.md).
 
 Handles:
 - Token verification (RS256 / RS384 / RS512 via JWKS)

@@ -12,7 +12,7 @@ class TestDynamicGraphBuilder:
 
     def test_single_step_graph(self):
         """A single-step plan produces a START → step → END graph."""
-        results = {}
+        _results = {}
 
         async def mock_executor(state: AgBusGraphState) -> AgBusGraphState:
             r = dict(state.get("step_results", {}))

@@ -1,15 +1,11 @@
 """Tests for session-scoped shared memory."""
 
-import pytest
 
 from app.core.session.memory import (
     InMemoryBackend,
     MemoryAccessPolicy,
-    MemoryAuditEntry,
-    MemoryEntry,
     MemoryWriteRequest,
     SessionMemory,
-    SessionMemoryBackend,
 )
 
 

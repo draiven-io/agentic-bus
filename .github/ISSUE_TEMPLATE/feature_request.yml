@@ -1,0 +1,38 @@
+name: Feature request
+description: Propose a change to the runtime, SDK, CLI or dashboard
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Changes to the **wire protocol** belong in the
+        [specification repository](https://github.com/draiven-io/liquid-interfaces)
+        as an RFC. This template is for the implementation.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve
+      description: Describe the situation you hit, not the solution you have in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Including doing nothing, or solving it outside the runtime.
+
+  - type: checkboxes
+    id: protocol
+    attributes:
+      label: Protocol impact
+      options:
+        - label: This would change the wire format (an RFC in the spec repo is needed)
