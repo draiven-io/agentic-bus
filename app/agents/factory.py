@@ -341,14 +341,24 @@ def resolve_tools(
 
     Skips tools that fail to load (with a warning) so that the agent can
     still be created even if some tools are unavailable.
+
+    Loading a third-party tool executes that package's import side effects,
+    which can fail in ways beyond ``ImportError`` — an incompatible
+    transitive dependency surfaces as ``AttributeError``, a missing
+    credential as ``KeyError``, and so on.  Every one of those means the same
+    thing here (this tool is unusable), so the whole boundary is caught:
+    one broken optional dependency must degrade a single tool, never abort
+    creation of the agent.
     """
     configs = tool_configs or {}
     tools = []
     for name in names:
         try:
             tools.append(resolve_tool(name, tool_config=configs.get(name)))
-        except (ValueError, ImportError) as exc:
-            logger.warning("Skipping tool %r: %s", name, exc)
+        except Exception as exc:  # noqa: BLE001 - third-party import boundary
+            logger.warning(
+                "Skipping tool %r: %s: %s", name, type(exc).__name__, exc
+            )
     return tools
 
 
