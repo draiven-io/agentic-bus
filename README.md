@@ -22,7 +22,8 @@
 </p>
 
 <p align="center">
-  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
+  <a href="https://github.com/draiven-io/agentic-bus/actions/workflows/ci.yml"><img src="https://github.com/draiven-io/agentic-bus/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-≥3.11-blue.svg" alt="Python 3.11+" /></a>
   <a href="https://github.com/langchain-ai/langgraph"><img src="https://img.shields.io/badge/built%20with-LangGraph-orange" alt="LangGraph" /></a>
   <a href="https://nextjs.org"><img src="https://img.shields.io/badge/UI-Next.js%2016-black" alt="Next.js 16" /></a>
@@ -57,7 +58,8 @@ Instead of pre-wired API contracts, a requesting agent simply states its intent 
 | Service Mesh | Syntactic routing between known services | Semantic discovery & negotiation among unknown agents |
 | FIPA-ACL | Formal logic between rational agents | Probabilistic LLM-driven negotiation; tolerates heterogeneous reasoning |
 | Smart Contracts | Immutable deterministic agreements | Ephemeral, adaptive contracts that dissolve post-execution |
-| MCP | "What is available?" (local tool exposure) | "What should happen?" (global intent orchestration) — complementary to MCP |
+| MCP | "What is available?" (tool exposure) | "What should happen?" (intent orchestration) — complementary; MCP servers join the bus via the MCP bridge |
+| A2A | Agent-to-agent messaging over declared Agent Cards | A layer above: intent expressed before a counterparty is known, plus purpose-bound governance (IBAC). A2A can carry LIP as transport |
 
 ---
 
@@ -165,7 +167,7 @@ agentic-bus/
 │   │       └── types.ts        #     TypeScript types
 │   └── package.json
 │
-└── tests/                      # Test suite (18 test files)
+└── tests/                      # Test suite (22 modules, 411 tests)
     ├── test_admin.py
     ├── test_auth.py
     ├── test_cli.py
@@ -231,39 +233,44 @@ The dashboard will be available at **http://localhost:3000** and the Admin REST 
 
 ### Configuration
 
-The `agbus install` wizard writes a `.env` file with your LLM provider settings. You can also configure it manually:
+Configuration is split in two, deliberately:
+
+| What | Where | Why |
+|---|---|---|
+| Server, database, OIDC | `.env` | Needed before the process can reach a database |
+| LLM providers (and their API keys) | Database | Switchable at runtime without restarting the coordinator; credentials never sit in a file |
+
+`agbus install` writes the `.env` and stores your first LLM provider in the
+database. Add or switch providers later without touching either by hand:
+
+```bash
+agbus llm add --name prod --provider anthropic --model claude-sonnet-4-20250514 --api-key sk-ant-... --activate
+```
+
+```bash
+agbus llm list
+```
+
+The `.env` covers the runtime itself:
 
 ```env
-# Azure OpenAI
-AGBUS_LLM_PROVIDER=azure
-AZURE_OPENAI_API_KEY=your-key
-AZURE_OPENAI_ENDPOINT=https://your-endpoint.openai.azure.com
-AZURE_OPENAI_DEPLOYMENT=your-deployment
+AGBUS_HOST=0.0.0.0
+AGBUS_PORT=8765
+AGBUS_DATABASE_URL=sqlite:///agbus_agents.db
+AGBUS_AGENT_AUTO_APPROVE=false
 ```
 
 <details>
-<summary>Other supported providers</summary>
+<summary>Supported LLM providers</summary>
 
-```env
-# OpenAI
-AGBUS_LLM_PROVIDER=openai
-OPENAI_API_KEY=your-key
-
-# Anthropic
-AGBUS_LLM_PROVIDER=anthropic
-ANTHROPIC_API_KEY=your-key
-
-# Google Gemini
-AGBUS_LLM_PROVIDER=google
-GOOGLE_API_KEY=your-key
-
-# Ollama (local)
-AGBUS_LLM_PROVIDER=ollama
-```
+`openai`, `anthropic`, `google`, `azure`, and `ollama` (local, no API key).
+Azure additionally needs an endpoint, deployment name and API version, which
+`agbus install` and `agbus llm add` both prompt for.
 
 </details>
 
-Run `agbus config show` to display your current resolved configuration.
+Run `agbus config show` to display the resolved runtime configuration and the
+active LLM provider.
 
 ---
 
@@ -379,15 +386,31 @@ agbus agent add-capability <id>        # Add capability to a managed agent
 agbus agent remove-capability <id> <c> # Remove a capability
 agbus agent tools                      # List available CrewAI tools
 
+agbus llm list                         # List LLM configurations
+agbus llm show <name>                  # Inspect one configuration
+agbus llm add                          # Add a provider configuration
+agbus llm activate <name>              # Make a configuration current
+agbus llm update <name>                # Update a configuration
+agbus llm remove <name>                # Delete a configuration
+
 agbus config show                      # Display resolved configuration
 agbus config init                      # Write a starter .env file
+
+agbus help                             # Comprehensive documentation
+agbus help quickstart                  # Step-by-step setup guide
 ```
 
 ---
 
 ## 🧪 Testing
 
-The project includes a comprehensive test suite with **18 test files** covering all subsystems:
+The project includes a comprehensive test suite — **411 tests** across 22
+modules — covering every subsystem.
+
+The suite is **hermetic**: it ignores your `.env`, requires no API keys, and
+never touches the network. Each test gets a scrubbed environment and its own
+migrated database (see `tests/conftest.py`), so a green run on your machine
+means a green run in CI.
 
 ```bash
 # Run all tests
@@ -421,6 +444,11 @@ pytest -v
 | `test_telemetry.py` | OpenTelemetry tracing |
 | `test_cli.py` | CLI commands |
 | `test_tenants_users.py` | Multi-tenant & user management |
+| `test_agent_stats.py` | Agent scoring & latency priors |
+| `test_execution_supervisor.py` | Supervised execution & failure handling |
+| `test_mcp_bridge.py` | MCP server bridging |
+| `test_session_memory.py` | Session memory policies |
+| `test_validation.py` | Assigned-validator renegotiation loop |
 
 ---
 
