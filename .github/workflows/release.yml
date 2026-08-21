@@ -1,0 +1,87 @@
+name: Release
+
+# Publishes to PyPI when a version tag is pushed.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Authentication uses PyPI Trusted Publishing (OIDC), so there is no API
+# token stored in this repository. Before the first release, register the
+# publisher once at https://pypi.org/manage/account/publishing/ with:
+#
+#   owner: draiven-io   repository: agentic-bus
+#   workflow: release.yml   environment: pypi
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Where to publish"
+        required: true
+        default: testpypi
+        type: choice
+        options: [testpypi, pypi]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify the tag matches the packaged version
+        # A tag that disagrees with pyproject.toml produces a release whose
+        # filename and metadata contradict each other, and PyPI will not let
+        # you re-upload the same version to fix it.
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version="$(python -c 'import tomllib,pathlib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
+          echo "tag=$tag_version pyproject=$pkg_version"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::Tag v$tag_version does not match pyproject.toml version $pkg_version"
+            exit 1
+          fi
+
+      - run: pip install build
+      - run: python -m build
+
+      - name: Check metadata renders on PyPI
+        run: |
+          pip install twine
+          twine check dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to ${{ (github.event_name == 'workflow_dispatch' && inputs.target) || 'pypi' }}
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ (github.event_name == 'workflow_dispatch' && inputs.target) || 'pypi' }}
+    permissions:
+      id-token: write   # required for trusted publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: >-
+            ${{ (github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi')
+                && 'https://test.pypi.org/legacy/'
+                || '' }}
