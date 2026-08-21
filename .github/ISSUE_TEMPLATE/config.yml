@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Protocol specification and RFCs
+    url: https://github.com/draiven-io/liquid-interfaces
+    about: Changes to the Liquid Interfaces Protocol itself start here.
+  - name: Discussions
+    url: https://github.com/draiven-io/agentic-bus/discussions
+    about: Questions, ideas and show-and-tell.
+  - name: Report a security vulnerability
+    url: https://github.com/draiven-io/agentic-bus/security/advisories/new
+    about: Please report privately rather than opening an issue.

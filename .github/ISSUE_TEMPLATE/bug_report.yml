@@ -1,0 +1,82 @@
+name: Bug report
+description: Something in the runtime, SDK, CLI or dashboard behaves incorrectly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For anything security-related, please follow [SECURITY.md](../blob/main/SECURITY.md)
+        instead of opening an issue.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: |
+        Coordination outcomes depend on what the model returned during
+        negotiation, so please include the intent text, which agents were
+        registered with which capabilities, and the session transcript or
+        event stream if you have it.
+      placeholder: |
+        1. Registered agents: ...
+        2. Intent: "..."
+        3. Session events: ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Coordinator runtime
+        - Negotiation / discovery
+        - IBAC
+        - Graph execution
+        - Agent SDK
+        - MCP bridge
+        - Admin REST API
+        - Dashboard (UI)
+        - CLI
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `agbus --version`, or the commit SHA.
+    validations:
+      required: true
+
+  - type: input
+    id: llm
+    attributes:
+      label: LLM provider and model
+      description: e.g. `anthropic / claude-sonnet-4`, `ollama / llama3`
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: OS and Python version
+      placeholder: "Ubuntu 24.04, Python 3.12"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant coordinator output. Redact credentials.
+      render: shell

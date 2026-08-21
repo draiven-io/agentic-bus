@@ -5,14 +5,34 @@ build-backend = "hatchling.build"
 [project]
 name = "agentic-bus"
 version = "0.1.0"
-description = "Reference implementation of the Agentic Bus Protocol"
+description = "Reference implementation of the Liquid Interfaces Protocol (LIP)"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = { file = "LICENSE" }
+keywords = [
+    "agents",
+    "multi-agent",
+    "liquid-interfaces",
+    "lip",
+    "ibac",
+    "mcp",
+    "agent-coordination",
+    "interoperability",
+]
 authors = [
     { name = "Dhiogo José Correa de Sá", email = "dhiogo.correa@draiven.io" },
     { name = "Carlos Pereira Lopes Filho", email = "carlos.lopes@draiven.io" },
     { name = "Carlos Eduardo Schmiedel", email = "carlos.schmiedel@draiven.io" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Topic :: System :: Distributed Computing",
 ]
 
 dependencies = [
@@ -36,6 +56,14 @@ dependencies = [
     "uvicorn[standard]>=0.34,<1.0",
 ]
 
+[project.urls]
+Homepage = "https://liquidinterfaces.org"
+Documentation = "https://github.com/draiven-io/agentic-bus#readme"
+Repository = "https://github.com/draiven-io/agentic-bus"
+Specification = "https://github.com/draiven-io/liquid-interfaces"
+Paper = "https://arxiv.org/abs/2601.21993"
+Issues = "https://github.com/draiven-io/agentic-bus/issues"
+
 [project.scripts]
 agbus = "app.cli:main"
 
@@ -51,8 +79,16 @@ packages = ["app"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 
 [tool.ruff]
 target-version = "py311"
 line-length = 100
+
+[tool.ruff.lint.per-file-ignores]
+# These modules must call ``load_dotenv()`` before importing anything that
+# reads configuration at import time, so their imports legitimately sit
+# below the first statement.
+"app/coordinator/server.py" = ["E402"]
+"app/agents/examples/*" = ["E402"]
