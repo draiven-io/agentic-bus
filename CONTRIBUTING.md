@@ -29,11 +29,11 @@ ruff check .
 ## Protocol changes
 
 The wire format is defined by the Pydantic models in
-`app/core/protocol/envelope.py`, and the JSON Schemas under `schemas/` are
+`agentic_bus/core/protocol/envelope.py`, and the JSON Schemas under `schemas/` are
 **generated from them**:
 
 ```bash
-python -m app.core.protocol.export_schemas
+python -m agentic_bus.core.protocol.export_schemas
 ```
 
 CI fails if the committed schemas drift from the models, so regenerate and

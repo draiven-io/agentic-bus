@@ -8,11 +8,11 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.core.auth.admin import AdminPolicy, require_admin
-from app.core.auth.oidc import OIDCIdentity
-from app.core.persistence.models import Base
-from app.core.persistence.repository import AgentRepository
-from app.coordinator.admin.service import AdminService
+from agentic_bus.core.auth.admin import AdminPolicy, require_admin
+from agentic_bus.core.auth.oidc import OIDCIdentity
+from agentic_bus.core.persistence.models import Base
+from agentic_bus.core.persistence.repository import AgentRepository
+from agentic_bus.coordinator.admin.service import AdminService
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +50,7 @@ def repo(tmp_path, monkeypatch):
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     monkeypatch.setattr(
-        "app.core.persistence.repository.get_session",
+        "agentic_bus.core.persistence.repository.get_session",
         lambda: factory(),
     )
     return AgentRepository()
@@ -243,7 +243,7 @@ class TestHealthEndpoint:
 
         from fastapi.testclient import TestClient
 
-        from app.coordinator.admin.api import create_admin_api
+        from agentic_bus.coordinator.admin.api import create_admin_api
 
         return TestClient(create_admin_api(MagicMock()))
 
@@ -253,7 +253,7 @@ class TestHealthEndpoint:
         assert response.json()["status"] == "ok"
 
     def test_health_reports_protocol_version(self):
-        from app.core.protocol.envelope import LIP_PROTOCOL_VERSION
+        from agentic_bus.core.protocol.envelope import LIP_PROTOCOL_VERSION
 
         body = self._client().get("/health").json()
         assert body["protocol_version"] == LIP_PROTOCOL_VERSION

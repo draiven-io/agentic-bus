@@ -1,6 +1,6 @@
 """Tests for OpenTelemetry instrumentation."""
 
-from app.core.telemetry.tracing import (
+from agentic_bus.core.telemetry.tracing import (
     init_telemetry,
     agbus_span,
     inject_trace_context,

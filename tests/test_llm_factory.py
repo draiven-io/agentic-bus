@@ -11,12 +11,12 @@ from unittest.mock import patch
 
 import pytest
 
-from app.core.llm.factory import get_llm, LLMProvider, _DEFAULT_MODELS
+from agentic_bus.core.llm.factory import get_llm, LLMProvider, _DEFAULT_MODELS
 
 
 # Helper: patch _load_db_config to return None (no DB config), so env vars
 # are used.  This keeps existing tests stable.
-_NO_DB = patch("app.core.llm.factory._load_db_config", return_value=None)
+_NO_DB = patch("agentic_bus.core.llm.factory._load_db_config", return_value=None)
 
 
 class TestLLMProvider:
@@ -98,7 +98,7 @@ class TestGetLLM:
             "api_key": "db-test-key",
             "extra_config": {},
         }
-        with patch("app.core.llm.factory._load_db_config", return_value=db_cfg):
+        with patch("agentic_bus.core.llm.factory._load_db_config", return_value=db_cfg):
             llm = get_llm()
         assert type(llm).__name__ == "ChatOpenAI"
         assert llm.model_name == "gpt-4o"
@@ -106,7 +106,7 @@ class TestGetLLM:
 
     def test_no_config_at_all_raises(self):
         """When no DB config and no env vars, raise NoCurrentLLMConfigError."""
-        from app.core.persistence.llm_repository import NoCurrentLLMConfigError
+        from agentic_bus.core.persistence.llm_repository import NoCurrentLLMConfigError
 
         clean_env = {
             k: v for k, v in os.environ.items()
@@ -118,7 +118,7 @@ class TestGetLLM:
 
     def test_explicit_params_skip_db_lookup(self):
         """When all params are explicit, DB is not consulted."""
-        with patch("app.core.llm.factory._load_db_config") as mock_db:
+        with patch("agentic_bus.core.llm.factory._load_db_config") as mock_db:
             with patch.dict(os.environ, {"OPENAI_API_KEY": "k"}, clear=False):
                 _llm = get_llm(provider="openai", model="gpt-4o-mini", temperature=0.0)
             mock_db.assert_not_called()

@@ -1,6 +1,6 @@
 """Tests for the session manager."""
 
-from app.core.session.manager import (
+from agentic_bus.core.session.manager import (
     SessionManager,
     SessionPhase,
 )

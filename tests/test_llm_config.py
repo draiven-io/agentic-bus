@@ -6,8 +6,8 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.core.persistence.models import Base
-from app.core.persistence.llm_repository import (
+from agentic_bus.core.persistence.models import Base
+from agentic_bus.core.persistence.llm_repository import (
     LLMConfigRepository,
     LLMConfigNotFoundError,
     NoCurrentLLMConfigError,
@@ -22,12 +22,12 @@ def _in_memory_db(monkeypatch):
     factory = sessionmaker(bind=engine, expire_on_commit=False)
 
     monkeypatch.setattr(
-        "app.core.persistence.database.get_session",
+        "agentic_bus.core.persistence.database.get_session",
         factory,
     )
     # Also patch the import path used by the repository module
     monkeypatch.setattr(
-        "app.core.persistence.llm_repository.get_session",
+        "agentic_bus.core.persistence.llm_repository.get_session",
         factory,
     )
     yield engine

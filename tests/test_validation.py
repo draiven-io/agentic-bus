@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.core.protocol.envelope import (
+from agentic_bus.core.protocol.envelope import (
     IntentPayload,
     AgBusEnvelope,
     MessageType,
@@ -29,19 +29,19 @@ from app.core.protocol.envelope import (
     CompletePayload,
     build_envelope,
 )
-from app.core.session.manager import (
+from agentic_bus.core.session.manager import (
     SessionManager,
     SessionState,
 )
-from app.core.ibac.engine import (
+from agentic_bus.core.ibac.engine import (
     IBACEngine,
 )
-from app.coordinator.validation.engine import (
+from agentic_bus.coordinator.validation.engine import (
     AnswerValidationEngine,
     ValidationResult,
 )
-from app.agents.base.agent import BaseAgent
-from app.agents.managed_server import ManagedAgentServer
+from agentic_bus.agents.base.agent import BaseAgent
+from agentic_bus.agents.managed_server import ManagedAgentServer
 
 
 # ---------------------------------------------------------------------------
@@ -392,7 +392,7 @@ class TestManagedAgentValidation:
         mock_chain = AsyncMock()
         mock_chain.ainvoke = AsyncMock(return_value=expected_result)
 
-        with patch("app.agents.managed_server.get_llm") as mock_get_llm:
+        with patch("agentic_bus.agents.managed_server.get_llm") as mock_get_llm:
             mock_llm = MagicMock()
             mock_get_llm.return_value = mock_llm
 
@@ -430,7 +430,7 @@ class TestManagedAgentValidation:
 
         server = ManagedAgentServer(ma)
 
-        with patch("app.agents.managed_server.get_llm", side_effect=RuntimeError("No LLM")):
+        with patch("agentic_bus.agents.managed_server.get_llm", side_effect=RuntimeError("No LLM")):
             result = await server.validate_answer(
                 answer={"output": "test"},
                 intent_text="test",
@@ -450,10 +450,10 @@ class TestRuntimeValidationLoop:
 
     def _make_runtime(self):
         """Build a CoordinatorRuntime with mocked subsystems."""
-        with patch("app.coordinator.runtime.WSServer"), \
-             patch("app.coordinator.runtime.init_db"), \
-             patch("app.coordinator.runtime.init_telemetry"):
-            from app.coordinator.runtime import CoordinatorRuntime
+        with patch("agentic_bus.coordinator.runtime.WSServer"), \
+             patch("agentic_bus.coordinator.runtime.init_db"), \
+             patch("agentic_bus.coordinator.runtime.init_telemetry"):
+            from agentic_bus.coordinator.runtime import CoordinatorRuntime
             runtime = CoordinatorRuntime()
         return runtime
 
@@ -608,10 +608,10 @@ class TestRuntimeValidationLoop:
 
 class TestValidationRenegotiation:
     def _make_runtime(self):
-        with patch("app.coordinator.runtime.WSServer"), \
-             patch("app.coordinator.runtime.init_db"), \
-             patch("app.coordinator.runtime.init_telemetry"):
-            from app.coordinator.runtime import CoordinatorRuntime
+        with patch("agentic_bus.coordinator.runtime.WSServer"), \
+             patch("agentic_bus.coordinator.runtime.init_db"), \
+             patch("agentic_bus.coordinator.runtime.init_telemetry"):
+            from agentic_bus.coordinator.runtime import CoordinatorRuntime
             runtime = CoordinatorRuntime()
         return runtime
 
@@ -691,10 +691,10 @@ class TestValidationRenegotiation:
 
 class TestResolveValidator:
     def _make_runtime(self):
-        with patch("app.coordinator.runtime.WSServer"), \
-             patch("app.coordinator.runtime.init_db"), \
-             patch("app.coordinator.runtime.init_telemetry"):
-            from app.coordinator.runtime import CoordinatorRuntime
+        with patch("agentic_bus.coordinator.runtime.WSServer"), \
+             patch("agentic_bus.coordinator.runtime.init_db"), \
+             patch("agentic_bus.coordinator.runtime.init_telemetry"):
+            from agentic_bus.coordinator.runtime import CoordinatorRuntime
             runtime = CoordinatorRuntime()
         return runtime
 

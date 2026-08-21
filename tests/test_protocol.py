@@ -1,6 +1,6 @@
 """Tests for the Agentic Bus protocol envelope."""
 
-from app.core.protocol.envelope import (
+from agentic_bus.core.protocol.envelope import (
     LIP_PROTOCOL_VERSION,
     AgBusEnvelope,
     MessageType,
@@ -14,7 +14,7 @@ from app.core.protocol.envelope import (
     build_envelope,
     PAYLOAD_TYPES,
 )
-from app.core.protocol.export_schemas import SCHEMA_DIR, build_schemas, check
+from agentic_bus.core.protocol.export_schemas import SCHEMA_DIR, build_schemas, check
 
 
 class TestMessageTypes:

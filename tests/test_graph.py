@@ -1,7 +1,7 @@
 """Tests for the dynamic graph builder."""
 
 import pytest
-from app.coordinator.graph.builder import DynamicGraphBuilder, AgBusGraphState
+from agentic_bus.coordinator.graph.builder import DynamicGraphBuilder, AgBusGraphState
 
 
 class TestDynamicGraphBuilder:

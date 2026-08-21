@@ -89,7 +89,7 @@ fi
 # separate agent containers are needed.
 if [ "${AGBUS_SEED_DEMO:-false}" = "true" ]; then
     log "seeding logistics demo agents"
-    python -m app.agents.examples.logistics_agent.seed_managed_agents >/dev/null 2>&1 \
+    python -m agentic_bus.agents.examples.logistics_agent.seed_managed_agents >/dev/null 2>&1 \
         && log "demo agents ready" \
         || log "demo agent seeding failed — the coordinator will start without them"
 fi
