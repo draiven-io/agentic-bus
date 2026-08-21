@@ -381,27 +381,27 @@ class BaseAgent(ABC):
                 await self._client.wait_closed()  # type: ignore[union-attr]
                 if self._stopping.is_set():
                     break
-                # codeql[py/clear-text-logging-sensitive-data] — _safe_endpoint
-                # strips credentials before parsing and reads only scheme,
-                # host and port; CodeQL cannot see through urlsplit
-                # field-sensitively. Guaranteed by TestCredentialRedaction.
+                # _safe_endpoint strips credentials before parsing and
+                # reads only scheme, host and port; CodeQL cannot see through
+                # urlsplit field-sensitively, so it treats anything derived
+                # from the URI as carrying the password. Guaranteed instead by
+                # TestEndpointNeverParsesCredentials.
                 logger.warning(
                     "Agent %s lost its connection to %s",
                     self.agent_id,
-                    _safe_endpoint(self.coordinator_uri),
+                    _safe_endpoint(self.coordinator_uri),  # codeql[py/clear-text-logging-sensitive-data]
                 )
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 # Covers a coordinator that is down, refusing, or rejecting
                 # our token — all of which should be retried, not fatal.
-                # codeql[py/clear-text-logging-sensitive-data] — as above;
-                # the exception text is scrubbed by _strip_credentials, which
-                # is never handed the credential.
+                # As above; the exception text is scrubbed separately by
+                # _strip_credentials, which is never handed the credential.
                 logger.warning(
                     "Agent %s could not connect to %s: %s: %s",
                     self.agent_id,
-                    _safe_endpoint(self.coordinator_uri),
+                    _safe_endpoint(self.coordinator_uri),  # codeql[py/clear-text-logging-sensitive-data]
                     type(exc).__name__,
                     _strip_credentials(str(exc)),
                 )
