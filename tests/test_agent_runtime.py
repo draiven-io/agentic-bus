@@ -451,3 +451,70 @@ class TestNoResourceLeaks:
                 if "never awaited" in str(w.message)
             ]
             assert leaked == [], f"leaked coroutine: {[str(w.message) for w in leaked]}"
+
+
+class TestCredentialRedaction:
+    """A coordinator URI may carry credentials (``ws://agent:pw@host``).
+
+    The reconnect loop logs the URI on every attempt, so an unredacted one
+    would write the password to the log repeatedly — flagged by CodeQL as
+    clear-text logging of sensitive information.
+    """
+
+    def test_password_is_redacted_from_the_uri(self):
+        from agentic_bus.agents.base.agent import _redact_uri
+
+        assert _redact_uri("ws://agent:s3cret@host:8765") == "ws://agent:***@host:8765"
+        assert "s3cret" not in _redact_uri("wss://u:s3cret@h/path?q=1")
+
+    def test_uris_without_credentials_are_untouched(self):
+        from agentic_bus.agents.base.agent import _redact_uri
+
+        for uri in ("ws://localhost:8765", "wss://bus.example.com/lip", "ws://user@host"):
+            assert _redact_uri(uri) == uri
+
+    def test_password_is_redacted_from_exception_text(self):
+        """Connection errors often quote the URI they failed on."""
+        from agentic_bus.agents.base.agent import _redact_secret
+
+        message = "cannot connect to ws://agent:s3cret@host:8765"
+        assert _redact_secret(message, "s3cret") == "cannot connect to ws://agent:***@host:8765"
+        assert _redact_secret("plain failure", None) == "plain failure"
+
+    async def test_reconnect_logging_never_emits_the_password(self, caplog, monkeypatch):
+        """End to end: drive a failing connection and inspect the log.
+
+        The failure is injected rather than produced by dialling a dead port:
+        a refused connection takes seconds to surface on some platforms, which
+        would make this test both slow and timing-dependent.
+        """
+        import logging as _logging
+
+        from agentic_bus.core.transport.ws import WSClient
+
+        uri = "ws://agent:s3cret@127.0.0.1:1"
+
+        async def refuse(self, extra_headers=None):
+            # Connection errors routinely quote the URI they failed on, so the
+            # password can reach the log through the exception as well as
+            # through the URI argument.
+            raise ConnectionRefusedError(f"cannot connect to {uri}")
+
+        monkeypatch.setattr(WSClient, "connect", refuse)
+
+        agent = RecordingAgent(
+            agent_id="a1",
+            coordinator_uri=uri,
+            reconnect=ReconnectPolicy(initial=0.01, maximum=0.05, jitter=False),
+        )
+        with caplog.at_level(_logging.DEBUG):
+            task = asyncio.create_task(agent.run_forever())
+            await _wait_for(lambda: any("could not connect" in r.getMessage() for r in caplog.records))
+            await agent.stop()
+            task.cancel()
+
+        assert any("could not connect" in r.getMessage() for r in caplog.records), (
+            "the connection failure was never logged, so this proves nothing"
+        )
+        assert "s3cret" not in caplog.text, "password leaked into the log"
+        assert "***" in caplog.text, "URI was not redacted at all"

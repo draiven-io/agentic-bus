@@ -24,6 +24,7 @@ import random
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlsplit, urlunsplit
 
 from agentic_bus.core.protocol.envelope import (
     AgBusEnvelope,
@@ -45,6 +46,41 @@ logger = logging.getLogger(__name__)
 #: Returns the bearer token used when connecting. May be sync or async, and
 #: is called on every (re)connection so short-lived tokens can be refreshed.
 TokenProvider = Callable[[], "str | Awaitable[str]"]
+
+
+def _redact_uri(uri: str) -> str:
+    """Return *uri* with any embedded password replaced.
+
+    ``ws://agent:s3cret@coordinator:8765`` is a perfectly valid coordinator
+    URI, so logging one verbatim would put the password in clear text in
+    every connection and reconnection message.
+    """
+    try:
+        parts = urlsplit(uri)
+    except ValueError:
+        return "<unparseable uri>"
+
+    if not parts.password:
+        return uri
+
+    netloc = parts.hostname or ""
+    if parts.port:
+        netloc = f"{netloc}:{parts.port}"
+    if parts.username:
+        netloc = f"{parts.username}:***@{netloc}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+def _redact_secret(text: str, secret: str | None) -> str:
+    """Blank out *secret* wherever it appears in *text*.
+
+    Connection errors frequently quote the URI they failed on, so redacting
+    the URI alone is not enough — the password can arrive via the exception
+    message instead.
+    """
+    if not secret:
+        return text
+    return text.replace(secret, "***")
 
 
 class ReconnectPolicy:
@@ -337,7 +373,7 @@ class BaseAgent(ABC):
                 logger.warning(
                     "Agent %s lost its connection to %s",
                     self.agent_id,
-                    self.coordinator_uri,
+                    _redact_uri(self.coordinator_uri),
                 )
             except asyncio.CancelledError:
                 break
@@ -347,8 +383,8 @@ class BaseAgent(ABC):
                 logger.warning(
                     "Agent %s could not connect to %s: %s",
                     self.agent_id,
-                    self.coordinator_uri,
-                    exc,
+                    _redact_uri(self.coordinator_uri),
+                    _redact_secret(str(exc), urlsplit(self.coordinator_uri).password),
                 )
 
             if self._stopping.is_set():
