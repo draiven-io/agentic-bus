@@ -30,7 +30,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import importlib.metadata
-import json
 import logging
 import os
 import signal
@@ -177,7 +176,7 @@ def _require_configuration() -> None:
     if db_url is None and not env_file.exists():
         print()
         print(f"  {_c('✗ Error:', _RED)} No configuration found", file=sys.stderr)
-        print(f"  The Agentic Bus must be configured before use.", file=sys.stderr)
+        print("  The Agentic Bus must be configured before use.", file=sys.stderr)
         print()
         print(f"  Run {_c('agbus install', _BOLD)} to set up database and LLM settings", file=sys.stderr)
         print(f"  Or create a .env file with {_c('AGBUS_DATABASE_URL', _YELLOW)}", file=sys.stderr)
@@ -455,9 +454,9 @@ def cmd_install(args: argparse.Namespace) -> None:  # noqa: C901
     print(f"  {_c('║', _CYAN)}   {_c('Agentic Bus – Setup Wizard', _BOLD)}      {_c('║', _CYAN)}")
     print(f"  {_c('╚══════════════════════════════════════════╝', _CYAN)}")
     print()
-    print(f"  This wizard will walk you through configuration and")
+    print("  This wizard will walk you through configuration and")
     print(f"  write a {_c('.env', _BOLD)} file, initialise the database, save")
-    print(f"  LLM settings, and optionally start the coordinator server.")
+    print("  LLM settings, and optionally start the coordinator server.")
     print()
 
     # ── Step 1: LLM Provider ───────────────────────────────────────────────
@@ -737,22 +736,29 @@ def cmd_agent_list(args: argparse.Namespace) -> None:
     # Collect status filter – accept values from both enums
     status_raw = args.status.lower() if args.status else None
 
-    # Fetch registered (persistent) agents
     reg_status = None
+    mgd_status = None
     if status_raw:
         try:
             reg_status = AgentStatus(status_raw)
         except ValueError:
             reg_status = None  # not a registered-agent status – skip
-    registered = repo.list_all(status=reg_status) if (not status_raw or reg_status) else []
-
-    # Fetch managed agents
-    mgd_status = None
-    if status_raw:
         try:
             mgd_status = ManagedAgentStatus(status_raw)
         except ValueError:
             mgd_status = None  # not a managed-agent status – skip
+
+        if reg_status is None and mgd_status is None:
+            # A typo would otherwise be indistinguishable from a genuinely
+            # empty result, so reject it rather than reporting "no agents".
+            valid = sorted(
+                {s.value for s in AgentStatus} | {s.value for s in ManagedAgentStatus}
+            )
+            print(f"  {_c('✗ Error:', _RED)} unknown status {args.status!r}", file=sys.stderr)
+            print(f"  Valid values: {', '.join(valid)}", file=sys.stderr)
+            sys.exit(1)
+
+    registered = repo.list_all(status=reg_status) if (not status_raw or reg_status) else []
     managed = managed_repo.list_all(status=mgd_status) if (not status_raw or mgd_status) else []
 
     if not registered and not managed:
@@ -1363,7 +1369,7 @@ def cmd_llm_list(args: argparse.Namespace) -> None:
 
     if not configs:
         print()
-        print(f"  No LLM configurations found.")
+        print("  No LLM configurations found.")
         print(f"  Use {_c('agbus llm add', _BOLD)} to configure an LLM provider.")
         print()
         return
@@ -1597,7 +1603,7 @@ def cmd_config_init(args: argparse.Namespace) -> None:
 
     target.write_text(example.read_text())
     print(f"✓ Created {target}")
-    print(f"  Edit it with your settings, then restart the coordinator.")
+    print("  Edit it with your settings, then restart the coordinator.")
 
 
 # -- help --------------------------------------------------------------------
