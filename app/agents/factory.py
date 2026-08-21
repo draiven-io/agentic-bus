@@ -318,7 +318,7 @@ def resolve_tool(name: str, *, tool_config: dict[str, Any] | None = None, **kwar
     except ModuleNotFoundError as exc:
         raise ImportError(
             f"Could not import {module_path!r} for tool {name!r}. "
-            f"Install it with: pip install 'crewai[tools]'"
+            f"Install it with: pip install 'agentic-bus[agents]'"
         ) from exc
 
     cls = getattr(mod, class_name)
@@ -499,7 +499,8 @@ def build_crewai_agent(
         from crewai import Agent as CrewAgent
     except ImportError as exc:
         raise ImportError(
-            "CrewAI is not installed.  Install with: pip install crewai"
+            "CrewAI is required for managed agents but is not installed. "
+            "Install it with: pip install 'agentic-bus[agents]'"
         ) from exc
 
     # Resolve LLM if not provided

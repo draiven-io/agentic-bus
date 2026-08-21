@@ -1,5 +1,7 @@
 <p align="center">
-  <img src="agentic_bus.png" alt="Agentic Bus" width="600" />
+  <!-- Absolute URL so the logo also renders on PyPI, where the README
+       is the project description and relative paths do not resolve. -->
+  <img src="https://raw.githubusercontent.com/draiven-io/agentic-bus/main/agentic_bus.png" alt="Agentic Bus" width="600" />
 </p>
 
 <h1 align="center">Agentic Bus</h1>
@@ -22,6 +24,7 @@
 </p>
 
 <p align="center">
+  <a href="https://pypi.org/project/agentic-bus/"><img src="https://img.shields.io/pypi/v/agentic-bus.svg" alt="PyPI" /></a>
   <a href="https://github.com/draiven-io/agentic-bus/actions/workflows/ci.yml"><img src="https://github.com/draiven-io/agentic-bus/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-≥3.11-blue.svg" alt="Python 3.11+" /></a>
@@ -102,6 +105,11 @@ The **Coordinator** implements the full Agentic Bus session lifecycle:
 
 ```
 agentic-bus/
+│
+├── docker-compose.yml          # Full stack: Ollama + coordinator + dashboard
+├── Dockerfile                  # Coordinator image
+├── docker/                     # Container entrypoint
+├── schemas/                    # Generated LIP JSON Schemas (see CONTRIBUTING)
 │
 ├── app/                        # Python backend
 │   ├── cli.py                  # CLI entry point (agbus command)
@@ -191,45 +199,90 @@ agentic-bus/
 
 ## 🚀 Quick Start
 
-### Prerequisites
-
-- Python **≥ 3.11**
-- Node.js **≥ 18** (for the dashboard UI)
-- An LLM provider API key (Azure OpenAI, OpenAI, Anthropic, Google Gemini, or Ollama)
-
-### Installation
+### Try it with no API keys
 
 ```bash
-# Clone the repository
-git clone https://github.com/draiven-io/agentic-bus.git
-cd agentic-bus
-
-# Install the Python backend in editable mode with dev dependencies
-pip install -e ".[dev]"
-
-# Interactive setup wizard (creates your .env file)
-agbus install
-
-# Install the dashboard UI dependencies
-cd ui && npm install && cd ..
+git clone https://github.com/draiven-io/agentic-bus.git && cd agentic-bus && docker compose up
 ```
 
-### Run
+That brings up a local model (Ollama), the coordinator with the paper's four
+logistics agents already seeded and running, and the dashboard:
+
+| | |
+|---|---|
+| **Dashboard** | http://localhost:3000 |
+| **REST API** | http://localhost:8766/api/docs |
+| **LIP bus** | ws://localhost:8765 |
+
+Open the dashboard, go to **Intent**, and submit something like *"a storm has
+closed the port — find me an alternative route and tell me what it costs"*.
+You'll watch discovery, negotiation, plan approval, execution and dissolution
+happen live.
+
+> **On the local model.** The compose stack defaults to `qwen2.5:3b` so the
+> first run is a ~2 GB download rather than a signup. It is enough to watch
+> the full lifecycle, but negotiation quality scales with the model. For
+> results worth judging the paradigm on, point the coordinator at a hosted
+> model — set `AGBUS_BOOTSTRAP_LLM_PROVIDER`, `AGBUS_BOOTSTRAP_LLM_MODEL` and
+> `AGBUS_BOOTSTRAP_LLM_API_KEY` in `docker-compose.yml`, or pick a larger
+> local one with `AGBUS_DEMO_MODEL=qwen2.5:14b docker compose up`.
+
+### Install the package
 
 ```bash
-# Start the coordinator (WebSocket :8765 + Admin API :8766)
+pip install agentic-bus
+```
+
+The core install gives you the coordinator, the protocol, IBAC, and the agent
+SDK. Two features load their dependencies lazily and need an extra:
+
+```bash
+pip install "agentic-bus[agents]"   # CrewAI-backed managed agents
+```
+
+```bash
+pip install "agentic-bus[mcp]"      # bridge MCP servers onto the bus
+```
+
+```bash
+pip install "agentic-bus[all]"      # both
+```
+
+Then configure and run it:
+
+```bash
+agbus install
+```
+
+```bash
 agbus serve
+```
 
-# In another terminal — start the dashboard UI
-cd ui && npm run dev
+`agbus install` is an interactive wizard: it writes a `.env` for the server
+and database settings and stores your LLM provider in the database. To skip
+the wizard, see [Configuration](#configuration) below.
 
-# In another terminal — run a sample agent
+### Develop against a checkout
+
+```bash
+git clone https://github.com/draiven-io/agentic-bus.git
+cd agentic-bus
+pip install -e ".[all,dev]"
+```
+
+```bash
+agbus serve
+```
+
+```bash
+cd ui && npm install && npm run dev
+```
+
+```bash
 python -m app.agents.examples.logistics_agent.agent
 ```
 
-The dashboard will be available at **http://localhost:3000** and the Admin REST API at **http://localhost:8766/docs** (Swagger UI).
-
-> **⚠️ Important:** Always run `agbus` commands from the `agentic-bus` directory where your `.env` file is located.
+> **⚠️ Note:** run `agbus` from the directory containing your `.env`.
 
 ### Configuration
 
@@ -306,7 +359,7 @@ npm run start     # Production server
 
 ## 🔌 Admin REST API
 
-The coordinator exposes a **FastAPI** admin REST API on port `8766` (configurable via `AGBUS_API_PORT`). Interactive Swagger documentation is available at `/docs`.
+The coordinator exposes a **FastAPI** admin REST API on port `8766` (configurable via `AGBUS_API_PORT`). Interactive Swagger documentation is available at `/api/docs`, and an unauthenticated liveness probe at `/health`.
 
 ### Endpoints
 

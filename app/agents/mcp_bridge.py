@@ -167,7 +167,13 @@ class MCPBridgeAgent(BaseAgent):
 
     async def _connect_mcp(self) -> None:
         """Create the MCP client connection."""
-        from langchain_mcp_adapters.client import MultiServerMCPClient
+        try:
+            from langchain_mcp_adapters.client import MultiServerMCPClient
+        except ImportError as exc:
+            raise ImportError(
+                "The MCP bridge requires langchain-mcp-adapters but it is not "
+                "installed. Install it with: pip install 'agentic-bus[mcp]'"
+            ) from exc
 
         transport = self._mcp.transport or "http"
         config: dict[str, Any] = {}

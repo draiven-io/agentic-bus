@@ -1,0 +1,11 @@
+# The build runs `npm ci` inside the image; a host node_modules would only
+# slow the context upload and risk platform-specific binaries leaking in.
+node_modules
+.next
+out
+
+.git
+.env*.local
+
+npm-debug.log*
+.DS_Store

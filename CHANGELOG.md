@@ -11,6 +11,23 @@ from this package; protocol changes are called out explicitly below.
 
 ### Added
 
+- **`docker compose up` runs the whole stack with no API keys**: a local
+  model (Ollama), the coordinator with the paper's four logistics agents
+  seeded and running, and the dashboard on `:3000`. Previously the only way
+  to see the bus run was a clone, two dependency installs, an LLM provider
+  key, an interactive wizard and three manual processes.
+- `[agents]`, `[mcp]` and `[all]` install extras. `crewai`/`crewai-tools`
+  (managed agents) and `langchain-mcp-adapters` (MCP bridge) were used at
+  runtime but declared nowhere, so `pip install agentic-bus` succeeded and
+  then failed with a bare `ModuleNotFoundError` the first time you used
+  either feature.
+- `GET /health` — an unauthenticated, dependency-free liveness probe for
+  container orchestrators. Reports the serving status and LIP protocol
+  version; deliberately touches no database or LLM.
+- A release workflow publishing to PyPI on a `v*` tag via Trusted Publishing
+  (no stored API token), gated on the tag matching `pyproject.toml`.
+- A CI job that builds both Docker images, validates the compose file, and
+  asserts the lazily-imported extras are importable in the image.
 - `protocol_version` on every message envelope (LIP `0.1.0`). Envelopes from
   pre-versioning peers are read as `0.1.0`, so the change is backwards
   compatible on the wire.
@@ -37,6 +54,14 @@ from this package; protocol changes are called out explicitly below.
 
 ### Fixed
 
+- The source distribution no longer ships the dashboard's `node_modules`.
+  Hatchling's default sdist sweeps the project directory and honours only the
+  *root* `.gitignore`, while `node_modules` is ignored by `ui/.gitignore` —
+  so the archive was 86 MB across 25,741 files, over PyPI's 100 MB per-file
+  limit. Now 243 KB across 113 files.
+- The Swagger UI was documented at `/docs`; it is served at `/api/docs`.
+- The README logo used a relative path, which does not render on PyPI where
+  the README becomes the project description.
 - `resolve_tools` no longer aborts agent creation when an optional tool's
   dependency chain fails to import. Only `ValueError` and `ImportError` were
   caught, so an incompatible transitive dependency surfacing as

@@ -68,6 +68,26 @@ Issues = "https://github.com/draiven-io/agentic-bus/issues"
 agbus = "app.cli:main"
 
 [project.optional-dependencies]
+# Managed agents: the coordinator can create and run CrewAI-backed agents
+# from database records. Imported lazily, so the core install stays lean and
+# a coordinator that never activates a managed agent never needs these.
+#
+# Pinned below 1.0 because app/agents/factory.py patches CrewAI's private
+# LLM._get_native_provider; the 1.x line has not been validated against it.
+agents = [
+    "crewai>=0.193,<1.0",
+    "crewai-tools>=0.73,<1.0",
+]
+
+# MCP bridge: exposes any MCP server's tools as bus capabilities.
+mcp = [
+    "langchain-mcp-adapters>=0.3,<1.0",
+]
+
+all = [
+    "agentic-bus[agents,mcp]",
+]
+
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=1.0",
@@ -76,6 +96,27 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
+
+[tool.hatch.build.targets.sdist]
+# Enumerated explicitly. Hatchling's default sdist sweeps the whole project
+# directory and only honours the *root* .gitignore, so `ui/node_modules`
+# (ignored by ui/.gitignore, not the root one) landed in the archive: 25,741
+# files and 86 MB, over PyPI's per-file limit.
+#
+# The dashboard is deliberately absent — it ships as a container image, not
+# inside the Python package.
+only-include = [
+    "app",
+    "schemas",
+    "tests",
+    "docker",
+    "Dockerfile",
+    "docker-compose.yml",
+    "lip.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
