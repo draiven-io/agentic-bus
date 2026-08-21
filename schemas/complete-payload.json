@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://liquidinterfaces.org/schemas/0.1.0/complete-payload.json",
+  "x-lip-version": "0.1.0",
+  "description": "Payload for ``message_type='complete'``.",
+  "properties": {
+    "status": {
+      "default": "success",
+      "title": "Status",
+      "type": "string"
+    },
+    "artifacts": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Artifacts",
+      "type": "array"
+    },
+    "metadata": {
+      "additionalProperties": true,
+      "title": "Metadata",
+      "type": "object"
+    }
+  },
+  "title": "LIP complete payload",
+  "type": "object"
+}

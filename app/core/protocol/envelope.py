@@ -2,7 +2,7 @@
 
 All protocol messages are structured JSON documents categorised by ``message_type``.
 Message types are performative acts that collectively define the lifecycle of a
-Agentic Bus (§4.1.1 of the Agentic Bus paper).
+Liquid Interface (§4.1.1 of the Liquid Interfaces paper, lip.md).
 
 Core message types
 ------------------
@@ -26,11 +26,29 @@ from pydantic import BaseModel, Field
 
 
 # ---------------------------------------------------------------------------
+# Protocol version
+# ---------------------------------------------------------------------------
+
+#: Version of the Liquid Interfaces Protocol this envelope implements.
+#:
+#: Carried on every message so a peer can reject or adapt to an envelope it
+#: does not understand.  Semantic versioning applies to the *wire format*:
+#: the patch component changes for editorial fixes, the minor component for
+#: backwards-compatible additions (a new optional field, a new message type a
+#: peer may ignore), and the major component for anything that would break an
+#: existing implementation.
+LIP_PROTOCOL_VERSION = "0.1.0"
+
+
+# ---------------------------------------------------------------------------
 # Enumerations
 # ---------------------------------------------------------------------------
 
 class MessageType(StrEnum):
-    """Performative message types defined by Agentic Bus §4.1.1."""
+    """Performative message types defined by the Liquid Interfaces Protocol.
+
+    See §4.1.1 of the paper (``lip.md``) for their normative semantics.
+    """
 
     INTENT = "intent"
     OFFER = "offer"
@@ -74,13 +92,21 @@ class TraceContext(BaseModel):
 # ---------------------------------------------------------------------------
 
 class AgBusEnvelope(BaseModel):
-    """Common message envelope for every Agentic Bus message (§8 of AGENTS.md).
+    """Common message envelope for every Liquid Interfaces Protocol message.
 
     Every message that flows over the transport layer MUST be wrapped in this
     envelope.  The ``payload`` dict carries type-specific content defined by
     the individual message schemas below.
     """
 
+    protocol_version: str = Field(
+        default=LIP_PROTOCOL_VERSION,
+        description=(
+            "Version of the Liquid Interfaces Protocol this message conforms "
+            "to.  Absent on messages from pre-versioning peers, which are "
+            "treated as 0.1.0."
+        ),
+    )
     message_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     session_id: str = ""
     message_type: MessageType
@@ -97,7 +123,7 @@ class AgBusEnvelope(BaseModel):
 # ---------------------------------------------------------------------------
 
 class IntentPayload(BaseModel):
-    """Payload for ``message_type='intent'`` (§9 of AGENTS.md)."""
+    """Payload for ``message_type='intent'``."""
 
     intent_text: str
     context: dict[str, Any] = Field(default_factory=dict)
@@ -115,7 +141,7 @@ class IntentPayload(BaseModel):
 
 
 class OfferPayload(BaseModel):
-    """Payload for ``message_type='offer'`` (§10 of AGENTS.md).
+    """Payload for ``message_type='offer'``.
 
     When sent by an individual agent, this describes a single capability.
     When sent by the coordinator to the requester, it describes the full

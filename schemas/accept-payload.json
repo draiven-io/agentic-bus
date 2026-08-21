@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://liquidinterfaces.org/schemas/0.1.0/accept-payload.json",
+  "x-lip-version": "0.1.0",
+  "description": "Payload for ``message_type='accept'``.\n\nWhen sent by the coordinator: confirms negotiation is complete.\nWhen sent by the requester: approves the proposed execution plan.",
+  "properties": {
+    "accepted_offers": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Accepted Offers",
+      "type": "array"
+    },
+    "composition_plan": {
+      "additionalProperties": true,
+      "title": "Composition Plan",
+      "type": "object"
+    },
+    "constraints": {
+      "additionalProperties": true,
+      "title": "Constraints",
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": true,
+      "description": "Merged JSON Schema describing the combined output that the requester will receive upon completion.  Built from the individual output schemas of all accepted offers.",
+      "title": "Output Schema",
+      "type": "object"
+    },
+    "approval_note": {
+      "default": "",
+      "description": "Optional note from the requester explaining the approval.",
+      "title": "Approval Note",
+      "type": "string"
+    }
+  },
+  "title": "LIP accept payload",
+  "type": "object"
+}

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://liquidinterfaces.org/schemas/0.1.0/dissolve-payload.json",
+  "x-lip-version": "0.1.0",
+  "description": "Payload for ``message_type='dissolve'``.",
+  "properties": {
+    "reason": {
+      "default": "session_complete",
+      "title": "Reason",
+      "type": "string"
+    }
+  },
+  "title": "LIP dissolve payload",
+  "type": "object"
+}

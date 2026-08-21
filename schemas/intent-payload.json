@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://liquidinterfaces.org/schemas/0.1.0/intent-payload.json",
+  "x-lip-version": "0.1.0",
+  "description": "Payload for ``message_type='intent'``.",
+  "properties": {
+    "intent_text": {
+      "title": "Intent Text",
+      "type": "string"
+    },
+    "context": {
+      "additionalProperties": true,
+      "title": "Context",
+      "type": "object"
+    },
+    "requested_outputs": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Requested Outputs",
+      "type": "array"
+    },
+    "ibac_claims_requested": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Ibac Claims Requested",
+      "type": "array"
+    },
+    "assigned_agent_id": {
+      "default": "",
+      "description": "Optional agent ID assigned as the validator for this intent. When set, the assigned agent must validate the execution output before the session completes.  If validation fails, a renegotiation loop is triggered with the rejection reason.",
+      "title": "Assigned Agent Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "intent_text"
+  ],
+  "title": "LIP intent payload",
+  "type": "object"
+}

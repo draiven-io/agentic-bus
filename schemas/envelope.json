@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://liquidinterfaces.org/schemas/0.1.0/envelope.json",
+  "x-lip-version": "0.1.0",
+  "$defs": {
+    "MessageType": {
+      "description": "Performative message types defined by the Liquid Interfaces Protocol.\n\nSee \u00a74.1.1 of the paper (``lip.md``) for their normative semantics.",
+      "enum": [
+        "intent",
+        "offer",
+        "accept",
+        "reject",
+        "execute",
+        "complete",
+        "dissolve",
+        "event"
+      ],
+      "title": "MessageType",
+      "type": "string"
+    },
+    "SenderInfo": {
+      "description": "Identity of the message sender.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/SenderKind"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "oidc_subject": {
+          "default": "",
+          "title": "Oidc Subject",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "title": "SenderInfo",
+      "type": "object"
+    },
+    "SenderKind": {
+      "description": "Runtime role of the message sender.",
+      "enum": [
+        "requester",
+        "coordinator",
+        "agent"
+      ],
+      "title": "SenderKind",
+      "type": "string"
+    },
+    "TraceContext": {
+      "description": "Distributed-trace propagation context (W3C Trace-Context compatible).",
+      "properties": {
+        "trace_id": {
+          "default": "",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "span_id": {
+          "default": "",
+          "title": "Span Id",
+          "type": "string"
+        }
+      },
+      "title": "TraceContext",
+      "type": "object"
+    }
+  },
+  "description": "Common message envelope for every Liquid Interfaces Protocol message.\n\nEvery message that flows over the transport layer MUST be wrapped in this\nenvelope.  The ``payload`` dict carries type-specific content defined by\nthe individual message schemas below.",
+  "properties": {
+    "protocol_version": {
+      "default": "0.1.0",
+      "description": "Version of the Liquid Interfaces Protocol this message conforms to.  Absent on messages from pre-versioning peers, which are treated as 0.1.0.",
+      "title": "Protocol Version",
+      "type": "string"
+    },
+    "message_id": {
+      "title": "Message Id",
+      "type": "string"
+    },
+    "session_id": {
+      "default": "",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "message_type": {
+      "$ref": "#/$defs/MessageType"
+    },
+    "timestamp": {
+      "title": "Timestamp",
+      "type": "string"
+    },
+    "sender": {
+      "$ref": "#/$defs/SenderInfo"
+    },
+    "trace": {
+      "$ref": "#/$defs/TraceContext"
+    },
+    "payload": {
+      "additionalProperties": true,
+      "title": "Payload",
+      "type": "object"
+    }
+  },
+  "required": [
+    "message_type",
+    "sender"
+  ],
+  "title": "LIP Message Envelope",
+  "type": "object"
+}
