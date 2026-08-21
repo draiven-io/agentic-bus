@@ -1,0 +1,112 @@
+# Agentic Bus — full stack, no API keys required.
+#
+#   docker compose up
+#
+# Brings up a local LLM (Ollama), the coordinator with the logistics demo
+# agents seeded, and the admin dashboard:
+#
+#   dashboard   http://localhost:3000
+#   REST API    http://localhost:8766/docs
+#   LIP bus     ws://localhost:8765
+#
+# To use a hosted model instead of the local one, see the `coordinator`
+# environment block below.
+
+name: agentic-bus
+
+services:
+  # --------------------------------------------------------------------
+  # Local model, so the stack runs with no API keys and no signup.
+  # --------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    restart: unless-stopped
+
+  # Pulls the demo model once, then exits. The coordinator waits for this to
+  # complete so it never registers a model that isn't downloaded yet.
+  ollama-pull:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama: { condition: service_healthy }
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    volumes:
+      - ollama-models:/root/.ollama
+    # A small model keeps first-run download to a couple of GB. Negotiation
+    # quality scales with the model — see README for using a hosted provider.
+    entrypoint: ["sh", "-c", "ollama pull ${AGBUS_DEMO_MODEL:-qwen2.5:3b}"]
+    restart: "no"
+
+  # --------------------------------------------------------------------
+  # Coordinator: LIP WebSocket bus + admin REST API.
+  # --------------------------------------------------------------------
+  coordinator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      ollama-pull: { condition: service_completed_successfully }
+    ports:
+      - "8765:8765"   # LIP WebSocket transport
+      - "8766:8766"   # Admin REST API (Swagger at /docs)
+    volumes:
+      - agbus-data:/data
+    environment:
+      AGBUS_DATABASE_URL: sqlite:////data/agbus.db
+      AGBUS_LOG_LEVEL: INFO
+
+      # Demo posture: agents self-enrol without an admin approving each one.
+      # Leave this false anywhere the bus is shared.
+      AGBUS_AGENT_AUTO_APPROVE: "true"
+
+      # Registered in the database on first boot. To use a hosted provider
+      # instead, drop the BASE_URL line and set PROVIDER/MODEL/API_KEY —
+      # e.g. anthropic / claude-sonnet-4-20250514 / $ANTHROPIC_API_KEY.
+      AGBUS_BOOTSTRAP_LLM_PROVIDER: ollama
+      AGBUS_BOOTSTRAP_LLM_MODEL: ${AGBUS_DEMO_MODEL:-qwen2.5:3b}
+      AGBUS_BOOTSTRAP_LLM_BASE_URL: http://ollama:11434
+
+      # Seeds the four logistics agents from the paper's motivating scenario.
+      # The coordinator auto-starts every active managed agent on boot.
+      AGBUS_SEED_DEMO: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8766/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------
+  # Admin dashboard.
+  # --------------------------------------------------------------------
+  ui:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+      args:
+        # Baked in at build time (Next.js inlines NEXT_PUBLIC_*). This is the
+        # address the *browser* uses, so it is the published host port rather
+        # than the compose service name.
+        NEXT_PUBLIC_WS_URL: ${AGBUS_PUBLIC_WS_URL:-ws://localhost:8765}
+    depends_on:
+      coordinator: { condition: service_started }
+    ports:
+      - "3000:3000"
+    environment:
+      # Read at server start; the dashboard proxies /api/admin/* here, so
+      # this one is the in-network address.
+      AGBUS_API_URL: http://coordinator:8766
+    restart: unless-stopped
+
+volumes:
+  agbus-data:
+  ollama-models:

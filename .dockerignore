@@ -1,0 +1,31 @@
+# Build context hygiene: keep the image small and avoid baking in local state.
+
+.git
+.github
+ui
+docs
+
+# Local environment and databases — never bake these into an image.
+.env
+*.db
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+tests/
+
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+agentic_bus.png
