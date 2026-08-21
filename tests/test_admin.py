@@ -227,3 +227,38 @@ class TestAdminService:
         agent = svc.approve_agent("role-agent", admin_ident)
         assert agent.status.value == "approved"
         assert agent.approved_by == "some-user"
+
+
+class TestHealthEndpoint:
+    """The liveness probe container orchestrators call.
+
+    Kept unauthenticated and dependency-free on purpose: a probe that needs
+    credentials can't be used by Docker or Kubernetes, and one that touches
+    the database turns a slow dependency into a restart loop.
+    """
+
+    @staticmethod
+    def _client():
+        from unittest.mock import MagicMock
+
+        from fastapi.testclient import TestClient
+
+        from app.coordinator.admin.api import create_admin_api
+
+        return TestClient(create_admin_api(MagicMock()))
+
+    def test_health_is_ok(self):
+        response = self._client().get("/health")
+        assert response.status_code == 200
+        assert response.json()["status"] == "ok"
+
+    def test_health_reports_protocol_version(self):
+        from app.core.protocol.envelope import LIP_PROTOCOL_VERSION
+
+        body = self._client().get("/health").json()
+        assert body["protocol_version"] == LIP_PROTOCOL_VERSION
+
+    def test_health_requires_no_credentials(self):
+        """No Authorization header — must still answer."""
+        response = self._client().get("/health")
+        assert response.status_code == 200

@@ -65,6 +65,7 @@ from app.coordinator.admin.serializers import (
 from app.core.auth.admin import AdminPolicy
 from app.core.auth.oidc import DevVerifier, OIDCIdentity, OIDCVerifier
 from app.core.persistence.models import MCPServerStatus, ManagedAgentStatus, UserRole
+from app.core.protocol.envelope import LIP_PROTOCOL_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +169,26 @@ def create_admin_api(runtime: Any) -> FastAPI:
 
     def _rt(request: Request):
         return request.app.state.runtime
+
+    # ------------------------------------------------------------------
+    # Liveness
+    # ------------------------------------------------------------------
+
+    @app.get("/health", tags=["health"])
+    async def health() -> dict[str, str]:
+        """Unauthenticated liveness probe.
+
+        Deliberately outside ``/api/admin`` and free of auth so container
+        orchestrators can call it without credentials, and deliberately
+        cheap — it reports that the API is serving, not that every
+        subsystem is healthy. It touches no database and no LLM, because a
+        probe that depends on those turns a slow dependency into a restart
+        loop.
+        """
+        return {
+            "status": "ok",
+            "protocol_version": LIP_PROTOCOL_VERSION,
+        }
 
     # ------------------------------------------------------------------
     # Tenant-scoping helpers
