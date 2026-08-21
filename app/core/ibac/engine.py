@@ -1,4 +1,4 @@
-"""IBAC – Intention-Based Access Control (§6.1 of the Agentic Bus paper / §6 of AGENTS.md).
+"""IBAC – Intention-Based Access Control (§6.1 of the Liquid Interfaces paper, lip.md).
 
 Unlike RBAC/ABAC which authorise discrete operations against predefined
 resources, IBAC evaluates governance decisions against the *expressed intent*,

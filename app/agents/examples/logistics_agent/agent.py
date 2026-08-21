@@ -1,6 +1,6 @@
 """Example: Logistics routing agent.
 
-Demonstrates the Agentic Bus paper's motivating scenario (§1): an AI agent within a
+Demonstrates the Liquid Interfaces paper's motivating scenario (§1): an AI agent within a
 logistics firm responding to a storm that has closed a port.  Rather than
 receiving a static "Route Unavailable" error, this agent can negotiate
 alternative routes through the Agentic Bus Protocol.

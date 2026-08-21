@@ -3,7 +3,8 @@
 Agents register themselves dynamically with semantic capability descriptors.
 The registry is in-memory and hot-reloadable – no static capability lists.
 
-Per Agentic Bus §4.1.2, the registry feeds into semantic capability matching:
+Per §4.1.2 of the Liquid Interfaces paper, the registry feeds into semantic
+capability matching:
 given an intention Φ and context C_t, the coordination layer discovers
 which agents are semantically compatible with the intended objective.
 """
