@@ -155,8 +155,8 @@ class ManagedAgentServer(BaseAgent):
             from crewai import Task as CrewTask, Crew
         except ImportError as exc:
             raise RuntimeError(
-                "CrewAI is required for managed agents. "
-                "Install with: pip install crewai"
+                "CrewAI is required for managed agents but is not installed. "
+                "Install it with: pip install 'agentic-bus[agents]'"
             ) from exc
 
         intent_text = payload.get("intent_text", "")
