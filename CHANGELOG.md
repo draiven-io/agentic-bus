@@ -7,7 +7,38 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The **protocol** version (`LIP_PROTOCOL_VERSION`) is versioned separately
 from this package; protocol changes are called out explicitly below.
 
-## [Unreleased]
+## [0.2.0]
+
+### Changed — breaking
+
+- **The importable package is now `agentic_bus`, not `app`.** `pip install
+  agentic-bus` previously installed a top-level `app` package into
+  site-packages, shadowing (or being shadowed by) the `app` module that
+  nearly every FastAPI and Flask project has. Update imports:
+  `from app.agents import BaseAgent` becomes
+  `from agentic_bus import BaseAgent`.
+- **The coordinator's dependencies moved behind a `[server]` extra.** The
+  base install is now pydantic, websockets and OpenTelemetry — 13 packages
+  in a clean venv, down from roughly 100 — which is all you need to write
+  an agent. Running a coordinator needs
+  `pip install "agentic-bus[server]"`; `agbus` reports this by name when
+  the extra is missing.
+
+### Added
+
+- A real public API on the top-level package: `from agentic_bus import
+  BaseAgent, AgentCapability, IntentClient, submit_intent` plus the
+  protocol types. Writing an agent is now two methods against a documented
+  surface rather than reaching into `app.*` internals.
+- `tests/test_public_api.py`, which asserts the documented names are
+  importable *and* that importing the package pulls in none of SQLAlchemy,
+  FastAPI, LangChain, LangGraph, uvicorn or PyJWT — checked in a subprocess,
+  since a development environment has every extra installed and would hide
+  the regression.
+
+## [0.1.0] — 2026-08-21
+
+First release on PyPI.
 
 ### Added
 
