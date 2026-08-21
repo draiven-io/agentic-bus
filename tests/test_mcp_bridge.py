@@ -9,11 +9,8 @@ Covers:
 
 from __future__ import annotations
 
-import json
 import os
 import pytest
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
 
 # ---------------------------------------------------------------------------
 # Database setup – use an in-memory SQLite database for tests
@@ -21,8 +18,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ.setdefault("AGBUS_DB_URL", "sqlite:///:memory:")
 
-from app.core.persistence.database import Base, get_engine, init_db
-from app.core.persistence.models import MCPServer, MCPServerStatus
+from app.core.persistence.database import Base, get_engine
+from app.core.persistence.models import MCPServerStatus
 
 
 @pytest.fixture(autouse=True)

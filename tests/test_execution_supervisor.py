@@ -2,22 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from app.coordinator.execution.supervisor import (
     ExecutionSupervisor,
     StepMetrics,
-    _QUALITY_SCORE_SYSTEM,
-    _SYNTHESIS_SYSTEM,
 )
-from app.core.session.manager import SessionManager, SessionPhase, SessionState
+from app.core.session.manager import SessionManager, SessionState
 from app.core.ibac.engine import (
     IBACEngine,
-    IBACRequest,
     IBACResult,
     IBACDecision,
     IBACEvaluationPoint,
@@ -226,7 +221,7 @@ class TestQualityScoring:
         # Patch the entire LangChain chain's ainvoke via ChatPromptTemplate
         with patch("app.core.llm.get_llm"):
             # Intercept the chain built inside _score_step
-            original_score = supervisor._score_step
+            _original_score = supervisor._score_step
 
             async def _patched_score(intent_text, agent_id, result_payload):
                 # Simply return the expected result
@@ -279,7 +274,7 @@ class TestOutputSynthesis:
         }
 
         # Directly patch _synthesise_output's internal chain call
-        original = supervisor._synthesise_output
+        _original = supervisor._synthesise_output
 
         async def _patched(session, final_state):
             return expected
@@ -339,7 +334,7 @@ class TestSupervisorCompleteFlow:
         # Mock scoring and synthesis
         with patch.object(
             supervisor, "_score_all_steps", new_callable=AsyncMock
-        ) as mock_score, \
+        ) as _mock_score, \
              patch.object(
                  supervisor, "_synthesise_output", new_callable=AsyncMock,
                  return_value={"output": "Final: 42", "summary": "Computed"},

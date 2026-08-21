@@ -4,7 +4,6 @@ from app.core.ibac.engine import (
     IBACEngine,
     IBACPolicy,
     IBACRequest,
-    IBACResult,
     IBACDecision,
     IBACEvaluationPoint,
 )

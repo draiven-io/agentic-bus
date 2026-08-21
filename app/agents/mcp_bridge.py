@@ -29,7 +29,6 @@ Usage (coordinator-managed)::
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
@@ -85,7 +84,6 @@ class MCPBridgeAgent(BaseAgent):
         The coordinator sends the intent text and prior results.  The bridge
         selects the best-matching tool and calls it via MCP.
         """
-        from langchain_mcp_adapters.tools import load_mcp_tools
 
         intent_text = payload.get("intent_text", "")
         prior_results = payload.get("prior_results", {})

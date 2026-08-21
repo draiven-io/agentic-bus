@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Sequence
 
 from app.core.persistence.database import get_session
 from app.core.persistence.models import (

@@ -29,7 +29,6 @@ from app.core.protocol.envelope import (
     SenderKind,
     IntentPayload,
     OfferPayload,
-    ExecutePayload,
     CompletePayload,
     EventPayload,
     build_envelope,

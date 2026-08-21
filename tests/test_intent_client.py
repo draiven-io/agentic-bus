@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -18,10 +18,6 @@ from app.core.protocol.envelope import (
     MessageType,
     SenderInfo,
     SenderKind,
-    IntentPayload,
-    OfferPayload,
-    AcceptPayload,
-    CompletePayload,
 )
 
 
@@ -215,7 +211,7 @@ class TestIntentClient:
 
         with patch("app.agents.requester.websockets.connect", return_value=mock_ws):
             client = IntentClient(requester_id="test-requester")
-            result = await client.submit_intent(
+            _result = await client.submit_intent(
                 "Test intent",
                 plan_approval=on_plan,
                 on_accept=on_accept,

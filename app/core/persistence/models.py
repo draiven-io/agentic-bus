@@ -15,7 +15,6 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
-    Table,
     Text,
     JSON,
     UniqueConstraint,
