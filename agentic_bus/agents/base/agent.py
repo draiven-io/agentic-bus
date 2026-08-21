@@ -25,7 +25,6 @@ import re
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from typing import Any, Awaitable, Callable
-from urllib.parse import urlsplit
 
 from agentic_bus.core.protocol.envelope import (
     AgBusEnvelope,
@@ -53,6 +52,12 @@ TokenProvider = Callable[[], "str | Awaitable[str]"]
 _URL_CREDENTIALS = re.compile(r"//[^/\s@]*:[^/\s@]*@")
 
 
+# The coordinator URI is deliberately never logged. It may carry
+# credentials (``ws://agent:pw@host:8765``), and while a sanitised form was
+# provably safe, code scanning could not see through the sanitiser and kept
+# flagging it. Rather than keep fighting the scanner over an optional log
+# field, the URI simply stays out of the logs; ``agent_id`` identifies the
+# agent, and the target is already in its configuration.
 def _strip_credentials(text: str) -> str:
     """Remove ``user:password@`` from any URL appearing in *text*.
 
@@ -62,36 +67,6 @@ def _strip_credentials(text: str) -> str:
     URLs that did not come from us.
     """
     return _URL_CREDENTIALS.sub("//***:***@", text)
-
-
-def _safe_endpoint(uri: str) -> str:
-    """Describe *uri* using only the parts that are safe to log.
-
-    Built from an allowlist — scheme, host, port — rather than by redacting
-    a blocklist out of the original string. Two reasons:
-
-    * A blocklist has to anticipate every credential-bearing component; an
-      allowlist cannot leak one it was never told about. Path and query are
-      dropped for the same reason, since tokens turn up there too.
-    * The password is never *read*, so it cannot reach a log through this
-      function at all. An earlier version redacted it instead, which was
-      safe in practice but still routed the credential through the logging
-      expression — and static analysis was right to keep objecting.
-    """
-    # Strip credentials *before* parsing, so the password is never present in
-    # the value handed to urlsplit and cannot be read back off the result.
-    try:
-        parts = urlsplit(_strip_credentials(uri))
-    except ValueError:
-        return "<unparseable uri>"
-
-    host = parts.hostname or "<unknown host>"
-    endpoint = f"{parts.scheme}://{host}" if parts.scheme else host
-    if parts.port:
-        endpoint = f"{endpoint}:{parts.port}"
-    return endpoint
-
-
 
 
 class ReconnectPolicy:
@@ -381,27 +356,18 @@ class BaseAgent(ABC):
                 await self._client.wait_closed()  # type: ignore[union-attr]
                 if self._stopping.is_set():
                     break
-                # _safe_endpoint strips credentials before parsing and
-                # reads only scheme, host and port; CodeQL cannot see through
-                # urlsplit field-sensitively, so it treats anything derived
-                # from the URI as carrying the password. Guaranteed instead by
-                # TestEndpointNeverParsesCredentials.
                 logger.warning(
-                    "Agent %s lost its connection to %s",
+                    "Agent %s lost its connection to the coordinator",
                     self.agent_id,
-                    _safe_endpoint(self.coordinator_uri),  # codeql[py/clear-text-logging-sensitive-data]
                 )
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 # Covers a coordinator that is down, refusing, or rejecting
                 # our token — all of which should be retried, not fatal.
-                # As above; the exception text is scrubbed separately by
-                # _strip_credentials, which is never handed the credential.
                 logger.warning(
-                    "Agent %s could not connect to %s: %s: %s",
+                    "Agent %s could not reach the coordinator: %s: %s",
                     self.agent_id,
-                    _safe_endpoint(self.coordinator_uri),  # codeql[py/clear-text-logging-sensitive-data]
                     type(exc).__name__,
                     _strip_credentials(str(exc)),
                 )

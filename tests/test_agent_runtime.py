@@ -453,38 +453,19 @@ class TestNoResourceLeaks:
             assert leaked == [], f"leaked coroutine: {[str(w.message) for w in leaked]}"
 
 
-class TestCredentialRedaction:
-    """A coordinator URI may carry credentials (``ws://agent:pw@host``).
+class TestCredentialsNeverReachTheLog:
+    """The coordinator URI is deliberately never logged.
 
-    The reconnect loop logs the endpoint on every attempt, so anything
-    unsafe there is written to the log repeatedly. Rather than redacting
-    known secrets out, the logged value is rebuilt from an allowlist of safe
-    components — a blocklist has to anticipate every credential-bearing
-    part, and would have missed the token in a query string.
+    It may carry credentials (``ws://agent:pw@host:8765``), and the reconnect
+    loop logs on every attempt. A sanitised form was provably safe, but code
+    scanning could not see through the sanitiser; rather than keep fighting
+    it over an optional log field, the URI stays out of the logs entirely.
+    What cannot be formatted cannot leak.
     """
 
-    def test_endpoint_keeps_only_scheme_host_and_port(self):
-        from agentic_bus.agents.base.agent import _safe_endpoint
-
-        assert _safe_endpoint("ws://agent:s3cret@host:8765") == "ws://host:8765"
-        assert _safe_endpoint("ws://localhost:8765") == "ws://localhost:8765"
-
-    def test_endpoint_drops_path_and_query(self):
-        """Credentials also hide in query strings."""
-        from agentic_bus.agents.base.agent import _safe_endpoint
-
-        endpoint = _safe_endpoint("wss://u:p@bus.example.com/lip?token=s3cret")
-        assert endpoint == "wss://bus.example.com"
-        assert "s3cret" not in endpoint
-        assert "token" not in endpoint
-
-    def test_endpoint_survives_an_unparseable_uri(self):
-        from agentic_bus.agents.base.agent import _safe_endpoint
-
-        assert _safe_endpoint("garbage") == "<unknown host>"
-
     def test_credentials_are_stripped_from_arbitrary_text(self):
-        """Connection errors routinely quote the URI they failed on."""
+        """Connection errors routinely quote the URI they failed on, so the
+        exception message still has to be scrubbed."""
         from agentic_bus.agents.base.agent import _strip_credentials
 
         assert (
@@ -500,12 +481,12 @@ class TestCredentialRedaction:
 
         assert "hunter2" not in _strip_credentials("proxy ws://someone:hunter2@other:1")
 
-    async def test_reconnect_logging_never_emits_the_password(self, caplog, monkeypatch):
+    async def test_reconnect_logging_never_emits_the_uri(self, caplog, monkeypatch):
         """End to end: drive a failing connection and inspect the log.
 
-        The failure is injected rather than produced by dialling a dead port:
-        a refused connection takes seconds to surface on some platforms, which
-        would make this test both slow and timing-dependent.
+        The failure is injected rather than produced by dialling a dead port,
+        which takes seconds to be refused on some platforms and would make
+        this both slow and timing-dependent.
         """
         import logging as _logging
 
@@ -514,9 +495,6 @@ class TestCredentialRedaction:
         uri = "ws://agent:s3cret@127.0.0.1:1"
 
         async def refuse(self, extra_headers=None):
-            # Connection errors routinely quote the URI they failed on, so the
-            # password can reach the log through the exception as well as
-            # through the URI argument.
             raise ConnectionRefusedError(f"cannot connect to {uri}")
 
         monkeypatch.setattr(WSClient, "connect", refuse)
@@ -528,61 +506,30 @@ class TestCredentialRedaction:
         )
         with caplog.at_level(_logging.DEBUG):
             task = asyncio.create_task(agent.run_forever())
-            await _wait_for(lambda: any("could not connect" in r.getMessage() for r in caplog.records))
+            await _wait_for(
+                lambda: any("could not reach" in r.getMessage() for r in caplog.records)
+            )
             await agent.stop()
             task.cancel()
 
-        assert any("could not connect" in r.getMessage() for r in caplog.records), (
+        assert any("could not reach" in r.getMessage() for r in caplog.records), (
             "the connection failure was never logged, so this proves nothing"
         )
         assert "s3cret" not in caplog.text, "password leaked into the log"
-        assert "***" in caplog.text, "URI was not redacted at all"
+        assert "agent:s3cret@" not in caplog.text, "credentials leaked into the log"
+        assert "a1" in caplog.text, "the agent should still be identifiable"
+
+        # We never format the URI ourselves. A host can still appear via a
+        # third-party exception message — that is not a credential, and the
+        # userinfo is scrubbed out of it on the way through.
+        ours = [
+            r.getMessage() for r in caplog.records
+            if "could not reach" in r.getMessage()
+        ]
+        assert ours
+        for message in ours:
+            assert "127.0.0.1" not in message.split(":")[0], (
+                "our own log line should not name the endpoint"
+            )
 
 
-class TestEndpointNeverParsesCredentials:
-    """The guarantee behind the CodeQL suppression on the reconnect logging.
-
-    ``_safe_endpoint`` strips credentials *before* parsing, so the password
-    is never present in the value handed to ``urlsplit`` and cannot be read
-    back off the result. These assertions are what make silencing that alert
-    defensible; if they ever fail, the suppression is no longer justified.
-    """
-
-    def test_urlsplit_never_sees_a_password(self, monkeypatch):
-        from agentic_bus.agents.base import agent as agent_module
-
-        seen: list[str] = []
-        real_urlsplit = agent_module.urlsplit
-
-        def recording_urlsplit(value):
-            seen.append(value)
-            return real_urlsplit(value)
-
-        monkeypatch.setattr(agent_module, "urlsplit", recording_urlsplit)
-        agent_module._safe_endpoint("wss://agent:s3cret@host:8765/lip?token=abc")
-
-        assert seen, "urlsplit was not called at all"
-        for value in seen:
-            assert "s3cret" not in value, f"password reached urlsplit: {value!r}"
-
-    def test_query_and_path_are_dropped_from_the_result(self):
-        """The query still reaches urlsplit — it is discarded when the
-        endpoint is rebuilt from scheme, host and port, which is where the
-        guarantee actually lives."""
-        from agentic_bus.agents.base.agent import _safe_endpoint
-
-        endpoint = _safe_endpoint("wss://agent:s3cret@host:8765/lip?token=abc")
-        assert endpoint == "wss://host:8765"
-        assert "abc" not in endpoint
-        assert "/lip" not in endpoint
-
-    def test_result_contains_no_credential_for_any_shape(self):
-        from agentic_bus.agents.base.agent import _safe_endpoint
-
-        for uri in (
-            "ws://agent:s3cret@host:8765",
-            "wss://user:s3cret@host/path?token=s3cret",
-            "ws://s3cret@host:8765",
-            "ws://host:8765",
-        ):
-            assert "s3cret" not in _safe_endpoint(uri), uri

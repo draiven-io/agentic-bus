@@ -37,13 +37,13 @@ from this package; protocol changes are called out explicitly below.
   so the SDK could not authenticate against a secured bus at all. Called on
   every reconnection, so short-lived tokens refresh.
 - `ReconnectPolicy` for tuning backoff, exported from the public API.
-- Only the scheme, host and port of the coordinator URI reach the log. A URI
-  may legitimately carry credentials (`ws://agent:pw@host:8765`) and the
-  reconnect loop logs the endpoint on every attempt, so anything unsafe there
-  is written repeatedly. The logged value is rebuilt from an allowlist rather
-  than redacted, which also drops tokens hidden in a query string; connection
-  errors have any `user:password@` stripped from them, without the sanitiser
-  ever being handed the credential.
+- The coordinator URI is never written to the log. It may legitimately carry
+  credentials (`ws://agent:pw@host:8765`) and the reconnect loop logs on every
+  attempt, so anything unsafe there is written repeatedly. Log lines identify
+  the agent instead; the target is already in its configuration. Connection
+  errors, which routinely quote the URI they failed on, have any
+  `user:password@` stripped from them by a sanitiser that is never handed the
+  credential.
 - `WSClient.wait_closed()` / `is_connected`, so a dropped connection is
   observable by the code that owns the client.
 
