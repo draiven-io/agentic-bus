@@ -456,30 +456,49 @@ class TestNoResourceLeaks:
 class TestCredentialRedaction:
     """A coordinator URI may carry credentials (``ws://agent:pw@host``).
 
-    The reconnect loop logs the URI on every attempt, so an unredacted one
-    would write the password to the log repeatedly — flagged by CodeQL as
-    clear-text logging of sensitive information.
+    The reconnect loop logs the endpoint on every attempt, so anything
+    unsafe there is written to the log repeatedly. Rather than redacting
+    known secrets out, the logged value is rebuilt from an allowlist of safe
+    components — a blocklist has to anticipate every credential-bearing
+    part, and would have missed the token in a query string.
     """
 
-    def test_password_is_redacted_from_the_uri(self):
-        from agentic_bus.agents.base.agent import _redact_uri
+    def test_endpoint_keeps_only_scheme_host_and_port(self):
+        from agentic_bus.agents.base.agent import _safe_endpoint
 
-        assert _redact_uri("ws://agent:s3cret@host:8765") == "ws://agent:***@host:8765"
-        assert "s3cret" not in _redact_uri("wss://u:s3cret@h/path?q=1")
+        assert _safe_endpoint("ws://agent:s3cret@host:8765") == "ws://host:8765"
+        assert _safe_endpoint("ws://localhost:8765") == "ws://localhost:8765"
 
-    def test_uris_without_credentials_are_untouched(self):
-        from agentic_bus.agents.base.agent import _redact_uri
+    def test_endpoint_drops_path_and_query(self):
+        """Credentials also hide in query strings."""
+        from agentic_bus.agents.base.agent import _safe_endpoint
 
-        for uri in ("ws://localhost:8765", "wss://bus.example.com/lip", "ws://user@host"):
-            assert _redact_uri(uri) == uri
+        endpoint = _safe_endpoint("wss://u:p@bus.example.com/lip?token=s3cret")
+        assert endpoint == "wss://bus.example.com"
+        assert "s3cret" not in endpoint
+        assert "token" not in endpoint
 
-    def test_password_is_redacted_from_exception_text(self):
-        """Connection errors often quote the URI they failed on."""
-        from agentic_bus.agents.base.agent import _redact_secret
+    def test_endpoint_survives_an_unparseable_uri(self):
+        from agentic_bus.agents.base.agent import _safe_endpoint
 
-        message = "cannot connect to ws://agent:s3cret@host:8765"
-        assert _redact_secret(message, "s3cret") == "cannot connect to ws://agent:***@host:8765"
-        assert _redact_secret("plain failure", None) == "plain failure"
+        assert _safe_endpoint("garbage") == "<unknown host>"
+
+    def test_credentials_are_stripped_from_arbitrary_text(self):
+        """Connection errors routinely quote the URI they failed on."""
+        from agentic_bus.agents.base.agent import _strip_credentials
+
+        assert (
+            _strip_credentials("cannot connect to ws://agent:s3cret@host:8765")
+            == "cannot connect to ws://***:***@host:8765"
+        )
+        assert _strip_credentials("no urls here") == "no urls here"
+
+    def test_stripping_needs_no_knowledge_of_the_secret(self):
+        """It takes only the message, so it also catches credentials in URLs
+        that did not come from our own configuration."""
+        from agentic_bus.agents.base.agent import _strip_credentials
+
+        assert "hunter2" not in _strip_credentials("proxy ws://someone:hunter2@other:1")
 
     async def test_reconnect_logging_never_emits_the_password(self, caplog, monkeypatch):
         """End to end: drive a failing connection and inspect the log.

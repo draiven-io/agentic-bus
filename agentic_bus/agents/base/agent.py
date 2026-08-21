@@ -21,10 +21,11 @@ import inspect
 import json
 import logging
 import random
+import re
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from typing import Any, Awaitable, Callable
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit
 
 from agentic_bus.core.protocol.envelope import (
     AgBusEnvelope,
@@ -48,39 +49,45 @@ logger = logging.getLogger(__name__)
 TokenProvider = Callable[[], "str | Awaitable[str]"]
 
 
-def _redact_uri(uri: str) -> str:
-    """Return *uri* with any embedded password replaced.
+#: Matches the ``user:password@`` portion of any URL inside arbitrary text.
+_URL_CREDENTIALS = re.compile(r"//[^/\s@]*:[^/\s@]*@")
 
-    ``ws://agent:s3cret@coordinator:8765`` is a perfectly valid coordinator
-    URI, so logging one verbatim would put the password in clear text in
-    every connection and reconnection message.
+
+def _safe_endpoint(uri: str) -> str:
+    """Describe *uri* using only the parts that are safe to log.
+
+    Built from an allowlist — scheme, host, port — rather than by redacting
+    a blocklist out of the original string. Two reasons:
+
+    * A blocklist has to anticipate every credential-bearing component; an
+      allowlist cannot leak one it was never told about. Path and query are
+      dropped for the same reason, since tokens turn up there too.
+    * The password is never *read*, so it cannot reach a log through this
+      function at all. An earlier version redacted it instead, which was
+      safe in practice but still routed the credential through the logging
+      expression — and static analysis was right to keep objecting.
     """
     try:
         parts = urlsplit(uri)
     except ValueError:
         return "<unparseable uri>"
 
-    if not parts.password:
-        return uri
-
-    netloc = parts.hostname or ""
+    host = parts.hostname or "<unknown host>"
+    endpoint = f"{parts.scheme}://{host}" if parts.scheme else host
     if parts.port:
-        netloc = f"{netloc}:{parts.port}"
-    if parts.username:
-        netloc = f"{parts.username}:***@{netloc}"
-    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+        endpoint = f"{endpoint}:{parts.port}"
+    return endpoint
 
 
-def _redact_secret(text: str, secret: str | None) -> str:
-    """Blank out *secret* wherever it appears in *text*.
+def _strip_credentials(text: str) -> str:
+    """Remove ``user:password@`` from any URL appearing in *text*.
 
-    Connection errors frequently quote the URI they failed on, so redacting
-    the URI alone is not enough — the password can arrive via the exception
-    message instead.
+    Connection errors routinely quote the URI they failed on, so sanitising
+    our own URI is not enough. This works on the message alone and never
+    takes the credential as an argument, so it also catches credentials in
+    URLs that did not come from us.
     """
-    if not secret:
-        return text
-    return text.replace(secret, "***")
+    return _URL_CREDENTIALS.sub("//***:***@", text)
 
 
 class ReconnectPolicy:
@@ -373,7 +380,7 @@ class BaseAgent(ABC):
                 logger.warning(
                     "Agent %s lost its connection to %s",
                     self.agent_id,
-                    _redact_uri(self.coordinator_uri),
+                    _safe_endpoint(self.coordinator_uri),
                 )
             except asyncio.CancelledError:
                 break
@@ -381,10 +388,11 @@ class BaseAgent(ABC):
                 # Covers a coordinator that is down, refusing, or rejecting
                 # our token — all of which should be retried, not fatal.
                 logger.warning(
-                    "Agent %s could not connect to %s: %s",
+                    "Agent %s could not connect to %s: %s: %s",
                     self.agent_id,
-                    _redact_uri(self.coordinator_uri),
-                    _redact_secret(str(exc), urlsplit(self.coordinator_uri).password),
+                    _safe_endpoint(self.coordinator_uri),
+                    type(exc).__name__,
+                    _strip_credentials(str(exc)),
                 )
 
             if self._stopping.is_set():
