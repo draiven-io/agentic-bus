@@ -169,10 +169,15 @@ class WSClient:
         self._on_message = on_message
         self._peer: WSPeer | None = None
         self._listen_task: asyncio.Task[None] | None = None
+        # Set when the receive loop exits for any reason. Callers supervise
+        # the connection by awaiting ``wait_closed()``; without it a dropped
+        # socket is invisible to the owner of this client.
+        self._closed = asyncio.Event()
 
     async def connect(self, extra_headers: dict[str, str] | None = None) -> WSPeer:
         ws = await websockets.connect(self.uri, additional_headers=extra_headers)
         self._peer = WSPeer(ws, peer_id="client")
+        self._closed.clear()
         self._listen_task = asyncio.create_task(self._listen())
         return self._peer
 
@@ -189,12 +194,29 @@ class WSClient:
                     logger.exception("Error processing message from coordinator")
         except websockets.exceptions.ConnectionClosed:
             logger.info("Disconnected from coordinator")
+        finally:
+            # Reached on clean close, connection loss, and cancellation alike,
+            # so a supervisor is always released rather than waiting forever.
+            self._closed.set()
+
+    async def wait_closed(self) -> None:
+        """Block until the connection drops.
+
+        This is what lets a caller notice a disconnect and reconnect. Returns
+        immediately if the connection is already closed.
+        """
+        await self._closed.wait()
+
+    @property
+    def is_connected(self) -> bool:
+        return self._peer is not None and not self._closed.is_set()
 
     async def disconnect(self) -> None:
         if self._listen_task:
             self._listen_task.cancel()
         if self._peer:
             await self._peer.close()
+        self._closed.set()
 
     @property
     def peer(self) -> WSPeer | None:
