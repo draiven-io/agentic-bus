@@ -1606,6 +1606,57 @@ def cmd_config_init(args: argparse.Namespace) -> None:
     print("  Edit it with your settings, then restart the coordinator.")
 
 
+# -- conformance --------------------------------------------------------------
+
+def cmd_conformance(args: argparse.Namespace) -> None:
+    """Run the LIP conformance suite against a connecting agent.
+
+    Speaks only the protocol, so the agent under test can be written in any
+    language: start this, point the agent at the printed URI, and it reports
+    per requirement whether the agent behaved as the specification says.
+    """
+    import asyncio as _asyncio
+
+    from agentic_bus.conformance import run_agent_conformance, report_to_json
+    from agentic_bus.core.protocol.envelope import MessageType
+    from agentic_bus.testing import LocalBus
+
+    async def _run() -> int:
+        async with LocalBus(host=args.host, port=args.port) as bus:
+            if not args.json:
+                print()
+                print(f"  {_c('LIP conformance suite', _BOLD)}")
+                print(f"  Listening on {_c(bus.uri, _CYAN)}")
+                print(f"  {_c('Point your agent at that URI. Waiting…', _DIM)}")
+                print()
+
+            loop = _asyncio.get_running_loop()
+            deadline = loop.time() + args.wait
+            while loop.time() < deadline:
+                if bus.messages_of_type(MessageType.REGISTER):
+                    break
+                await _asyncio.sleep(0.1)
+            else:
+                print(
+                    f"  {_c('✗ Error:', _RED)} no agent connected within "
+                    f"{args.wait:.0f}s",
+                    file=sys.stderr,
+                )
+                return 1
+
+            # Let registration settle before driving the lifecycle.
+            await _asyncio.sleep(0.3)
+            report = await run_agent_conformance(bus=bus, timeout=args.timeout)
+
+        if args.json:
+            print(report_to_json(report))
+        else:
+            print(report.render())
+        return 0 if report.is_conformant else 1
+
+    sys.exit(_asyncio.run(_run()))
+
+
 # -- help --------------------------------------------------------------------
 
 def cmd_help(args: argparse.Namespace) -> None:
@@ -2245,6 +2296,31 @@ def build_parser() -> argparse.ArgumentParser:
     p_cfg_init.set_defaults(func=cmd_config_init)
 
     # -- help ----------------------------------------------------------------
+    # -- conformance ---------------------------------------------------------
+    p_conf = sub.add_parser(
+        "conformance",
+        help="Check an agent implementation against the LIP specification",
+    )
+    p_conf.add_argument(
+        "--port", type=int, default=0,
+        help="Port to listen on (default: pick a free one)",
+    )
+    p_conf.add_argument(
+        "--host", type=str, default="127.0.0.1", help="Bind address",
+    )
+    p_conf.add_argument(
+        "--wait", type=float, default=60.0,
+        help="Seconds to wait for an agent to connect (default: 60)",
+    )
+    p_conf.add_argument(
+        "--timeout", type=float, default=10.0,
+        help="Seconds to allow for each protocol exchange (default: 10)",
+    )
+    p_conf.add_argument(
+        "--json", action="store_true", help="Emit the report as JSON",
+    )
+    p_conf.set_defaults(func=cmd_conformance)
+
     p_help = sub.add_parser("help", help="Comprehensive documentation")
     p_help.add_argument("topic", nargs="?", default="overview",
                         choices=["overview", "architecture", "agents", "persistence", "admin", "quickstart"],
