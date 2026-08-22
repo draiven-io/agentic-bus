@@ -12,6 +12,7 @@
 </p>
 
 <p align="center">
+  <a href="#-see-it-work">See It Work</a> •
   <a href="#-quick-start">Quick Start</a> •
   <a href="#-architecture">Architecture</a> •
   <a href="#-key-concepts">Key Concepts</a> •
@@ -41,6 +42,44 @@
 Instead of pre-wired API contracts, a requesting agent simply states its intent in natural language — e.g., *"deliver this container within 200 km of the closed port, optimizing for cost and time"* — and the runtime **discovers** capable agents, **negotiates** terms, **composes** an execution graph, and **dissolves** everything once the task is complete, leaving zero technical debt.
 
 > 📄 Read the full paper: [**lip.md**](lip.md) — *"Liquid Interfaces: A Dynamic Ontology for the Interoperability of Autonomous Systems"*
+
+---
+
+## 👀 See it work
+
+A single sentence — *"a storm has closed the Port of Rotterdam, reroute our
+refrigerated pharmaceuticals from Hamburg to Madrid within 5 days"* — decomposed,
+negotiated across four agents that were never wired to each other, executed,
+and dissolved.
+
+**The plan, waiting for a human.** The coordinator has admitted the intent,
+broken it into sub-intents, discovered which agents can serve them, collected
+their offers and composed an execution graph — and stops there, because
+committing to a carrier creates a contractual obligation.
+
+<img src="https://raw.githubusercontent.com/draiven-io/agentic-bus/main/docs/images/01-negotiation-plan.png" alt="An execution plan awaiting approval, with its rationale and the agents that offered" width="100%" />
+
+**Approved and carried out.** Every step green, agent quality scored, and the
+session dissolved on completion — Invariant II: nothing outlives the
+interaction that created it.
+
+<img src="https://raw.githubusercontent.com/draiven-io/agentic-bus/main/docs/images/02-negotiation-complete.png" alt="The completed execution graph, timeline and synthesised result" width="100%" />
+
+**Authorisation, at five points in the lifecycle.** IBAC judges the *purpose*
+of a request, not the endpoint it targets — so the same intent is evaluated
+again at admission, offer eligibility, negotiation, execution and artifact
+emission, each time against what is known by then.
+
+<img src="https://raw.githubusercontent.com/draiven-io/agentic-bus/main/docs/images/06-ibac.png" alt="IBAC policies across five evaluation points" width="100%" />
+
+**And the run afterwards.** Which agents took part, what they cost, what was
+produced, and every decision that allowed it.
+
+<img src="https://raw.githubusercontent.com/draiven-io/agentic-bus/main/docs/images/04-dashboard.png" alt="The coordinator dashboard" width="100%" />
+
+<sub>Reproduce these against your own bus with
+<code>node ui/scripts/capture-screenshots.mjs http://localhost:3000</code> — it drives a
+real intent through a running coordinator rather than mocking one.</sub>
 
 ---
 

@@ -1937,7 +1937,12 @@ Execution plan steps:
             intent_domain = ""
             decomposition: dict = {}
             if snapshot.intent:
-                intent_text = snapshot.intent.text if hasattr(snapshot.intent, "text") else str(snapshot.intent)
+                # IntentPayload carries the text as `intent_text`. Falling back
+                # to str() puts the model's repr in the archive — which then
+                # reaches the dashboard and the history API as the intent.
+                intent_text = getattr(snapshot.intent, "intent_text", "") or getattr(
+                    snapshot.intent, "text", ""
+                )
                 intent_domain = snapshot.intent.domain if hasattr(snapshot.intent, "domain") else ""
                 if hasattr(snapshot.intent, "decomposition") and snapshot.intent.decomposition:
                     decomposition = snapshot.intent.decomposition if isinstance(snapshot.intent.decomposition, dict) else {}
