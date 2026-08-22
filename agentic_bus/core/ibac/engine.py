@@ -39,6 +39,7 @@ from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
+from agentic_bus.core.ibac.manifest import DerivedFacts, IntentManifest
 from agentic_bus.core.llm import get_llm
 
 logger = logging.getLogger(__name__)
@@ -99,6 +100,12 @@ class IBACRequest(BaseModel):
     negotiated_constraints: dict[str, Any] = Field(default_factory=dict)
     data_domains: list[str] = Field(default_factory=list)
 
+    #: Separates what the actor claimed from what the coordinator
+    #: established. When absent, everything on this request is treated as
+    #: declared — which is the safe reading, since an unpopulated manifest
+    #: means nothing was independently verified.
+    manifest: IntentManifest | None = None
+
 
 class IBACResult(BaseModel):
     """Output from the IBAC engine."""
@@ -108,6 +115,11 @@ class IBACResult(BaseModel):
     #: Which layer produced the blocking outcome, for audit and debugging:
     #: "semantic", "grounded", "both", or "" when nothing blocked.
     decided_by: str = ""
+    #: True when the outcome depended on something the actor asserted rather
+    #: than on facts the coordinator established. Such a decision is a
+    #: heuristic, not a boundary: the input can be written by the party the
+    #: rule constrains.
+    relies_on_declared_input: bool = True
     constraints: dict[str, Any] = Field(default_factory=dict)
     redactions: list[str] = Field(default_factory=list)
     negotiation_requirements: dict[str, Any] = Field(default_factory=dict)
@@ -265,6 +277,10 @@ Data domains: {data_domains}
     # Decision combination
     # ------------------------------------------------------------------
 
+    #: Classifications that may never leave the tenant, however the
+    #: intention is phrased.
+    _RESTRICTED_CLASSIFICATIONS = frozenset({"SECRET", "RESTRICTED", "PII_RESTRICTED"})
+
     #: Most restrictive first. Combining two decisions takes the stricter.
     _PRECEDENCE = (
         IBACDecision.DENY,
@@ -274,41 +290,43 @@ Data domains: {data_domains}
     )
 
     @classmethod
-    def _combine(cls, semantic: IBACResult, grounded: IBACResult) -> IBACResult:
-        """Return the stricter of the two decisions.
+    def _combine(cls, layers: dict[str, IBACResult]) -> IBACResult:
+        """Return the strictest decision across every layer.
 
-        The layers are ANDed, never short-circuited. A grounded rule must
-        still be able to block something the semantic evaluator approved —
-        that is the entire guarantee the grounded layer exists to provide,
-        and it is worth nothing if a semantic ALLOW ends the evaluation.
+        The layers are ANDed, never short-circuited. Any layer must be able
+        to block what another approved — that is the entire guarantee the
+        deterministic layers exist to provide, and it is worth nothing if one
+        ALLOW ends the evaluation.
         """
         order = {d: i for i, d in enumerate(cls._PRECEDENCE)}
-        stricter, other = (
-            (semantic, grounded)
-            if order[semantic.decision] <= order[grounded.decision]
-            else (grounded, semantic)
-        )
+        names = list(layers)
+        strictest_name = min(names, key=lambda n: order[layers[n].decision])
+        strictest = layers[strictest_name]
 
-        if semantic.decision == grounded.decision:
-            decided_by = "both"
-        else:
-            decided_by = "semantic" if stricter is semantic else "grounded"
+        # Every layer agreeing is worth recording as such.
+        decisions = {r.decision for r in layers.values()}
+        decided_by = "both" if len(decisions) == 1 else strictest_name
 
-        # Constraints from both layers apply; neither may relax the other.
-        constraints = {**semantic.constraints, **grounded.constraints}
+        constraints: dict[str, Any] = {}
+        redactions: set[str] = set()
+        requirements: dict[str, Any] = {}
+        for result in layers.values():
+            constraints.update(result.constraints)
+            redactions.update(result.redactions)
+            requirements.update(result.negotiation_requirements)
 
-        reasons = [r for r in (grounded.reason, semantic.reason) if r]
+        reasons = [r.reason for r in layers.values() if r.reason]
 
         return IBACResult(
-            decision=stricter.decision,
-            evaluation_point=stricter.evaluation_point,
+            decision=strictest.decision,
+            evaluation_point=strictest.evaluation_point,
             decided_by=decided_by,
+            # A decision is only a boundary when the layer that made it read
+            # nothing the actor asserted.
+            relies_on_declared_input=strictest.relies_on_declared_input,
             constraints=constraints,
-            redactions=sorted(set(semantic.redactions) | set(grounded.redactions)),
-            negotiation_requirements={
-                **semantic.negotiation_requirements,
-                **grounded.negotiation_requirements,
-            },
+            redactions=sorted(redactions),
+            negotiation_requirements=requirements,
             reason=" | ".join(reasons),
         )
 
@@ -319,7 +337,77 @@ Data domains: {data_domains}
             decision=IBACDecision.DENY,
             evaluation_point=request.evaluation_point,
             decided_by="fail-closed",
+            # Refusing because evaluation could not happen depends on nothing
+            # the actor said, so it holds regardless of what they said.
+            relies_on_declared_input=False,
             reason=reason,
+        )
+
+    # ------------------------------------------------------------------
+    # Invariants (derived facts only)
+    # ------------------------------------------------------------------
+
+    def evaluate_invariants(self, request: IBACRequest) -> IBACResult:
+        """Deterministic checks that read only coordinator-established facts.
+
+        This is the layer that can carry a guarantee. It never reads intent
+        text, a stated purpose, or anything else the actor wrote, so its
+        outcome cannot be argued away by wording the request differently.
+
+        Absent a manifest it abstains with ALLOW rather than denying: the
+        other layers still apply, and treating "nothing was verified" as a
+        denial would block every caller that has not been migrated yet.
+        """
+        manifest: IntentManifest | None = request.manifest
+        if manifest is None:
+            return IBACResult(
+                decision=IBACDecision.ALLOW,
+                evaluation_point=request.evaluation_point,
+                reason="",
+            )
+
+        derived: DerivedFacts = manifest.derived
+
+        # The envelope's sender field is written by the sender. When the
+        # authenticated connection says otherwise, the mismatch is the whole
+        # finding — governance recorded against the wrong actor is worse than
+        # no governance, because it looks correct.
+        if manifest.sender_is_impersonating:
+            return IBACResult(
+                decision=IBACDecision.DENY,
+                evaluation_point=request.evaluation_point,
+                decided_by="invariant",
+                relies_on_declared_input=False,
+                reason=(
+                    f"envelope claims agent {manifest.declared.claimed_agent_id!r} "
+                    f"but the connection is authenticated as "
+                    f"{derived.authenticated_agent_id!r}"
+                ),
+            )
+
+        # A destination outside the tenant carrying restricted material is
+        # the canonical boundary: both facts come from systems of record, so
+        # no phrasing of the intent can change the outcome.
+        if (
+            derived.destination_external
+            and derived.resource_classification.upper() in self._RESTRICTED_CLASSIFICATIONS
+        ):
+            return IBACResult(
+                decision=IBACDecision.DENY,
+                evaluation_point=request.evaluation_point,
+                decided_by="invariant",
+                relies_on_declared_input=False,
+                reason=(
+                    f"{derived.resource_classification} material may not leave "
+                    "the tenant"
+                ),
+            )
+
+        return IBACResult(
+            decision=IBACDecision.ALLOW,
+            evaluation_point=request.evaluation_point,
+            relies_on_declared_input=False,
+            reason="",
         )
 
     # ------------------------------------------------------------------
@@ -329,17 +417,27 @@ Data domains: {data_domains}
     async def evaluate_with_llm(self, request: IBACRequest) -> IBACResult:
         """Evaluate an intention against both policy layers.
 
-        The grounded layer runs deterministically and the semantic layer runs
-        against the model; the stricter outcome wins. Every path that cannot
-        produce a decision — no model configured, the call failing, an
-        unparseable answer — denies. An evaluation that did not happen is not
-        permission.
-        """
-        grounded = self.evaluate(request)
+        Three layers apply, and the strictest outcome wins:
 
+        * **invariants** — deterministic, reading only derived facts. The only
+          layer whose decisions are boundaries.
+        * **grounded rules** — deterministic, but matching on declared text,
+          so useful as heuristics rather than guarantees.
+        * **semantic** — the model, interpreting policies expressed in prose.
+
+        Every path that cannot produce a decision — no model configured, the
+        call failing, an unparseable answer — denies. An evaluation that did
+        not happen is not permission.
+        """
+        invariants = self.evaluate_invariants(request)
+        grounded = self.evaluate(request)
         semantic = await self._evaluate_semantic(request)
 
-        combined = self._combine(semantic, grounded)
+        combined = self._combine({
+            "invariant": invariants,
+            "grounded": grounded,
+            "semantic": semantic,
+        })
         if not combined.is_allowed:
             logger.warning(
                 "IBAC %s (%s): %s",

@@ -64,6 +64,27 @@ What is still true, and worth stating plainly:
   it may touch. Until that lands, treat an ALLOW as admission, not as a
   capability.
 
+### Not every deterministic rule is a boundary
+
+A rule carries a guarantee only when it is **evaluated deterministically**
+*and* **reads only facts the coordinator established**. Both halves matter: a
+regex over `intent_text` is perfectly deterministic and still worthless as a
+boundary, because the text is written by the party the rule constrains.
+
+The Intent Manifest makes the distinction structural. `declared` holds what
+the actor asserts — intent text, stated purpose, requested scopes. `derived`
+holds what the coordinator resolves for itself — the authenticated subject,
+which connection the message arrived on, a resource's classification. The
+invariant layer reads only `derived`, and `IBACResult.relies_on_declared_input`
+records whether a given decision was a boundary or a heuristic.
+
+One invariant closes a concrete hole: `envelope.sender.id` is written by the
+sender, and was previously used as the governed identity without being checked
+against the authenticated connection. An agent could therefore have policy
+evaluated — and recorded in the audit trail — against a different agent's
+identity. Governance attributed to the wrong actor is worse than none, because
+it looks correct.
+
 **Grounded rules are a boundary. Semantic rules are defence in depth.** Keep
 enforcing hard limits — credentials, network egress, spend, data residency —
 in the infrastructure the agents run on.

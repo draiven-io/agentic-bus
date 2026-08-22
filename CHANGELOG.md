@@ -11,6 +11,26 @@ from this package; protocol changes are called out explicitly below.
 
 ### Security
 
+- **The Intent Manifest separates what an agent claims from what the
+  coordinator establishes.** Purpose-based authorization is only as strong as
+  purpose attestation: a rule reading a field the governed component wrote
+  constrains nothing, because the agent writes something that passes.
+  `declared` carries intent text, stated purpose and requested scopes;
+  `derived` carries the authenticated subject, the identity resolved from the
+  connection, and resource facts. A new invariant layer reads only `derived`,
+  and `IBACResult.relies_on_declared_input` records whether a decision was a
+  boundary or a heuristic.
+
+- **Sender impersonation is detected and denied.** `envelope.sender.id` is
+  written by the sender and was used as the governed agent identity without
+  being checked against the authenticated connection — which the coordinator
+  already tracks. An agent could have policy evaluated, and recorded in the
+  audit trail, under another agent's identity.
+
+- Four call sites gated on `decision == IBACDecision.ALLOW`, which was safe
+  against DENY but would have rejected the new `ALLOW_WITH_SCOPE`. They now
+  use `is_allowed` like the rest.
+
 - **IBAC fails closed.** Every failure path previously ended in ALLOW: the
   decision key defaulted to `"allow"`, so a truncated or malformed model
   response authorised the intention; an unconfigured provider, a failed call
