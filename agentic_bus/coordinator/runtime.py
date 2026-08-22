@@ -63,9 +63,10 @@ from agentic_bus.core.ibac.engine import (
     IBACEvaluationPoint,
 )
 from agentic_bus.core.telemetry.tracing import agbus_span, inject_trace_context, init_telemetry
-from agentic_bus.core.auth.oidc import OIDCIdentity, DevVerifier
+from agentic_bus.core.auth.agent_auth import AgentAuthPolicy
 from agentic_bus.core.auth.admin import AdminPolicy
 from agentic_bus.core.persistence.database import init_db
+from agentic_bus.core.persistence.models import AgentStatus
 from agentic_bus.core.persistence.repository import AgentRepository
 from agentic_bus.core.persistence.models import PersistentAgent, ManagedAgentStatus
 from agentic_bus.agents.managed_server import ManagedAgentServer
@@ -155,8 +156,16 @@ class CoordinatorRuntime:
         # agents that run in-process).  External agents are validated via WS.
         self._validator_agents: dict[str, Any] = {}
 
-        # Auth (dev mode by default – swap for OIDCVerifier in production)
-        self._verifier = DevVerifier()
+        # Admission control. The policy picks its own verifier: OIDC when an
+        # issuer is configured, permissive otherwise. Previously a DevVerifier
+        # was constructed here and never consulted, so a production deployment
+        # with an IdP configured still authenticated nobody.
+        self._auth = AgentAuthPolicy()
+        if self._auth.is_development:
+            logger.warning(
+                "No AGBUS_OIDC_ISSUER configured — agent credentials are not "
+                "cryptographically verified. Set one before exposing this bus."
+            )
 
         # Transport. The coordination logic below never touches the wire —
         # it asks for a peer and sends an envelope — so the choice is the
@@ -178,10 +187,9 @@ class CoordinatorRuntime:
                 port=port,
                 on_message=self._on_message,
                 on_disconnect=self.handle_disconnect,
+                auth_handler=self._auth.authenticate,
             )
 
-        # Peer tracking: peer_id -> OIDCIdentity
-        self._identities: dict[str, OIDCIdentity] = {}
         # Agent peer mapping: agent_id -> peer_id
         self._agent_peers: dict[str, str] = {}
         # Session -> peer mapping for requesters
@@ -301,7 +309,7 @@ class CoordinatorRuntime:
         is *derived*. The distinction decides which rules can carry a
         guarantee, so it is made here rather than trusted to each call site.
         """
-        identity = self._identities.get(peer.peer_id) if peer is not None else None
+        identity = getattr(peer, "identity", None) if peer is not None else None
 
         # Resolved from the connection the message arrived on — not from the
         # envelope's sender field, which the sender writes.
@@ -403,7 +411,7 @@ class CoordinatorRuntime:
             intent = IntentPayload.model_validate(envelope.payload)
 
             # 1. Create session
-            identity = self._identities.get(peer.peer_id)
+            identity = getattr(peer, "identity", None)
             session = self.sessions.create(
                 requester_id=envelope.sender.id,
                 oidc_subject=identity.subject if identity else "",
@@ -1577,6 +1585,69 @@ Execution plan steps:
         if fut and not fut.done():
             fut.set_result(envelope)
 
+    def _admit(
+        self, registration: AgentRegistration, peer: Peer
+    ) -> tuple[bool, str]:
+        """Decide whether this agent may join the bus, and say why not.
+
+        Three questions, in order of how cheaply they can be answered:
+
+        1. Is the connection authenticated, when this deployment requires it?
+        2. Has this ``agent_id`` been rejected or revoked by an administrator?
+        3. Is the authenticated subject entitled to *this* ``agent_id``?
+
+        Revocation is checked for ephemeral agents too, even though they keep
+        no state of their own. An agent that an administrator revoked could
+        otherwise return by reconnecting as ephemeral, which would make
+        revocation a suggestion.
+        """
+        identity = getattr(peer, "identity", None)
+        agent_id = registration.agent_id
+
+        record = None
+        try:
+            record = self.agent_repo.get(agent_id)
+        except Exception:
+            # A registry lookup failure must not become an open door.
+            logger.exception("Could not load the agent record for %s", agent_id)
+            return False, "agent record could not be read"
+
+        if record is not None and record.status in (
+            AgentStatus.REJECTED,
+            AgentStatus.REVOKED,
+        ):
+            return False, f"agent {agent_id!r} is {record.status.value}"
+
+        if record is not None and registration.mode == "persistent":
+            if record.status != AgentStatus.APPROVED:
+                return False, (
+                    f"agent {agent_id!r} is awaiting approval; "
+                    "an administrator must approve the enrolment"
+                )
+
+        allowed, reason = self._auth.entitled_to_register(
+            identity,
+            agent_id,
+            bound_subject=getattr(record, "oidc_subject", "") or "",
+        )
+        if not allowed:
+            return False, reason
+
+        # First authenticated registration binds the id to the subject, so a
+        # second credential cannot later claim it. Only ever recorded, never
+        # overwritten — rebinding is an administrative act, not something a
+        # connection can do to itself.
+        if record is not None and identity is not None and not record.oidc_subject:
+            try:
+                self.agent_repo.bind_subject(agent_id, identity.subject)
+                logger.info(
+                    "Agent %s is now bound to subject %s", agent_id, identity.subject
+                )
+            except Exception:
+                logger.exception("Could not bind %s to a subject", agent_id)
+
+        return True, ""
+
     async def _handle_agent_registration(self, envelope: AgBusEnvelope, peer: Peer) -> None:
         """Handle agent capability registration (§7 AGENTS.md).
         
@@ -1598,10 +1669,22 @@ Execution plan steps:
                 return
 
             registration = AgentRegistration.model_validate(reg_data)
-            
-            # Register in the capability registry and map to WS peer
+
+            # Admission control, before the registry hears about it. An agent
+            # admitted first and vetted afterwards is discoverable in the
+            # window between, which is the whole window that matters.
+            admitted, reason = self._admit(registration, peer)
+            if not admitted:
+                logger.warning(
+                    "Refused registration of %s: %s", registration.agent_id, reason
+                )
+                await self._send_registered(
+                    peer, registration.agent_id, accepted=False, reason=reason
+                )
+                return
+
             self.register_agent(registration, peer.peer_id)
-            
+
             logger.info(
                 "✅ Agent registered: %s (version %s, mode=%s) with %d capabilities",
                 registration.agent_id,
@@ -1609,23 +1692,6 @@ Execution plan steps:
                 registration.mode,
                 len(registration.capabilities),
             )
-            
-            # Only persist to database for persistent agents.
-            # Ephemeral agents are in-memory only (§5.1.2 — zero residual state).
-            if registration.mode == "persistent":
-                try:
-                    persistent_agent = PersistentAgent(
-                        agent_id=registration.agent_id,
-                        version=registration.version,
-                        semantic_description=registration.semantic_description,
-                        capabilities=registration.model_dump()["capabilities"],
-                        required_scopes=registration.required_scopes,
-                        supported_data_domains=registration.supported_data_domains,
-                    )
-                    self.agent_repo.save(persistent_agent)
-                    logger.debug("Agent %s persisted to database", registration.agent_id)
-                except Exception as e:
-                    logger.warning("Failed to persist agent %s: %s", registration.agent_id, e)
 
             await self._send_registered(
                 peer,
@@ -2332,7 +2398,6 @@ Execution plan steps:
 
         self.registry.handle_disconnect(agent_id)
         self._agent_peers.pop(agent_id, None)
-        self._identities.pop(peer_id, None)
 
         self.audit_log.log(
             action="agent.disconnected",

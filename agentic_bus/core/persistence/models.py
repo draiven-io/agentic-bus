@@ -59,6 +59,14 @@ class PersistentAgent(Base):
     status: AgentStatus = Column(
         Enum(AgentStatus), nullable=False, default=AgentStatus.PENDING
     )
+    #: The OIDC subject entitled to register as this agent. Empty means no
+    #: binding, and any authenticated peer may claim the id — which is why
+    #: it is recorded the first time an authenticated agent registers.
+    #:
+    #: Authentication proves who is connecting. This is what makes an
+    #: ``agent_id`` mean a particular *who*, rather than a name anyone
+    #: holding any valid credential can put in a payload.
+    oidc_subject: str = Column(String(512), nullable=False, default="")
     semantic_description: str = Column(Text, nullable=False, default="")
     version: str = Column(String(64), nullable=False, default="0.1.0")
     capabilities_json: dict = Column(JSON, nullable=False, default=list)

@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Callable, Coroutine
+from typing import Any
 
 import websockets
 from websockets.asyncio.server import Server, ServerConnection
@@ -18,6 +18,7 @@ from websockets.asyncio.client import ClientConnection
 
 from agentic_bus.core.protocol.envelope import AgBusEnvelope
 from agentic_bus.core.transport.base import (
+    AuthHandler,
     DisconnectHandler,
     MessageHandler,
     resolve_loopback,
@@ -26,12 +27,35 @@ from agentic_bus.core.transport.base import (
 logger = logging.getLogger(__name__)
 
 
+def _bearer_token(ws: ServerConnection) -> str | None:
+    """Pull the bearer credential off a WebSocket upgrade request.
+
+    The specification did not say how a credential reaches the coordinator
+    until an independent implementation had to guess; ``Authorization: Bearer``
+    on the upgrade request is now what it says.
+    """
+    try:
+        header = ws.request.headers.get("Authorization", "")  # type: ignore[union-attr]
+    except AttributeError:
+        return None
+    if not header:
+        return None
+    token = header.removeprefix("Bearer ").strip()
+    return token or None
+
+
 class WSPeer:
     """Thin wrapper around a WebSocket connection with helper send/recv."""
 
-    def __init__(self, ws: ServerConnection | ClientConnection, peer_id: str = ""):
+    def __init__(
+        self,
+        ws: ServerConnection | ClientConnection,
+        peer_id: str = "",
+        identity: Any = None,
+    ):
         self.ws = ws
         self.peer_id = peer_id
+        self.identity = identity
 
     async def send_envelope(self, envelope: AgBusEnvelope) -> None:
         """Serialise and send an Agentic Bus envelope."""
@@ -60,8 +84,9 @@ class WSServer:
     on_message : MessageHandler
         Coroutine invoked for every received ``AgBusEnvelope``.
     auth_handler : callable, optional
-        Async callable ``(ws, path) -> peer_id | None``.  Return *None* to
-        reject the connection.
+        Async callable ``(token) -> AuthOutcome``. A falsy ``accepted`` closes
+        the connection with 4001 and the outcome's reason. Omit it and every
+        connection is admitted with no identity.
     """
 
     def __init__(
@@ -70,7 +95,7 @@ class WSServer:
         port: int = 8765,
         on_message: MessageHandler | None = None,
         on_disconnect: DisconnectHandler | None = None,
-        auth_handler: Callable[..., Coroutine[Any, Any, str | None]] | None = None,
+        auth_handler: AuthHandler | None = None,
     ):
         self.host = host
         self.port = port
@@ -100,18 +125,22 @@ class WSServer:
 
     async def _handle_connection(self, ws: ServerConnection) -> None:
         peer_id: str = ""
+        identity: Any = None
         try:
-            # Optional auth gate
             if self._auth_handler:
-                peer_id_or_none = await self._auth_handler(ws)
-                if peer_id_or_none is None:
-                    await ws.close(4001, "Authentication failed")
+                # Spec §12: agents are authenticated before participating. The
+                # credential rides on the upgrade request, so this is the last
+                # point at which refusing costs nothing.
+                outcome = await self._auth_handler(_bearer_token(ws))
+                if not getattr(outcome, "accepted", False):
+                    reason = getattr(outcome, "reason", "") or "authentication failed"
+                    logger.warning("Rejected connection: %s", reason)
+                    await ws.close(4001, reason)
                     return
-                peer_id = peer_id_or_none
-            else:
-                peer_id = str(id(ws))
+                identity = getattr(outcome, "identity", None)
 
-            peer = WSPeer(ws, peer_id)
+            peer_id = str(id(ws))
+            peer = WSPeer(ws, peer_id, identity=identity)
             self._peers[peer_id] = peer
             logger.info("Peer connected: %s", peer_id)
 
