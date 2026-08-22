@@ -9,6 +9,27 @@ from this package; protocol changes are called out explicitly below.
 
 ## [Unreleased]
 
+### Added
+
+- **`agentic_bus.testing`** — a stand-in coordinator so an agent can be
+  tested with no Docker, no model provider and no network:
+
+  ```python
+  async with LocalBus() as bus:
+      agent = await bus.add_agent(WeatherAgent(agent_id="weather-01"))
+      result = await bus.execute(agent.agent_id, {"city": "Lisbon"})
+  ```
+
+  It speaks LIP over a real socket rather than calling handlers directly, so
+  serialisation, the receive loop and concurrency all take part. Beyond
+  `execute`, it can drive intents and collect offers, dissolve sessions,
+  expose the full message transcript and progress events, report the token
+  the agent sent, and simulate a coordinator that refuses registration or
+  predates LIP 0.2.0. Works on the base install — asserted by a test, since
+  an agent author should not need a coordinator to test an agent.
+- `BaseAgent.is_running`, a public way to ask whether an agent is connected
+  and serving.
+
 ### Changed — protocol
 
 - **LIP 0.2.0: agent registration is now a protocol act.** Agents send

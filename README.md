@@ -289,6 +289,36 @@ from agentic_bus import submit_intent
 result = await submit_intent("what's the weather in Lisbon?")
 ```
 
+### Test it without any of the infrastructure
+
+`agentic_bus.testing` ships a stand-in coordinator, so testing an agent needs
+no Docker, no model provider and no network:
+
+```python
+from agentic_bus.testing import LocalBus
+
+async def test_forecast():
+    async with LocalBus() as bus:
+        agent = await bus.add_agent(WeatherAgent(agent_id="weather-01"))
+
+        result = await bus.execute(agent.agent_id, {"city": "Lisbon"})
+
+        assert result.status == "success"
+        assert result.artifacts[0]["forecast"] == "sunny"
+```
+
+It speaks LIP over a real socket rather than calling your handlers directly,
+so serialisation, the receive loop and concurrency all take part — faking
+those out is what lets connection-level bugs survive a green suite. You can
+also drive intents (`send_intent`), tear sessions down (`dissolve`), inspect
+the transcript (`messages`, `events`), check the token your agent sent
+(`auth_headers`), and simulate a coordinator that refuses registration or
+predates LIP 0.2.0.
+
+It is not a coordinator: discovery and negotiation are LLM-driven in the real
+runtime and are not reproduced, so tests stay deterministic. Use it to check
+what your agent *does*, not how a coordinator would choose it.
+
 ### Run a coordinator
 
 The coordinator is a much heavier thing — LangGraph, FastAPI, SQLAlchemy, the
