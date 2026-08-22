@@ -122,6 +122,10 @@ class LocalBus:
         self.answer_registrations = answer_registrations
 
         self.messages: list[AgBusEnvelope] = []
+        #: Raw frames that could not be parsed as an envelope. They never
+        #: reach ``messages``, so without recording them here a malformed
+        #: sender is invisible to anything inspecting the transcript.
+        self.malformed: list[str] = []
         #: ``Authorization`` header from each connection, in order. Lets a
         #: test assert its ``token_provider`` was used, and that a reconnect
         #: refreshed the token rather than replaying the first one.
@@ -372,7 +376,11 @@ class LocalBus:
         self.auth_headers.append(socket.request.headers.get("Authorization", ""))
         try:
             async for raw in socket:
-                envelope = AgBusEnvelope.from_wire(json.loads(raw))
+                try:
+                    envelope = AgBusEnvelope.from_wire(json.loads(raw))
+                except Exception:
+                    self.malformed.append(str(raw)[:500])
+                    continue
                 self.messages.append(envelope)
 
                 if envelope.message_type == MessageType.REGISTER:

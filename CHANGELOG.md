@@ -9,6 +9,27 @@ from this package; protocol changes are called out explicitly below.
 
 ## [Unreleased]
 
+### Added
+
+- **`agentic_bus.conformance` and `agbus conformance`** — a suite that checks
+  an agent implementation against the Liquid Interfaces specification. It
+  drives a candidate over a real WebSocket and reports per requirement, so the
+  agent under test may be written in any language. A specification becomes a
+  standard when a second implementation can be built from it and shown to
+  interoperate; until then "LIP-compliant" is an assertion nobody can check.
+
+  Twelve requirements, graded MUST and SHOULD, each citing the section it
+  comes from. `--json` emits a machine-readable report.
+
+  The reference SDK is tested against the suite, so `BaseAgent` failing the
+  specification it publishes now breaks our own build. Each check is also
+  exercised against an agent that violates exactly that requirement — a
+  conformance suite everything passes certifies nothing.
+
+- `LocalBus.malformed` records frames that could not be parsed as an envelope.
+  They never reach `messages`, so a malformed sender previously looked
+  identical to a silent one.
+
 ## [0.2.0] — 2026-08-22
 
 The first release of the reference implementation as something you can build

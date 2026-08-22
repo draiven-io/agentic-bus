@@ -319,6 +319,27 @@ It is not a coordinator: discovery and negotiation are LLM-driven in the real
 runtime and are not reproduced, so tests stay deterministic. Use it to check
 what your agent *does*, not how a coordinator would choose it.
 
+### Check an implementation against the specification
+
+`agbus conformance` drives a candidate agent over a real WebSocket and reports,
+per requirement, whether it behaved as LIP says it must:
+
+```bash
+agbus conformance --port 9100
+```
+
+Point your agent at the printed URI. It speaks only the protocol, so the agent
+under test can be written in any language — which is the point: a
+specification becomes a standard when a second implementation can be built
+from it and shown to interoperate.
+
+Requirements are graded. A **MUST** failure means the implementation is not
+conformant; a **SHOULD** failure is reported without failing the run. `--json`
+emits a machine-readable report for CI.
+
+The reference SDK is tested against this suite, so if `BaseAgent` ever stops
+satisfying the specification it publishes, our own build fails.
+
 ### Run a coordinator
 
 The coordinator is a much heavier thing — LangGraph, FastAPI, SQLAlchemy, the
