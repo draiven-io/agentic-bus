@@ -57,7 +57,8 @@ export default function CreateManagedAgentPage() {
 
   // ── Identity fields ──
   const [agentId, setAgentId] = useState("");
-  const [name, setName] = useState("");
+  const [typedName, setTypedName] = useState("");
+  const [nameEdited, setNameEdited] = useState(false);
 
   // ── persona ──
   const [role, setRole] = useState("");
@@ -102,18 +103,22 @@ export default function CreateManagedAgentPage() {
       t.description.toLowerCase().includes(toolSearch.toLowerCase()),
   );
 
-  // ── Auto-generate name from agent_id ──
-  useEffect(() => {
-    if (!name || name === autoName(agentId.slice(0, -1))) {
-      setName(autoName(agentId));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentId]);
-
   function autoName(slug: string) {
     return slug
       .replace(/[-_]/g, " ")
-      .replace(/\b\w/g, (c) => c.toUpperCase());
+      .replace(/\w/g, (c) => c.toUpperCase());
+  }
+
+  // Display name mirrors agent_id until the user types their own. Derived
+  // during render rather than synced by an effect: setState inside an effect
+  // causes the cascading re-render the React Compiler rules flag, and the
+  // old version also referenced autoName before it was declared.
+  const name = nameEdited ? typedName : autoName(agentId);
+
+  function onNameChange(value: string) {
+    setTypedName(value);
+    // Clearing the field hands control back to the generated name.
+    setNameEdited(value.trim() !== "");
   }
 
   function toggleTool(toolName: string) {
@@ -271,7 +276,7 @@ export default function CreateManagedAgentPage() {
                     id="agent-name"
                     placeholder="Market Researcher 01"
                     value={name}
-                    onChange={(e) => setName(e.target.value)}
+                    onChange={(e) => onNameChange(e.target.value)}
                   />
                 </div>
               </div>

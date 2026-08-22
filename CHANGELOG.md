@@ -9,6 +9,27 @@ from this package; protocol changes are called out explicitly below.
 
 ## [Unreleased]
 
+### Security
+
+- **All 91 Dependabot alerts resolved** (37 high, 48 moderate, 6 low). Every
+  one was in `ui/package-lock.json`; none were Python. Next.js 16.1.6 →
+  16.3.2 clears 28 directly and carries patched `postcss` and `sharp`;
+  shadcn 3.8.5 → 4.19.0 clears the 33 that arrived through its bundled
+  `@modelcontextprotocol/sdk` → `@hono/node-server` → `hono` chain. The rest
+  were transitive and resolve with the regenerated lockfile. `npm audit` now
+  reports zero.
+
+### Fixed
+
+- Three React anti-patterns the stricter React Compiler rules in
+  `eslint-config-next` 16.3 surfaced in existing dashboard code: `useIsMobile`
+  synced a media query through `setState` in an effect (now
+  `useSyncExternalStore`, which also removes the first-paint flash); the
+  agent-create form derived its display name in an effect that referenced a
+  function before declaration (now derived during render); and `useAsync`
+  passed a runtime value as a `useCallback` dependency list (the effect now
+  owns the caller's dependencies).
+
 ### Added
 
 - **`AGENTS.md` is back.** Nine modules cite it by section number for their
