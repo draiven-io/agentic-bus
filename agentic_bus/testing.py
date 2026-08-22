@@ -303,6 +303,23 @@ class LocalBus:
             self._discard_waiter(waiter)
         return CompletePayload.model_validate(envelope.payload)
 
+    async def send(
+        self,
+        message_type: MessageType,
+        session_id: str,
+        payload: dict[str, Any],
+        *,
+        agent_id: str | None = None,
+    ) -> None:
+        """Send a raw message, without waiting for a reply.
+
+        The lower-level escape hatch beneath ``send_intent`` and ``execute``:
+        use it to start work you do not intend to wait for (checking that two
+        tasks run concurrently, say), or to send a message shape those helpers
+        do not cover. With no *agent_id* it goes to every registered agent.
+        """
+        await self._send(payload, message_type, session_id, agent_id)
+
     async def dissolve(self, session_id: str, *, reason: str = "test teardown") -> None:
         """Dissolve a session, cancelling whatever the agent still has running."""
         await self._send({"reason": reason}, MessageType.DISSOLVE, session_id, None)

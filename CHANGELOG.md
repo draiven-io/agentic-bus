@@ -46,6 +46,9 @@ from this package; protocol changes are called out explicitly below.
   an agent author should not need a coordinator to test an agent.
 - `BaseAgent.is_running`, a public way to ask whether an agent is connected
   and serving.
+- `LocalBus.send()` — the low-level escape hatch beneath `send_intent` and
+  `execute`, for starting work you do not intend to wait for, or for message
+  shapes those helpers do not cover.
 
 ### Changed — protocol
 
