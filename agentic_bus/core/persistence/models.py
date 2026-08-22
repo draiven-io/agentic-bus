@@ -137,12 +137,12 @@ class ManagedAgentStatus(str, PyEnum):
 class ManagedAgent(Base):
     """An agent created and managed within the Agentic Bus via CLI.
 
-    Uses the CrewAI Role-Goal-Backstory framework to define the agent's
-    persona, plus capabilities (akin to CrewAI tasks) and tool bindings.
+    Uses a role/goal/backstory persona to define the agent's
+    persona, plus capabilities and tool bindings.
 
     Two kinds of agents live in the system:
     - **PersistentAgent**: externally-built agents that *connect* to the bus.
-    - **ManagedAgent**: agents *created from within* the bus using CrewAI.
+    - **ManagedAgent**: agents *created from within* the bus.
     """
 
     __tablename__ = "managed_agents"
@@ -150,7 +150,7 @@ class ManagedAgent(Base):
     id: int = Column(Integer, primary_key=True, autoincrement=True)
     agent_id: str = Column(String(256), nullable=False, unique=True, index=True)
 
-    # ── CrewAI Role-Goal-Backstory ──────────────────────────────────────
+    # ── Role-Goal-Backstory persona ─────────────────────────────────────
     name: str = Column(String(256), nullable=False)
     role: str = Column(Text, nullable=False)
     goal: str = Column(Text, nullable=False)
@@ -164,20 +164,20 @@ class ManagedAgent(Base):
         doc="Name of the LLMConfig to use.  NULL = bus default.",
     )
 
-    # ── CrewAI agent options ───────────────────────────────────────────
+    # ── Agent options ──────────────────────────────────────────────────
     verbose: bool = Column(Boolean, nullable=False, default=False)
     max_iter: int = Column(Integer, nullable=False, default=25)
     max_rpm: int | None = Column(Integer, nullable=True)
     memory: bool = Column(Boolean, nullable=False, default=True)
 
-    # ── Tool bindings (CrewAI tool names) ──────────────────────────────
+    # ── Tool bindings ──────────────────────────────────────────────────
     # Stored as a JSON list of tool identifiers, e.g.
-    # ["SerperDevTool", "WebsiteSearchTool", "FileReadTool"]
+    # ["web_search", "fetch_webpage", "read_file"]
     tools_json: list = Column(JSON, nullable=False, default=list)
 
     # ── Per-tool configuration ─────────────────────────────────────────
     # Stored as a JSON dict mapping tool names to their config dicts:
-    # {"SerperDevTool": {"api_key": "sk-..."}, "PGSearchTool": {"db_uri": "..."}}
+    # {"web_search": {"api_key": "..."}}
     tool_config_json: dict = Column(JSON, nullable=False, default=dict)
 
     # ── Lifecycle ──────────────────────────────────────────────────────
@@ -217,10 +217,10 @@ class ManagedAgent(Base):
 
 
 class ManagedAgentCapability(Base):
-    """A capability (≈ CrewAI Task template) bound to a managed agent.
+    """A capability bound to a managed agent.
 
     In Agentic Bus terminology a *capability* describes what an agent can
-    do.  In CrewAI terms this maps to a Task the agent is specialised in.
+    do — a task the agent is specialised in.
     """
 
     __tablename__ = "managed_agent_capabilities"
@@ -240,7 +240,7 @@ class ManagedAgentCapability(Base):
         Text,
         nullable=False,
         default="",
-        doc="Description of the expected output format (CrewAI expected_output).",
+        doc="Description of the expected output format.",
     )
 
     # ── Agentic Bus metadata ───────────────────────────────────────────

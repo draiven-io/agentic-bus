@@ -1,8 +1,8 @@
 # Agentic Bus coordinator — WebSocket bus (8765) + Admin REST API (8766).
 #
-# Built with [server] (the coordinator stack), [agents] so it can run the
-# CrewAI-backed managed agents it auto-starts on boot, and [mcp] so MCP
-# servers registered through the dashboard can be bridged onto the bus.
+# Built with [server] (the coordinator stack, which also runs the managed
+# agents it auto-starts on boot) and [mcp] so MCP servers registered through
+# the dashboard can be bridged onto the bus.
 
 FROM python:3.12-slim AS builder
 
@@ -23,7 +23,7 @@ ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 COPY pyproject.toml README.md LICENSE ./
 COPY agentic_bus ./agentic_bus
 
-RUN pip install --prefix=/install ".[server,agents,mcp]"
+RUN pip install --prefix=/install ".[server,mcp]"
 
 
 FROM python:3.12-slim AS runtime

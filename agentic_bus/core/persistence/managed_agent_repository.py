@@ -1,7 +1,7 @@
 """Repository for managed agent CRUD.
 
 Managed agents are created and administered from within the Agentic Bus
-(via CLI or admin API) using the CrewAI Role-Goal-Backstory framework.
+(via CLI or admin API) using a role/goal/backstory persona.
 They differ from *persistent agents* which are externally-built and merely
 register on the bus.
 """
@@ -61,19 +61,19 @@ class ManagedAgentRepository:
         name:
             Human-friendly display name.
         role:
-            CrewAI role – the agent's specialised function.
+            Role – the agent's specialised function.
         goal:
-            CrewAI goal – the agent's purpose and motivation.
+            Goal – the agent's purpose and motivation.
         backstory:
-            CrewAI backstory – experience and perspective.
+            Backstory – experience and perspective.
         llm_config_name:
             Optional name of a stored ``LLMConfig`` to use.  ``None``
             means the bus-wide default.
         tools:
-            List of CrewAI tool class names to bind.
+            List of tool names to bind.
         tool_config:
             Per-tool configuration mapping, e.g.
-            ``{"SerperDevTool": {"api_key": "sk-…"}}``.
+            ``{"web_search": {"api_key": "…"}}``.
         capabilities:
             List of capability dicts.  Each dict must contain at least
             ``capability_id`` and ``description``.

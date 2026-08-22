@@ -24,7 +24,7 @@ Usage (programmatic)::
 Usage (coordinator-managed)::
 
     The coordinator auto-starts bridge agents for all active MCPServer
-    records in the database, just like it does for managed CrewAI agents.
+    records in the database, just like it does for managed agents.
 """
 
 from __future__ import annotations

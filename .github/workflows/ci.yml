@@ -113,10 +113,10 @@ jobs:
       - name: Smoke-test the coordinator image
         run: docker run --rm agentic-bus:ci agbus --version
 
-      # crewai and langchain-mcp-adapters are imported lazily, so a broken
-      # extra would otherwise only surface when someone activates a managed
-      # agent or bridges an MCP server.
+      # langchain-mcp-adapters is imported lazily, so a broken extra would
+      # otherwise only surface when someone bridges an MCP server. The
+      # managed-agent path needs nothing beyond [server] since it moved off
+      # CrewAI, so the agent builder is checked directly instead.
       - name: Verify optional extras are importable
         run: |
-          docker run --rm --entrypoint python agentic-bus:ci \
-            -c "import crewai, langchain_mcp_adapters; print('extras importable')"
+          docker run --rm --entrypoint python agentic-bus:ci             -c "import langchain_mcp_adapters; from langchain.agents import create_agent; print('extras importable')"

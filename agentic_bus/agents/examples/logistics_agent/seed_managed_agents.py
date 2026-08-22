@@ -1,6 +1,6 @@
 """Seed the logistics example as managed agents.
 
-This script creates four managed (CrewAI-backed) agents in the Agentic Bus
+This script creates four managed agents in the Agentic Bus
 database, reproducing the motivating logistics scenario from §1 of the
 Liquid Interfaces paper:
 
@@ -82,7 +82,7 @@ AGENTS: list[dict] = [
             "evaluate alternative corridors and present ranked options with "
             "clear trade-off analysis."
         ),
-        "tools": ["SerperDevTool", "ScrapeWebsiteTool"],
+        "tools": ["web_search", "fetch_webpage"],
         "capabilities": [
             {
                 "capability_id": "route_optimization",
@@ -252,7 +252,7 @@ AGENTS: list[dict] = [
             "capabilities. In disruption scenarios you can rapidly source "
             "emergency capacity and expedited services."
         ),
-        "tools": ["SerperDevTool"],
+        "tools": ["web_search"],
         "capabilities": [
             {
                 "capability_id": "carrier_rate_quote",
@@ -362,7 +362,7 @@ AGENTS: list[dict] = [
             "decisions. You always include confidence levels and recommend "
             "whether to wait, re-route, or escalate."
         ),
-        "tools": ["SerperDevTool", "ScrapeWebsiteTool"],
+        "tools": ["web_search", "fetch_webpage"],
         "capabilities": [
             {
                 "capability_id": "disruption_analysis",

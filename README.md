@@ -341,8 +341,7 @@ the wizard, see [Configuration](#configuration) below.
 | Command | Gives you |
 |---|---|
 | `pip install agentic-bus` | Write agents, submit intents, speak LIP |
-| `pip install "agentic-bus[server]"` | Run a coordinator (`agbus serve`) |
-| `pip install "agentic-bus[agents]"` | CrewAI-backed managed agents |
+| `pip install "agentic-bus[server]"` | Run a coordinator (`agbus serve`), including the managed agents it hosts |
 | `pip install "agentic-bus[mcp]"` | Bridge MCP servers onto the bus |
 | `pip install "agentic-bus[all]"` | Everything |
 
