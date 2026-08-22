@@ -11,7 +11,7 @@ validated by that agent before the session completes.  The validation loop:
 5. Repeat up to ``max_validation_rounds``.
 6. If no viable output after all rounds → reject the session.
 
-For **managed agents** (CrewAI-backed), ``validate_answer`` uses an LLM prompt
+For **managed agents**, ``validate_answer`` uses an LLM prompt
 built from the agent's role, goal, backstory, and the active IBAC rules.
 
 For **external agents**, ``validate_answer`` is delegated over WebSocket — the

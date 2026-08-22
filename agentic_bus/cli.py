@@ -20,7 +20,7 @@ Usage::
     agbus agent disable <id>             # disable a managed agent
     agbus agent add-capability <id>      # add capability to managed agent
     agbus agent remove-capability <id> c # remove capability
-    agbus agent tools                    # list available CrewAI tools
+    agbus agent tools                    # list tools agents can be given
     agbus config show                    # display resolved configuration
     agbus config init                    # write a starter .env file
 """
@@ -985,7 +985,7 @@ def _prompt_multiline(label: str, hint: str = "") -> str:
 
 
 def cmd_agent_create(args: argparse.Namespace) -> None:  # noqa: C901
-    """Create a new managed agent (CrewAI-based)."""
+    """Create a new managed agent."""
     from agentic_bus.core.persistence.models import ManagedAgentStatus
     from agentic_bus.agents.factory import list_available_tools
 
@@ -998,8 +998,8 @@ def cmd_agent_create(args: argparse.Namespace) -> None:  # noqa: C901
         print(f"  {_c('║', _CYAN)}   {_c('Create a Managed Agent', _BOLD)}             {_c('║', _CYAN)}")
         print(f"  {_c('╚══════════════════════════════════════════╝', _CYAN)}")
         print()
-        print(f"  {_c('Agents use the CrewAI Role-Goal-Backstory framework.', _DIM)}")
-        print(f"  {_c('See: https://docs.crewai.com/en/guides/agents/crafting-effective-agents', _DIM)}")
+        print(f"  {_c('Agents are described by role, goal and backstory,', _DIM)}")
+        print(f"  {_c('which together become the system prompt.', _DIM)}")
         print()
 
         # Identity
@@ -1047,14 +1047,14 @@ def cmd_agent_create(args: argparse.Namespace) -> None:  # noqa: C901
 
         # Tools
         print(f"\n  {_c('─── Tools ───', _YELLOW)}")
-        print(f"  {_c('Bind CrewAI tools to this agent.', _DIM)}")
+        print(f"  {_c('Bind tools to this agent.', _DIM)}")
         print()
         available = list_available_tools()
-        from agentic_bus.agents.factory import CREWAI_TOOL_DESCRIPTIONS
+        from agentic_bus.agents.tools import TOOL_CATALOGUE
         tools: list[str] = _checkbox_picker(
             items=available,
-            title="Select CrewAI tools to bind",
-            descriptions=CREWAI_TOOL_DESCRIPTIONS,
+            title="Select tools to bind",
+            descriptions={n: e.description for n, e in TOOL_CATALOGUE.items()},
         )
 
         # Capabilities
@@ -1193,7 +1193,7 @@ def cmd_agent_start(args: argparse.Namespace) -> None:
     """Start a managed agent as an independent server process.
 
     The agent connects to the coordinator via WebSocket and registers its
-    capabilities.  It then listens for intents and executes tasks via CrewAI.
+    capabilities.  It then listens for intents and executes tasks.
     Press Ctrl+C to stop.
     """
     from agentic_bus.agents.managed_server import run_managed_agent_sync
@@ -1293,20 +1293,20 @@ def cmd_agent_remove_capability(args: argparse.Namespace) -> None:
 
 
 def cmd_agent_tools(args: argparse.Namespace) -> None:
-    """List available CrewAI tools that can be bound to managed agents."""
-    from agentic_bus.agents.factory import CREWAI_TOOL_CATALOGUE, CREWAI_TOOL_DESCRIPTIONS
+    """List the tools that can be bound to managed agents."""
+    from agentic_bus.agents.tools import TOOL_CATALOGUE
 
     print()
-    print(f"  {_c('Available CrewAI Tools', _BOLD)}")
+    print(f"  {_c('Available Tools', _BOLD)}")
     print(f"  {'─' * 72}")
     print(f"  {_c('TOOL', _DIM):<36s}  {_c('DESCRIPTION', _DIM)}")
     print(f"  {'─' * 36}  {'─' * 34}")
-    for name in sorted(CREWAI_TOOL_CATALOGUE.keys()):
-        desc = CREWAI_TOOL_DESCRIPTIONS.get(name, "")
+    for name in sorted(TOOL_CATALOGUE):
+        desc = TOOL_CATALOGUE[name].description
         print(f"    {_c(name, _CYAN):<36s}  {desc}")
     print()
-    print(f"  {len(CREWAI_TOOL_CATALOGUE)} tool(s) available")
-    print(f"  {_c('Install with:', _DIM)} pip install 'crewai[tools]'")
+    print(f"  {len(TOOL_CATALOGUE)} tool(s) available")
+    print(f"  {_c('Add your own with agentic_bus.agents.tools.register_tool()', _DIM)}")
     print()
 
 
@@ -2108,14 +2108,14 @@ def build_parser() -> argparse.ArgumentParser:
     # -- agent create (managed agents) -----------------------------------------
     p_create = agent_sub.add_parser(
         "create",
-        help="Create a new managed agent (CrewAI-based). Interactive if no args.",
+        help="Create a new managed agent. Interactive if no args.",
     )
     p_create.add_argument("agent_id", nargs="?", default=None,
                           help="Agent identifier (interactive if omitted)")
     p_create.add_argument("--name", type=str, default=None, help="Display name")
-    p_create.add_argument("--role", type=str, default=None, help="CrewAI role")
-    p_create.add_argument("--goal", type=str, default=None, help="CrewAI goal")
-    p_create.add_argument("--backstory", type=str, default=None, help="CrewAI backstory")
+    p_create.add_argument("--role", type=str, default=None, help="Agent role")
+    p_create.add_argument("--goal", type=str, default=None, help="Agent goal")
+    p_create.add_argument("--backstory", type=str, default=None, help="Agent backstory")
     p_create.add_argument("--llm-config", type=str, default=None,
                           help="Name of an LLM config to use (default: bus default)")
     p_create.add_argument("--verbose", action="store_true", default=False,
@@ -2125,7 +2125,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_create.add_argument("--no-memory", action="store_true", default=False,
                           help="Disable memory")
     p_create.add_argument("--tools", type=str, default=None,
-                          help="Comma-separated list of CrewAI tool names")
+                          help="Comma-separated list of tool names")
     p_create.add_argument("--activate", action="store_true", default=False,
                           help="Set status to 'active' immediately")
     p_create.set_defaults(func=cmd_agent_create)
@@ -2171,7 +2171,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_rm_cap.set_defaults(func=cmd_agent_remove_capability)
 
     p_tools = agent_sub.add_parser("tools",
-                                   help="List available CrewAI tools")
+                                   help="List tools agents can be given")
     p_tools.set_defaults(func=cmd_agent_tools)
 
     # -- llm -----------------------------------------------------------------
@@ -2264,8 +2264,6 @@ _SERVER_MODULES = frozenset({
 
 #: Modules belonging to the other extras.
 _EXTRA_BY_MODULE = {
-    "crewai": "agents",
-    "crewai_tools": "agents",
     "langchain_mcp_adapters": "mcp",
 }
 

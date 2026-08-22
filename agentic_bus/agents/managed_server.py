@@ -1,4 +1,4 @@
-"""Managed Agent Server – standalone process for CrewAI-backed agents.
+"""Managed Agent Server – standalone process for database-defined agents.
 
 Each managed agent runs as an independent server process that connects to the
 coordinator via WebSocket, just like any external (persistent/ephemeral) agent.
@@ -11,7 +11,7 @@ This architecture means:
   scaling (Docker, K8s) without touching the coordinator.
 - Crash isolation: a failing agent does not bring down the coordinator.
 
-The server wraps a CrewAI ``Agent`` + ``Task`` + ``Crew`` execution behind the
+The server wraps a LangGraph ReAct agent behind the
 Agentic Bus protocol handled by ``BaseAgent``.
 
 Usage (programmatic)::
@@ -37,8 +37,7 @@ from typing import Any
 
 from agentic_bus.agents.base.agent import BaseAgent
 from agentic_bus.agents.factory import (
-    build_crewai_agent,
-    build_output_model,
+    build_agent,
     capabilities_from_agent,
 )
 from agentic_bus.core.persistence.database import init_db
@@ -97,17 +96,36 @@ Answer to validate:
 """
 
 
+def _final_text(state: dict[str, Any]) -> str:
+    """Return the text of the last message in a LangGraph result."""
+    messages = state.get("messages") or []
+    if not messages:
+        return ""
+    content = getattr(messages[-1], "content", messages[-1])
+    if isinstance(content, str):
+        return content
+    # Some providers return content as a list of typed blocks.
+    if isinstance(content, list):
+        return "".join(
+            block.get("text", "") if isinstance(block, dict) else str(block)
+            for block in content
+        )
+    return str(content)
+
+
 class ManagedAgentServer(BaseAgent):
-    """A BaseAgent implementation backed by a CrewAI agent from the database.
+    """A BaseAgent implementation backed by a LangGraph agent built from the database.
 
     On startup it:
     1. Loads the ``ManagedAgent`` record from the DB.
     2. Converts its capabilities into ``AgentCapability`` objects.
     3. Connects to the coordinator and registers (via ``BaseAgent.start``).
-    4. Listens for intents/executions and delegates to CrewAI.
+    4. Listens for intents/executions and delegates to the graph.
 
-    The ``execute_task`` method builds a CrewAI ``Task`` and ``Crew`` on the
-    fly and kicks off execution synchronously (via ``run_in_executor`` so the
+    The ``execute_task`` method builds the graph once and invokes it
+    asynchronously (LangGraph is async-native, so unlike the CrewAI
+    implementation it replaced there is no thread offload, and cancellation
+    reaches the run rather than stopping at an executor boundary; the
     event loop isn't blocked).
     """
 
@@ -118,7 +136,7 @@ class ManagedAgentServer(BaseAgent):
     ):
         self._ma = managed_agent
         self._caps = capabilities_from_agent(managed_agent)
-        self._crew_agent: Any = None  # lazily built
+        self._graph: Any = None  # LangGraph agent, built on first execution
 
         super().__init__(
             agent_id=managed_agent.agent_id,
@@ -141,94 +159,60 @@ class ManagedAgentServer(BaseAgent):
         payload: dict[str, Any],
         context: dict[str, Any],
     ) -> dict[str, Any]:
-        """Execute via CrewAI.
+        """Execute the task on a LangGraph ReAct agent.
 
-        Builds (or reuses) the ``crewai.Agent``, wraps the intent in a
-        ``crewai.Task``, and runs a single-agent ``Crew``.
+        Previously this built a CrewAI ``Agent``, wrapped the intent in a
+        ``Task`` and ran a single-agent ``Crew`` — whose ``kickoff()`` is
+        synchronous, so it had to be pushed onto a thread. LangGraph is
+        async-native, so the offload is gone and cancellation now propagates
+        into the run rather than stopping at the executor boundary.
         """
-        # Lazy-build the CrewAI agent (first execution)
-        if self._crew_agent is None:
-            self._crew_agent = build_crewai_agent(self._ma)
-            logger.info("CrewAI agent built for %s", self.agent_id)
-
-        try:
-            from crewai import Task as CrewTask, Crew
-        except ImportError as exc:
-            raise RuntimeError(
-                "CrewAI is required for managed agents but is not installed. "
-                "Install it with: pip install 'agentic-bus[agents]'"
-            ) from exc
+        if self._graph is None:
+            self._graph = build_agent(self._ma)
+            logger.info("LangGraph agent built for %s", self.agent_id)
 
         intent_text = payload.get("intent_text", "")
         prior_results = payload.get("prior_results", {})
 
-        # Pick the best capability description as task description
-        cap_desc = ""
         expected_output = "A structured result fulfilling the intent."
-        output_pydantic = None
+        capability_description = ""
         if self._ma.capabilities:
-            cap = self._ma.capabilities[0]
-            cap_desc = cap.description
-            expected_output = cap.expected_output or expected_output
+            capability = self._ma.capabilities[0]
+            capability_description = capability.description
+            expected_output = capability.expected_output or expected_output
 
-            # Build a dynamic Pydantic model if output fields are defined
-            output_fields = cap.output_fields_json or []
-            if output_fields:
-                try:
-                    output_pydantic = build_output_model(
-                        cap.capability_id, output_fields,
-                    )
-                except (ValueError, Exception) as exc:
-                    logger.warning(
-                        "Could not build output model for %s: %s",
-                        cap.capability_id,
-                        exc,
-                    )
-
-        task_description = cap_desc or intent_text
-
-        task_kwargs: dict[str, Any] = {
-            "description": (
-                f"{task_description}\n\n"
-                f"Original intent: {intent_text}\n"
-                f"Context: {context}\n"
-                f"Prior step results: {prior_results}"
-            ),
-            "expected_output": expected_output,
-            "agent": self._crew_agent,
-        }
-        if output_pydantic is not None:
-            task_kwargs["output_pydantic"] = output_pydantic
-
-        task = CrewTask(**task_kwargs)
-
-        crew = Crew(
-            agents=[self._crew_agent],
-            tasks=[task],
-            verbose=self._ma.verbose,
+        instruction = "\n\n".join(
+            part
+            for part in (
+                capability_description or intent_text,
+                f"Original intent: {intent_text}" if capability_description else "",
+                f"Context: {context}" if context else "",
+                f"Prior step results: {prior_results}" if prior_results else "",
+                f"Expected output: {expected_output}",
+            )
+            if part
         )
 
-        # CrewAI's kickoff() is synchronous – offload to a thread
-        loop = asyncio.get_running_loop()
-        crew_result = await loop.run_in_executor(None, crew.kickoff)
-
-        logger.info(
-            "CrewAI execution complete for %s (session context omitted)",
-            self.agent_id,
+        state = await self._graph.ainvoke(
+            {"messages": [{"role": "user", "content": instruction}]}
         )
+
+        logger.info("Execution complete for %s", self.agent_id)
 
         result: dict[str, Any] = {
-            "raw": str(crew_result),
+            "raw": _final_text(state),
             "agent_id": self.agent_id,
         }
 
-        # When the task was configured with output_pydantic, CrewAI parses
-        # the LLM response into the Pydantic model.  Extract the validated
-        # dict so callers get predictable, typed JSON.
-        if output_pydantic is not None and hasattr(crew_result, "pydantic"):
-            pydantic_obj = crew_result.pydantic
-            if pydantic_obj is not None:
-                result["json"] = pydantic_obj.model_dump()
+        # Present when the capability declared output_fields, in which case
+        # build_agent asked the graph for that exact shape.
+        structured = state.get("structured_response")
+        if structured is not None:
+            result["json"] = (
+                structured.model_dump()
+                if hasattr(structured, "model_dump")
+                else structured
+            )
 
         return result
 
@@ -244,7 +228,7 @@ class ManagedAgentServer(BaseAgent):
         """Validate an execution answer using the agent's role, goal, backstory, and IBAC rules.
 
         Managed agents have rich identity information (role, goal, backstory)
-        from their CrewAI configuration.  This method builds a validation
+        from their role/goal/backstory.  This method builds a validation
         prompt that incorporates all of that context plus any active IBAC
         rules, and asks the LLM to judge whether the answer is acceptable.
         """

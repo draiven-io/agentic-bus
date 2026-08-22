@@ -121,7 +121,7 @@ def _mask_tool_secrets(
     masked placeholder so API consumers know a value is set without
     exposing the raw secret.
     """
-    from agentic_bus.agents.factory import CREWAI_TOOL_REQUIREMENTS
+    from agentic_bus.agents.tools import get_tool_requirements
 
     masked: dict[str, dict[str, object]] = {}
     for tool_name in tools:
@@ -129,7 +129,7 @@ def _mask_tool_secrets(
         if not tool_cfg:
             masked[tool_name] = {}
             continue
-        reqs = CREWAI_TOOL_REQUIREMENTS.get(tool_name, [])
+        reqs = get_tool_requirements(tool_name)
         secret_keys = {r["key"] for r in reqs if r.get("secret")}
         entry: dict[str, object] = {}
         for k, v in tool_cfg.items():

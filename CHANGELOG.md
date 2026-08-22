@@ -9,6 +9,45 @@ from this package; protocol changes are called out explicitly below.
 
 ## [Unreleased]
 
+### Changed — breaking
+
+- **Managed agents run on LangGraph; CrewAI is gone.** LangGraph already
+  orchestrates the coordinator, so a second agent framework bought nothing
+  that could not be expressed with the one already present. What it cost was
+  substantial: `crewai` and `crewai-tools` declare 87 direct requirements
+  between them — including chromadb, litellm, onnxruntime, tokenizers and a
+  second OpenTelemetry stack — to run what was, in the end, a single-agent
+  single-task ReAct loop.
+
+  Removed with it: the monkeypatch of CrewAI's private
+  `LLM._get_native_provider` (the reason the pin was stuck at `<1.0` while
+  upstream was on 1.15), and the `run_in_executor` thread offload that
+  bridged its synchronous `kickoff()`. Execution is now async end to end, so
+  cancelling a session reaches the running agent instead of stopping at the
+  executor boundary.
+
+- **The `[agents]` extra no longer exists.** Managed agents need nothing
+  beyond `[server]`. Since `[agents]` only ever appeared in the unreleased
+  0.2.0, nothing published is affected.
+
+- **The tool catalogue is smaller and built in.** 31 re-exported
+  `crewai_tools` classes are replaced by four tools implemented and tested
+  here — `web_search` (Serper), `fetch_webpage`, `read_file`,
+  `list_directory` — built on `langchain_core` and `httpx`, which the
+  coordinator already depends on. Existing agents referencing old tool names
+  will log a skipped-tool warning and run without them.
+
+  `agentic_bus.agents.tools.register_tool()` is the extension point for
+  anything else; supplying a domain tool is a better fit for a deployment
+  than guessing at 31 from here.
+
+### Added
+
+- `tests/test_langgraph_agents.py`. Managed agents were previously untested
+  at the execution level because exercising them meant standing up CrewAI; a
+  LangGraph agent can be driven by a fake chat model, so building, tool
+  binding, and running an agent are now covered without a provider.
+
 ### Security
 
 - **All 91 Dependabot alerts resolved** (37 high, 48 moderate, 6 low). Every

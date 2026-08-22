@@ -132,9 +132,9 @@ class TestManagedAgentRepository:
             role="Technical Blog Writer",
             goal="Create engaging blog posts",
             backstory="A skilled writer with a passion for technology.",
-            tools=["SerperDevTool", "WebsiteSearchTool"],
+            tools=["web_search", "fetch_webpage"],
             tool_config={
-                "SerperDevTool": {"api_key": "test-serper-key-12345"},
+                "web_search": {"api_key": "test-serper-key-12345"},
             },
             capabilities=[
                 {
@@ -148,9 +148,9 @@ class TestManagedAgentRepository:
             ],
             status=ManagedAgentStatus.ACTIVE,
         )
-        assert agent.tools_json == ["SerperDevTool", "WebsiteSearchTool"]
+        assert agent.tools_json == ["web_search", "fetch_webpage"]
         assert agent.tool_config_json == {
-            "SerperDevTool": {"api_key": "test-serper-key-12345"},
+            "web_search": {"api_key": "test-serper-key-12345"},
         }
         assert agent.status == ManagedAgentStatus.ACTIVE
         # Capabilities are loaded eagerly
@@ -205,14 +205,14 @@ class TestManagedAgentRepository:
             name="New Name",
             role="New Role",
             verbose=True,
-            tools=["FileReadTool"],
-            tool_config={"FileReadTool": {}},
+            tools=["read_file"],
+            tool_config={"read_file": {}},
         )
         assert updated.name == "New Name"
         assert updated.role == "New Role"
         assert updated.verbose is True
-        assert updated.tools_json == ["FileReadTool"]
-        assert updated.tool_config_json == {"FileReadTool": {}}
+        assert updated.tools_json == ["read_file"]
+        assert updated.tool_config_json == {"read_file": {}}
         # Unchanged fields
         assert updated.goal == "G"
 
@@ -270,8 +270,8 @@ class TestFactory:
         tools = list_available_tools()
         assert isinstance(tools, list)
         assert len(tools) > 0
-        assert "SerperDevTool" in tools
-        assert "FileReadTool" in tools
+        assert "web_search" in tools
+        assert "read_file" in tools
         # Should be sorted
         assert tools == sorted(tools)
 
@@ -355,60 +355,53 @@ class TestFactory:
 
         # All tools will fail to import in test env (crewai_tools not installed)
         # but the function should not raise
-        result = resolve_tools(["SerperDevTool", "UnknownTool"])
+        result = resolve_tools(["web_search", "UnknownTool"])
         # Either empty (if crewai_tools not installed) or has entries
         assert isinstance(result, list)
 
     def test_tool_descriptions_cover_catalogue(self):
         """Every tool in the catalogue should have a description."""
-        from agentic_bus.agents.factory import CREWAI_TOOL_CATALOGUE, CREWAI_TOOL_DESCRIPTIONS
+        from agentic_bus.agents.tools import TOOL_CATALOGUE
 
-        missing = set(CREWAI_TOOL_CATALOGUE) - set(CREWAI_TOOL_DESCRIPTIONS)
-        assert missing == set(), f"Tools missing descriptions: {missing}"
+        missing = [n for n, e in TOOL_CATALOGUE.items() if not e.description]
+        assert missing == [], f"Tools missing descriptions: {missing}"
 
     def test_tool_requirements_metadata(self):
-        """CREWAI_TOOL_REQUIREMENTS should have valid structure."""
-        from agentic_bus.agents.factory import (
-            CREWAI_TOOL_CATALOGUE,
-            CREWAI_TOOL_REQUIREMENTS,
-            get_tool_requirements,
-        )
+        """Requirement descriptors drive the dashboard's credential prompts."""
+        from agentic_bus.agents.tools import TOOL_CATALOGUE, get_tool_requirements
 
-        for tool_name, reqs in CREWAI_TOOL_REQUIREMENTS.items():
-            assert tool_name in CREWAI_TOOL_CATALOGUE, (
-                f"Requirement defined for unknown tool: {tool_name}"
-            )
-            assert isinstance(reqs, list)
-            for req in reqs:
-                assert "key" in req
-                assert "env" in req
-                assert "label" in req
-                assert "required" in req
-                assert "secret" in req
-                assert "hint" in req
+        for tool_name, entry in TOOL_CATALOGUE.items():
+            assert isinstance(entry.requirements, list)
+            for req in entry.requirements:
+                for field in ("key", "env", "label", "required", "secret", "hint"):
+                    assert field in req, f"{tool_name} requirement missing {field!r}"
+                assert isinstance(req["required"], bool)
+                assert isinstance(req["secret"], bool)
 
-        # get_tool_requirements returns [] for tools with no reqs
-        assert get_tool_requirements("FileReadTool") == []
-        assert len(get_tool_requirements("SerperDevTool")) > 0
+        # Tools needing no credentials report an empty list, not None.
+        assert get_tool_requirements("read_file") == []
+        assert len(get_tool_requirements("web_search")) > 0
+        # An unknown tool is not an error here; it simply has no requirements.
+        assert get_tool_requirements("NoSuchTool") == []
 
     def test_inject_tool_env(self, monkeypatch):
         """_inject_tool_env should set the correct environment variables."""
         import os
-        from agentic_bus.agents.factory import _inject_tool_env
+        from agentic_bus.agents.tools import _inject_tool_env
 
         # Clear any existing env var
         monkeypatch.delenv("SERPER_API_KEY", raising=False)
 
-        _inject_tool_env("SerperDevTool", {"api_key": "test-key-123"})
+        _inject_tool_env("web_search", {"api_key": "test-key-123"})
         assert os.environ.get("SERPER_API_KEY") == "test-key-123"
 
         # Empty value should not be injected
         monkeypatch.delenv("SERPER_API_KEY", raising=False)
-        _inject_tool_env("SerperDevTool", {"api_key": ""})
+        _inject_tool_env("web_search", {"api_key": ""})
         assert os.environ.get("SERPER_API_KEY") is None
 
         # Unknown tool does nothing
-        _inject_tool_env("FileReadTool", {"api_key": "whatever"})
+        _inject_tool_env("read_file", {"api_key": "whatever"})
         # No error raised
 
 
@@ -592,13 +585,13 @@ class TestCheckboxPickerFallback:
 
         # Force isatty() to return False
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
-        monkeypatch.setattr("builtins.input", lambda prompt: "SerperDevTool, FileReadTool")
+        monkeypatch.setattr("builtins.input", lambda prompt: "web_search, read_file")
 
         result = _checkbox_picker(
-            items=["SerperDevTool", "FileReadTool", "CSVSearchTool"],
+            items=["web_search", "read_file", "list_directory"],
             title="Pick tools",
         )
-        assert result == ["SerperDevTool", "FileReadTool"]
+        assert result == ["web_search", "read_file"]
 
     def test_non_interactive_empty(self, monkeypatch):
         """Empty input in fallback mode returns empty list."""
@@ -621,38 +614,55 @@ class TestToolSecretMasking:
         from agentic_bus.coordinator.admin.serializers import _mask_tool_secrets
 
         config = {
-            "SerperDevTool": {"api_key": "serper-key-1234567890"},
-            "FileReadTool": {},
+            "web_search": {"api_key": "serper-key-1234567890"},
+            "read_file": {},
         }
         result = _mask_tool_secrets(
-            ["SerperDevTool", "FileReadTool"], config,
+            ["web_search", "read_file"], config,
         )
         # SerperDevTool api_key is secret → should be masked
-        assert result["SerperDevTool"]["api_key"] != "serper-key-1234567890"
-        assert "…" in result["SerperDevTool"]["api_key"]
+        assert result["web_search"]["api_key"] != "serper-key-1234567890"
+        assert "…" in result["web_search"]["api_key"]
         # FileReadTool has no config
-        assert result["FileReadTool"] == {}
+        assert result["read_file"] == {}
 
     def test_mask_non_secret_passes_through(self):
         """Non-secret fields should pass through unmasked."""
         from agentic_bus.coordinator.admin.serializers import _mask_tool_secrets
 
-        config = {
-            "GithubSearchTool": {
-                "api_key": "ghp_abc1234567890xyz",
-                "github_repo": "owner/repo",
-            },
-        }
-        result = _mask_tool_secrets(["GithubSearchTool"], config)
-        # api_key is secret
-        assert "…" in result["GithubSearchTool"]["api_key"]
-        # github_repo is NOT secret
-        assert result["GithubSearchTool"]["github_repo"] == "owner/repo"
+        # No built-in tool declares a non-secret requirement, so register one
+        # here — which also exercises the extension point agent authors use.
+        from agentic_bus.agents.tools import TOOL_CATALOGUE, register_tool
+
+        register_tool(
+            "ticket_lookup",
+            lambda: None,
+            "Test tool with one secret and one non-secret requirement.",
+            [
+                {"key": "api_key", "env": "TICKET_API_KEY", "label": "API Key",
+                 "required": True, "secret": True, "hint": "key"},
+                {"key": "workspace", "env": "TICKET_WORKSPACE", "label": "Workspace",
+                 "required": True, "secret": False, "hint": "acme"},
+            ],
+        )
+        try:
+            config = {
+                "ticket_lookup": {
+                    "api_key": "tk_abc1234567890xyz",
+                    "workspace": "owner/repo",
+                },
+            }
+            result = _mask_tool_secrets(["ticket_lookup"], config)
+            assert "…" in result["ticket_lookup"]["api_key"]
+            # workspace is not secret, so it passes through untouched
+            assert result["ticket_lookup"]["workspace"] == "owner/repo"
+        finally:
+            TOOL_CATALOGUE.pop("ticket_lookup", None)
 
     def test_mask_short_secret(self):
         """Very short secrets should be fully masked."""
         from agentic_bus.coordinator.admin.serializers import _mask_tool_secrets
 
-        config = {"SerperDevTool": {"api_key": "short"}}
-        result = _mask_tool_secrets(["SerperDevTool"], config)
-        assert result["SerperDevTool"]["api_key"] == "***"
+        config = {"web_search": {"api_key": "short"}}
+        result = _mask_tool_secrets(["web_search"], config)
+        assert result["web_search"]["api_key"] == "***"

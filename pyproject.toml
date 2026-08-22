@@ -58,9 +58,9 @@ Issues = "https://github.com/draiven-io/agentic-bus/issues"
 agbus = "agentic_bus.cli:main"
 
 [project.optional-dependencies]
-# Running a coordinator: the WebSocket bus, the admin REST API, persistence,
-# IBAC, and LLM-driven discovery/negotiation/composition. Required by `agbus
-# serve` and by everything under agentic_bus.coordinator.
+# Running a coordinator, and with it the managed agents it hosts: those are
+# LangGraph ReAct agents now, so they need nothing beyond this. There is no
+# longer a separate [agents] extra — CrewAI was the only reason for one.
 server = [
     "langchain>=1.0.0,<2.0",
     "langgraph>=1.0.0,<2.0",
@@ -77,17 +77,6 @@ server = [
     "uvicorn[standard]>=0.34,<1.0",
 ]
 
-# Managed agents: the coordinator can create and run CrewAI-backed agents
-# from database records. Imported lazily, so the core install stays lean and
-# a coordinator that never activates a managed agent never needs these.
-#
-# Pinned below 1.0 because agentic_bus/agents/factory.py patches CrewAI's private
-# LLM._get_native_provider; the 1.x line has not been validated against it.
-agents = [
-    "crewai>=0.193,<1.0",
-    "crewai-tools>=0.73,<1.0",
-]
-
 # MCP bridge: exposes any MCP server's tools as bus capabilities.
 mcp = [
     "langchain-mcp-adapters>=0.3,<1.0",
@@ -95,7 +84,7 @@ mcp = [
 
 # Everything: run a coordinator, managed agents and the MCP bridge.
 all = [
-    "agentic-bus[server,agents,mcp]",
+    "agentic-bus[server,mcp]",
 ]
 
 dev = [

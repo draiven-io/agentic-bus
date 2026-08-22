@@ -599,17 +599,19 @@ def create_admin_api(runtime: Any) -> FastAPI:
     async def list_available_tools(
         _identity: OIDCIdentity = Depends(_get_identity),
     ):
-        from agentic_bus.agents.factory import list_available_tools as _list_tools
-        from agentic_bus.agents.factory import CREWAI_TOOL_DESCRIPTIONS, CREWAI_TOOL_REQUIREMENTS
+        from agentic_bus.agents.tools import (
+            get_tool_description,
+            get_tool_requirements,
+            list_available_tools as _list_tools,
+        )
 
-        tools = _list_tools()
         return [
             {
-                "name": t,
-                "description": CREWAI_TOOL_DESCRIPTIONS.get(t, ""),
-                "requirements": CREWAI_TOOL_REQUIREMENTS.get(t, []),
+                "name": name,
+                "description": get_tool_description(name),
+                "requirements": get_tool_requirements(name),
             }
-            for t in tools
+            for name in _list_tools()
         ]
 
     # ==================================================================
