@@ -50,6 +50,19 @@ a type, or adding a required field is a major bump — no exceptions, because
 implementations in other languages have no way to discover the change
 otherwise.
 
+## Implementation notes
+
+[`AGENTS.md`](AGENTS.md) records how this implementation is built — its
+constraints, its module layout, and the phases of the session lifecycle. It
+is **not** the protocol specification; that lives in
+[liquid-interfaces](https://github.com/draiven-io/liquid-interfaces), and
+`schemas/` is authoritative for the wire format.
+
+Docstrings cite it by section number, so **add sections at the end rather
+than renumbering**. `tests/test_docs_references.py` fails if a citation stops
+resolving — the file was deleted once before and nine modules went on citing
+sections of a document that was not in the repository.
+
 ## Pull requests
 
 - Branch from `main`; keep one logical change per PR.

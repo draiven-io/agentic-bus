@@ -11,6 +11,23 @@ from this package; protocol changes are called out explicitly below.
 
 ### Added
 
+- **`AGENTS.md` is back.** Nine modules cite it by section number for their
+  normative behaviour, but it was committed once and removed in the second
+  commit — so every one of those citations had been dangling since. Recovered
+  from git history and brought current: the paper is `lip.md` not `agbus.md`,
+  the LangChain pin is a range resolved at runtime rather than
+  `langchain==1.2.9`, the message model covers LIP 0.2.0 including
+  `register`/`registered` and `protocol_version`, and the module layout
+  matches the `agentic_bus` package. Reframed as an *implementation guide* —
+  the protocol specification lives in the liquid-interfaces repository, and
+  `schemas/` is authoritative for the wire format.
+- `tests/test_docs_references.py`, which fails if a docstring cites a section
+  that does not exist, if section numbering develops gaps (renumbering breaks
+  existing citations), or if the citation patterns stop matching anything.
+  Nothing failed when the file disappeared, which is why nobody noticed.
+
+### Added
+
 - **`agentic_bus.testing`** — a stand-in coordinator so an agent can be
   tested with no Docker, no model provider and no network:
 

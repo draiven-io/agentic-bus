@@ -118,6 +118,7 @@ packages = ["agentic_bus"]
 # inside the Python package.
 only-include = [
     "agentic_bus",
+    "AGENTS.md",
     "schemas",
     "tests",
     "docker",
