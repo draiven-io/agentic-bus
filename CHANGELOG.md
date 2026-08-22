@@ -9,6 +9,14 @@ from this package; protocol changes are called out explicitly below.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-08-22
+
+The first release of the reference implementation as something you can build
+an agent against. It is a breaking release in every dimension — package name,
+protocol version, dependency set and authorization behaviour — and all of it
+lands at once because none of it ever shipped: 0.1.0 is the only published
+version, and it went up the day before.
+
 ### Changed — breaking
 
 - **Managed agents run on LangGraph; CrewAI is gone.** LangGraph already
@@ -40,13 +48,39 @@ from this package; protocol changes are called out explicitly below.
   `agentic_bus.agents.tools.register_tool()` is the extension point for
   anything else; supplying a domain tool is a better fit for a deployment
   than guessing at 31 from here.
+- **The importable package is now `agentic_bus`, not `app`.** `pip install
+  agentic-bus` previously installed a top-level `app` package into
+  site-packages, shadowing (or being shadowed by) the `app` module that
+  nearly every FastAPI and Flask project has. Update imports:
+  `from app.agents import BaseAgent` becomes
+  `from agentic_bus import BaseAgent`.
+- **The coordinator's dependencies moved behind a `[server]` extra.** The
+  base install is now pydantic, websockets and OpenTelemetry — 13 packages
+  in a clean venv, down from roughly 100 — which is all you need to write
+  an agent. Running a coordinator needs
+  `pip install "agentic-bus[server]"`; `agbus` reports this by name when
+  the extra is missing.
 
-### Added
+### Changed — protocol
 
-- `tests/test_langgraph_agents.py`. Managed agents were previously untested
-  at the execution level because exercising them meant standing up CrewAI; a
-  LangGraph agent can be driven by a fake chat model, so building, tool
-  binding, and running an agent are now covered without a provider.
+- **LIP 0.2.0: agent registration is now a protocol act.** Agents send
+  `register` and receive `registered`; previously they sent `complete` with
+  `session_id="__registration__"` and a nested payload — a shape the
+  specification never described, so an agent written from the spec alone
+  would connect and never be discovered. See
+  [RFC 0001](https://github.com/draiven-io/liquid-interfaces/blob/main/rfcs/0001-register-performative.md).
+- **Registration can now fail visibly.** It was fire-and-forget, so a
+  coordinator that refused an agent said nothing and the agent stayed
+  connected believing it was live. `registered` carries `accepted`, a
+  `reason`, the capabilities actually accepted (which may be a subset), and
+  the coordinator's protocol version. `BaseAgent.on_registration_refused()`
+  is the hook for reacting.
+- **Compatibility is asymmetric — upgrade coordinators before agents.** A
+  0.2.0 coordinator still accepts the deprecated form, so old agents keep
+  working; a 0.2.0 agent cannot register with a 0.1.0 coordinator. A missing
+  `registered` is never fatal: the agent warns and carries on, because
+  refusing to run against an older coordinator is worse than running without
+  confirmation.
 
 ### Security
 
@@ -110,20 +144,6 @@ from this package; protocol changes are called out explicitly below.
   instructions embedded in it are evidence of attempted evasion. This is
   mitigation, not a guarantee: the accompanying tests assert that a grounded
   denial survives a semantic approval obtained by injection.
-
-### Changed
-
-- `IBACDecision` gains `ALLOW_WITH_SCOPE` and `REQUIRE_HUMAN_APPROVAL`, and a
-  `permits_execution` property. `IBACResult.is_allowed` is now the supported
-  way to gate on a decision — a check written as `decision == DENY` treats
-  every outcome added later, including "evaluation failed", as permission.
-  The three call sites in the coordinator and execution supervisor were doing
-  exactly that and have been migrated.
-- `IBACResult.decided_by` records which layer produced the outcome
-  (`semantic`, `grounded`, `both`, or `fail-closed`), for audit.
-
-### Security
-
 - **All 91 Dependabot alerts resolved** (37 high, 48 moderate, 6 low). Every
   one was in `ui/package-lock.json`; none were Python. Next.js 16.1.6 →
   16.3.2 clears 28 directly and carries patched `postcss` and `sharp`;
@@ -132,19 +152,12 @@ from this package; protocol changes are called out explicitly below.
   were transitive and resolve with the regenerated lockfile. `npm audit` now
   reports zero.
 
-### Fixed
-
-- Three React anti-patterns the stricter React Compiler rules in
-  `eslint-config-next` 16.3 surfaced in existing dashboard code: `useIsMobile`
-  synced a media query through `setState` in an effect (now
-  `useSyncExternalStore`, which also removes the first-paint flash); the
-  agent-create form derived its display name in an effect that referenced a
-  function before declaration (now derived during render); and `useAsync`
-  passed a runtime value as a `useCallback` dependency list (the effect now
-  owns the caller's dependencies).
-
 ### Added
 
+- `tests/test_langgraph_agents.py`. Managed agents were previously untested
+  at the execution level because exercising them meant standing up CrewAI; a
+  LangGraph agent can be driven by a fake chat model, so building, tool
+  binding, and running an agent are now covered without a provider.
 - **`AGENTS.md` is back.** Nine modules cite it by section number for their
   normative behaviour, but it was committed once and removed in the second
   commit — so every one of those citations had been dangling since. Recovered
@@ -159,9 +172,6 @@ from this package; protocol changes are called out explicitly below.
   that does not exist, if section numbering develops gaps (renumbering breaks
   existing citations), or if the citation patterns stop matching anything.
   Nothing failed when the file disappeared, which is why nobody noticed.
-
-### Added
-
 - **`agentic_bus.testing`** — a stand-in coordinator so an agent can be
   tested with no Docker, no model provider and no network:
 
@@ -183,30 +193,51 @@ from this package; protocol changes are called out explicitly below.
 - `LocalBus.send()` — the low-level escape hatch beneath `send_intent` and
   `execute`, for starting work you do not intend to wait for, or for message
   shapes those helpers do not cover.
+- `token_provider` on `BaseAgent`: supply a bearer token (sync or async) for
+  coordinators running real OIDC. The dev identity was previously hardcoded,
+  so the SDK could not authenticate against a secured bus at all. Called on
+  every reconnection, so short-lived tokens refresh.
+- `ReconnectPolicy` for tuning backoff, exported from the public API.
+- The coordinator URI is never written to the log. It may legitimately carry
+  credentials (`ws://agent:pw@host:8765`) and the reconnect loop logs on every
+  attempt, so anything unsafe there is written repeatedly. Log lines identify
+  the agent instead; the target is already in its configuration. Connection
+  errors, which routinely quote the URI they failed on, have any
+  `user:password@` stripped from them by a sanitiser that is never handed the
+  credential.
+- `WSClient.wait_closed()` / `is_connected`, so a dropped connection is
+  observable by the code that owns the client.
+- A real public API on the top-level package: `from agentic_bus import
+  BaseAgent, AgentCapability, IntentClient, submit_intent` plus the
+  protocol types. Writing an agent is now two methods against a documented
+  surface rather than reaching into `app.*` internals.
+- `tests/test_public_api.py`, which asserts the documented names are
+  importable *and* that importing the package pulls in none of SQLAlchemy,
+  FastAPI, LangChain, LangGraph, uvicorn or PyJWT — checked in a subprocess,
+  since a development environment has every extra installed and would hide
+  the regression.
 
-### Changed — protocol
+### Changed
 
-- **LIP 0.2.0: agent registration is now a protocol act.** Agents send
-  `register` and receive `registered`; previously they sent `complete` with
-  `session_id="__registration__"` and a nested payload — a shape the
-  specification never described, so an agent written from the spec alone
-  would connect and never be discovered. See
-  [RFC 0001](https://github.com/draiven-io/liquid-interfaces/blob/main/rfcs/0001-register-performative.md).
-- **Registration can now fail visibly.** It was fire-and-forget, so a
-  coordinator that refused an agent said nothing and the agent stayed
-  connected believing it was live. `registered` carries `accepted`, a
-  `reason`, the capabilities actually accepted (which may be a subset), and
-  the coordinator's protocol version. `BaseAgent.on_registration_refused()`
-  is the hook for reacting.
-- **Compatibility is asymmetric — upgrade coordinators before agents.** A
-  0.2.0 coordinator still accepts the deprecated form, so old agents keep
-  working; a 0.2.0 agent cannot register with a 0.1.0 coordinator. A missing
-  `registered` is never fatal: the agent warns and carries on, because
-  refusing to run against an older coordinator is worse than running without
-  confirmation.
+- `IBACDecision` gains `ALLOW_WITH_SCOPE` and `REQUIRE_HUMAN_APPROVAL`, and a
+  `permits_execution` property. `IBACResult.is_allowed` is now the supported
+  way to gate on a decision — a check written as `decision == DENY` treats
+  every outcome added later, including "evaluation failed", as permission.
+  The three call sites in the coordinator and execution supervisor were doing
+  exactly that and have been migrated.
+- `IBACResult.decided_by` records which layer produced the outcome
+  (`semantic`, `grounded`, `both`, or `fail-closed`), for audit.
 
 ### Fixed
 
+- Three React anti-patterns the stricter React Compiler rules in
+  `eslint-config-next` 16.3 surfaced in existing dashboard code: `useIsMobile`
+  synced a media query through `setState` in an effect (now
+  `useSyncExternalStore`, which also removes the first-paint flash); the
+  agent-create form derived its display name in an effect that referenced a
+  function before declaration (now derived during render); and `useAsync`
+  passed a runtime value as a `useCallback` dependency list (the effect now
+  owns the caller's dependencies).
 - **An envelope with no `protocol_version` is read as `0.1.0` again.**
   Bumping the version constant silently changed what a legacy peer's message
   parsed as, since the field's default tracked the current version.
@@ -232,52 +263,6 @@ from this package; protocol changes are called out explicitly below.
   protocol specifying dissolution as *mandatory* cleanup. `execute_task` now
   receives `CancelledError` for the dissolved session only; other sessions
   keep running.
-
-### Added
-
-- `token_provider` on `BaseAgent`: supply a bearer token (sync or async) for
-  coordinators running real OIDC. The dev identity was previously hardcoded,
-  so the SDK could not authenticate against a secured bus at all. Called on
-  every reconnection, so short-lived tokens refresh.
-- `ReconnectPolicy` for tuning backoff, exported from the public API.
-- The coordinator URI is never written to the log. It may legitimately carry
-  credentials (`ws://agent:pw@host:8765`) and the reconnect loop logs on every
-  attempt, so anything unsafe there is written repeatedly. Log lines identify
-  the agent instead; the target is already in its configuration. Connection
-  errors, which routinely quote the URI they failed on, have any
-  `user:password@` stripped from them by a sanitiser that is never handed the
-  credential.
-- `WSClient.wait_closed()` / `is_connected`, so a dropped connection is
-  observable by the code that owns the client.
-
-## [0.2.0]
-
-### Changed — breaking
-
-- **The importable package is now `agentic_bus`, not `app`.** `pip install
-  agentic-bus` previously installed a top-level `app` package into
-  site-packages, shadowing (or being shadowed by) the `app` module that
-  nearly every FastAPI and Flask project has. Update imports:
-  `from app.agents import BaseAgent` becomes
-  `from agentic_bus import BaseAgent`.
-- **The coordinator's dependencies moved behind a `[server]` extra.** The
-  base install is now pydantic, websockets and OpenTelemetry — 13 packages
-  in a clean venv, down from roughly 100 — which is all you need to write
-  an agent. Running a coordinator needs
-  `pip install "agentic-bus[server]"`; `agbus` reports this by name when
-  the extra is missing.
-
-### Added
-
-- A real public API on the top-level package: `from agentic_bus import
-  BaseAgent, AgentCapability, IntentClient, submit_intent` plus the
-  protocol types. Writing an agent is now two methods against a documented
-  surface rather than reaching into `app.*` internals.
-- `tests/test_public_api.py`, which asserts the documented names are
-  importable *and* that importing the package pulls in none of SQLAlchemy,
-  FastAPI, LangChain, LangGraph, uvicorn or PyJWT — checked in a subprocess,
-  since a development environment has every extra installed and would hide
-  the regression.
 
 ## [0.1.0] — 2026-08-21
 
