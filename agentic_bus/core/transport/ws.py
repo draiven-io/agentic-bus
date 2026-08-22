@@ -17,14 +17,13 @@ from websockets.asyncio.server import Server, ServerConnection
 from websockets.asyncio.client import ClientConnection
 
 from agentic_bus.core.protocol.envelope import AgBusEnvelope
+from agentic_bus.core.transport.base import (
+    DisconnectHandler,
+    MessageHandler,
+    resolve_loopback,
+)
 
 logger = logging.getLogger(__name__)
-
-# Type alias for a handler coroutine
-MessageHandler = Callable[[AgBusEnvelope, "WSPeer"], Coroutine[Any, Any, None]]
-
-# Type alias for a disconnect handler
-DisconnectHandler = Callable[[str], Coroutine[Any, Any, None]]
 
 
 class WSPeer:
@@ -135,6 +134,15 @@ class WSServer:
                     logger.exception("Error in disconnect handler for %s", peer_id)
 
     # -- helpers -------------------------------------------------------------
+
+    @property
+    def agent_endpoint(self) -> str | None:
+        """The URI an agent should dial to reach this server."""
+        return resolve_loopback(self.host, self.port)
+
+    @property
+    def description(self) -> str:
+        return f"ws://{self.host}:{self.port}"
 
     def get_peer(self, peer_id: str) -> WSPeer | None:
         return self._peers.get(peer_id)

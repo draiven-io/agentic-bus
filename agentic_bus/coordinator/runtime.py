@@ -39,7 +39,8 @@ from agentic_bus.core.protocol.envelope import (
     LIP_PROTOCOL_VERSION,
     build_envelope,
 )
-from agentic_bus.core.transport.ws import WSServer, WSPeer
+from agentic_bus.core.transport.base import Peer, Transport
+from agentic_bus.core.transport.ws import WSServer
 from agentic_bus.core.session.manager import (
     SessionManager,
     SessionPhase,
@@ -102,7 +103,21 @@ class CoordinatorRuntime:
         self,
         host: str = "0.0.0.0",
         port: int = 8765,
+        transport: Transport | None = None,
     ):
+        """
+        Parameters
+        ----------
+        host, port:
+            Bind address for the default WebSocket transport. Ignored when
+            *transport* is supplied.
+        transport:
+            Where peers arrive. Defaults to a WebSocket server, which is what
+            you want when agents are separate processes. Pass a
+            :class:`~agentic_bus.core.transport.local.LocalTransport` to run
+            the coordinator as a library inside a host application, with no
+            socket and no port.
+        """
         # Core subsystems
         self.sessions = SessionManager()
         self.registry = CapabilityRegistry()
@@ -143,13 +158,27 @@ class CoordinatorRuntime:
         # Auth (dev mode by default – swap for OIDCVerifier in production)
         self._verifier = DevVerifier()
 
-        # Transport
-        self._server = WSServer(
-            host=host,
-            port=port,
-            on_message=self._on_message,
-            on_disconnect=self.handle_disconnect,
-        )
+        # Transport. The coordination logic below never touches the wire —
+        # it asks for a peer and sends an envelope — so the choice is the
+        # caller's.
+        if transport is not None:
+            self._server: Transport = transport
+            for attr, handler in (
+                ("_on_message", self._on_message),
+                ("_on_disconnect", self.handle_disconnect),
+            ):
+                # Both shipped transports take their handlers at construction,
+                # but an injected one is built before the runtime exists, so
+                # the wiring happens here instead.
+                if getattr(transport, attr, None) is None:
+                    setattr(transport, attr, handler)
+        else:
+            self._server = WSServer(
+                host=host,
+                port=port,
+                on_message=self._on_message,
+                on_disconnect=self.handle_disconnect,
+            )
 
         # Peer tracking: peer_id -> OIDCIdentity
         self._identities: dict[str, OIDCIdentity] = {}
@@ -207,7 +236,7 @@ class CoordinatorRuntime:
             actor="coordinator",
             target="coordinator",
             target_type="system",
-            details=f"Coordinator runtime started on {self._server.host}:{self._server.port}",
+            details=f"Coordinator runtime started on {self._server.description}",
             severity="info",
         )
         logger.info("Coordinator runtime started")
@@ -227,7 +256,7 @@ class CoordinatorRuntime:
     # Message router
     # -----------------------------------------------------------------------
 
-    async def _on_message(self, envelope: AgBusEnvelope, peer: WSPeer) -> None:
+    async def _on_message(self, envelope: AgBusEnvelope, peer: Peer) -> None:
         """Route incoming Agentic Bus messages to the appropriate handler."""
         with agbus_span(
             f"agbus.message.{envelope.message_type}",
@@ -261,7 +290,7 @@ class CoordinatorRuntime:
         *,
         evaluation_point: IBACEvaluationPoint,
         envelope: AgBusEnvelope | None = None,
-        peer: WSPeer | None = None,
+        peer: Peer | None = None,
         session: Any | None = None,
         declared: dict[str, Any] | None = None,
     ) -> IntentManifest:
@@ -345,7 +374,7 @@ class CoordinatorRuntime:
         except Exception:
             logger.debug("Failed to send event to requester for session %s", session_id)
 
-    async def _handle_agent_event(self, envelope: AgBusEnvelope, peer: WSPeer) -> None:
+    async def _handle_agent_event(self, envelope: AgBusEnvelope, peer: Peer) -> None:
         """Forward an event from an agent to the session's requester.
 
         Agents emit ``EVENT`` messages during execution to report progress,
@@ -368,7 +397,7 @@ class CoordinatorRuntime:
     # Intent handling
     # -----------------------------------------------------------------------
 
-    async def _handle_intent(self, envelope: AgBusEnvelope, peer: WSPeer) -> None:
+    async def _handle_intent(self, envelope: AgBusEnvelope, peer: Peer) -> None:
         """Handle an incoming intent – the start of a Agentic Bus lifecycle."""
         with agbus_span("agbus.intent.admission"):
             intent = IntentPayload.model_validate(envelope.payload)
@@ -572,7 +601,7 @@ class CoordinatorRuntime:
             )
             await peer.send_envelope(intent_env)
 
-    async def _handle_offer(self, envelope: AgBusEnvelope, peer: WSPeer) -> None:
+    async def _handle_offer(self, envelope: AgBusEnvelope, peer: Peer) -> None:
         """Handle an offer from a provider agent."""
         session = self.sessions.get(envelope.session_id)
         if session is None:
@@ -1514,11 +1543,11 @@ Execution plan steps:
     # Completion & dissolution
     # -----------------------------------------------------------------------
 
-    async def _handle_register(self, envelope: AgBusEnvelope, peer: WSPeer) -> None:
+    async def _handle_register(self, envelope: AgBusEnvelope, peer: Peer) -> None:
         """Handle the ``register`` performative (LIP 0.2.0)."""
         await self._handle_agent_registration(envelope, peer)
 
-    async def _handle_complete(self, envelope: AgBusEnvelope, peer: WSPeer) -> None:
+    async def _handle_complete(self, envelope: AgBusEnvelope, peer: Peer) -> None:
         """Handle a complete message from an agent.
 
         Deprecated special case: before LIP 0.2.0 agents registered by
@@ -1548,7 +1577,7 @@ Execution plan steps:
         if fut and not fut.done():
             fut.set_result(envelope)
 
-    async def _handle_agent_registration(self, envelope: AgBusEnvelope, peer: WSPeer) -> None:
+    async def _handle_agent_registration(self, envelope: AgBusEnvelope, peer: Peer) -> None:
         """Handle agent capability registration (§7 AGENTS.md).
         
         Agents register by sending a COMPLETE message with session_id="__registration__"
@@ -1618,7 +1647,7 @@ Execution plan steps:
 
     async def _send_registered(
         self,
-        peer: WSPeer,
+        peer: Peer,
         agent_id: str,
         *,
         accepted: bool,
@@ -1651,7 +1680,7 @@ Execution plan steps:
                 "Could not send 'registered' answer to %s", agent_id or "<unknown>"
             )
 
-    async def _handle_accept(self, envelope: AgBusEnvelope, peer: WSPeer) -> None:
+    async def _handle_accept(self, envelope: AgBusEnvelope, peer: Peer) -> None:
         """Handle an accept from the requester — the requester approves the plan.
 
         This is the critical gate: execution proceeds ONLY after the requester
@@ -1710,7 +1739,7 @@ Execution plan steps:
         # Now proceed to execution
         await self._finalize_negotiation(session)
 
-    async def _handle_reject(self, envelope: AgBusEnvelope, peer: WSPeer) -> None:
+    async def _handle_reject(self, envelope: AgBusEnvelope, peer: Peer) -> None:
         """Handle a reject — may trigger renegotiation or dissolution.
 
         If the requester sends ``reject`` with ``renegotiate=True``, the
@@ -1748,7 +1777,7 @@ Execution plan steps:
         self,
         session: SessionState,
         reject_payload: RejectPayload,
-        peer: WSPeer,
+        peer: Peer,
     ) -> None:
         """Handle a renegotiation request from the requester.
 
@@ -2084,10 +2113,19 @@ Execution plan steps:
             logger.error("Managed agent %r not found in database", agent_id)
             return False
 
-        uri = f"ws://{self._server.host}:{self._server.port}"
-        # Use 127.0.0.1 when the server binds to 0.0.0.0
-        if self._server.host == "0.0.0.0":
-            uri = f"ws://127.0.0.1:{self._server.port}"
+        uri = self._server.agent_endpoint
+        if uri is None:
+            # An in-process transport has no address to hand out, so a managed
+            # agent has nowhere to dial. The host application attaches its own
+            # agents instead; spawning one here would start a process that can
+            # never connect.
+            logger.warning(
+                "Cannot start managed agent %r: the %s transport has no endpoint "
+                "for an agent to dial. Attach agents in-process instead.",
+                agent_id,
+                self._server.description,
+            )
+            return False
 
         server = ManagedAgentServer(ma, coordinator_uri=uri)
 
@@ -2187,9 +2225,15 @@ Execution plan steps:
 
         from agentic_bus.agents.mcp_bridge import MCPBridgeAgent
 
-        uri = f"ws://{self._server.host}:{self._server.port}"
-        if self._server.host == "0.0.0.0":
-            uri = f"ws://127.0.0.1:{self._server.port}"
+        uri = self._server.agent_endpoint
+        if uri is None:
+            logger.warning(
+                "Cannot start MCP bridge %r: the %s transport has no endpoint "
+                "for an agent to dial.",
+                server_id,
+                self._server.description,
+            )
+            return False
 
         bridge = MCPBridgeAgent(mcp, coordinator_uri=uri)
         self._mcp_bridge_agents[server_id] = bridge

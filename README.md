@@ -16,6 +16,7 @@
   <a href="#-quick-start">Quick Start</a> •
   <a href="#-architecture">Architecture</a> •
   <a href="#-key-concepts">Key Concepts</a> •
+  <a href="#-embedding-the-coordinator">Embedding</a> •
   <a href="#-admin-dashboard-ui">Dashboard UI</a> •
   <a href="#-admin-rest-api">REST API</a> •
   <a href="#-cli-reference">CLI Reference</a> •
@@ -471,6 +472,39 @@ Run `agbus config show` to display the resolved runtime configuration and the
 active LLM provider.
 
 ---
+
+## 🧩 Embedding the coordinator
+
+Agentic Bus runs as a service by default: agents connect over WebSocket from
+wherever they live. But the coordination logic never touches the wire — it asks
+a transport for a peer and sends an envelope — so it can also run as a library
+inside an application you already have.
+
+```python
+from agentic_bus.coordinator.runtime import CoordinatorRuntime
+from agentic_bus.core.transport.local import LocalTransport
+
+transport = LocalTransport()
+runtime = CoordinatorRuntime(transport=transport)
+await runtime.start()          # no port bound, no socket opened
+
+await my_agent.attach(transport)   # instead of dialling a URI
+```
+
+No port, no second service to operate, no loopback serialisation between
+co-located agents. Everything else is unchanged: agents still register per
+connection, IBAC still evaluates, sessions still dissolve.
+
+Envelopes are deep-copied across the in-process boundary. That costs
+something, and it is deliberate — a socket hands each side its own object, and
+a local transport that skipped the copy would let code pass here and misbehave
+over a network. The point of the abstraction is that both paths mean the same
+thing.
+
+Two things do not carry over. A `LocalTransport` has no address, so
+`agent_endpoint` is `None` and the coordinator cannot spawn managed agents or
+MCP bridges — there is nowhere for them to dial, and it says so rather than
+guessing. Attach your own agents instead.
 
 ## 🖥️ Admin Dashboard (UI)
 
