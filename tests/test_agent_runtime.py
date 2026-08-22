@@ -4,115 +4,24 @@ These run against a **real** WebSocket server rather than a mocked socket.
 Every defect covered here was invisible to a mock: the agent's receive loop,
 its supervision loop and the server's disconnect all have to interact for the
 bug to appear, and a mock replaces exactly the piece that misbehaves.
+
+The server is :class:`agentic_bus.testing.LocalBus` — the same harness the
+SDK ships to agent authors. Using it here rather than a private fake means
+these tests exercise the supported API, so a gap in it shows up as a gap in
+our own tests first.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
 
 import pytest
-import websockets
 
 from agentic_bus.agents.base.agent import BaseAgent, ReconnectPolicy
-from agentic_bus.core.protocol.envelope import (
-    MessageType,
-    SenderInfo,
-    SenderKind,
-    build_envelope,
-)
+from agentic_bus.core.protocol.envelope import MessageType
 from agentic_bus.core.registry.capability_registry import AgentCapability
-
-
-class FakeCoordinator:
-    """Minimal stand-in for the coordinator's WebSocket endpoint.
-
-    Records what agents send, can push messages back, and — the part that
-    matters here — can be stopped and restarted on the same port.
-    """
-
-    def __init__(self) -> None:
-        self.received: list[dict[str, Any]] = []
-        self.connections: list[Any] = []
-        self.auth_headers: list[str] = []
-        self._server: Any = None
-        self.port: int = 0
-        # Lets a test drive the refusal path.
-        self.accept_registrations = True
-        self.refusal_reason = "not approved"
-
-    async def start(self, port: int = 0) -> int:
-        self._server = await websockets.serve(self._handle, "127.0.0.1", port)
-        self.port = port or next(iter(self._server.sockets)).getsockname()[1]
-        return self.port
-
-    async def _handle(self, ws) -> None:
-        self.connections.append(ws)
-        header = ws.request.headers.get("Authorization", "")
-        self.auth_headers.append(header)
-        try:
-            async for raw in ws:
-                message = json.loads(raw)
-                self.received.append(message)
-                if message.get("message_type") == MessageType.REGISTER.value:
-                    await self._answer_registration(ws, message)
-        except websockets.exceptions.ConnectionClosed:
-            pass
-
-    async def _answer_registration(self, ws, message: dict[str, Any]) -> None:
-        """Reply with ``registered``, as a LIP 0.2.0 coordinator does."""
-        if not self.accept_registrations:
-            payload = {
-                "accepted": False,
-                "agent_id": message["payload"].get("agent_id", ""),
-                "reason": self.refusal_reason,
-            }
-        else:
-            payload = {
-                "accepted": True,
-                "agent_id": message["payload"].get("agent_id", ""),
-                "registered_capabilities": [
-                    c.get("capability_id", "")
-                    for c in message["payload"].get("capabilities", [])
-                ],
-            }
-        env = build_envelope(
-            MessageType.REGISTERED,
-            SenderInfo(kind=SenderKind.COORDINATOR, id="coordinator"),
-            "",
-            payload,
-        )
-        await ws.send(env.model_dump_json())
-
-    async def send(self, message_type: MessageType, session_id: str, payload: dict) -> None:
-        """Push a coordinator-originated message to the newest connection."""
-        env = build_envelope(
-            message_type,
-            SenderInfo(kind=SenderKind.COORDINATOR, id="coordinator"),
-            session_id,
-            payload,
-        )
-        await self.connections[-1].send(env.model_dump_json())
-
-    async def stop(self) -> None:
-        """Drop every connection and release the port."""
-        for ws in self.connections:
-            await ws.close()
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
-            self._server = None
-
-    @property
-    def uri(self) -> str:
-        return f"ws://127.0.0.1:{self.port}"
-
-    def registrations(self) -> list[dict[str, Any]]:
-        return [
-            m for m in self.received
-            if m.get("message_type") == MessageType.REGISTER.value
-        ]
+from agentic_bus.testing import LocalBus
 
 
 class RecordingAgent(BaseAgent):
@@ -153,10 +62,8 @@ async def _wait_for(predicate, timeout: float = 5.0, interval: float = 0.02) -> 
 
 @pytest.fixture()
 async def coordinator():
-    bus = FakeCoordinator()
-    await bus.start()
-    yield bus
-    await bus.stop()
+    async with LocalBus() as bus:
+        yield bus
 
 
 class TestRegistration:
@@ -164,11 +71,11 @@ class TestRegistration:
         agent = RecordingAgent(agent_id="a1", coordinator_uri=coordinator.uri)
         task = asyncio.create_task(agent.run_forever())
 
-        assert await _wait_for(lambda: coordinator.registrations()), "never registered"
+        assert await _wait_for(lambda: coordinator.registrations), "never registered"
 
-        reg = coordinator.registrations()[0]["payload"]
-        assert reg["agent_id"] == "a1"
-        assert [c["capability_id"] for c in reg["capabilities"]] == ["test-cap"]
+        reg = coordinator.registrations[0]
+        assert reg.agent_id == "a1"
+        assert [c["capability_id"] for c in reg.capabilities] == ["test-cap"]
 
         await agent.stop()
         task.cancel()
@@ -182,8 +89,9 @@ class TestReconnection:
     """
 
     async def test_agent_reconnects_and_reregisters_after_coordinator_restart(self):
-        bus = FakeCoordinator()
-        port = await bus.start()
+        bus = LocalBus()
+        await bus.start()
+        port = bus.port
 
         agent = RecordingAgent(
             agent_id="a1",
@@ -191,16 +99,16 @@ class TestReconnection:
             reconnect=ReconnectPolicy(initial=0.05, maximum=0.2, jitter=False),
         )
         task = asyncio.create_task(agent.run_forever())
-        assert await _wait_for(lambda: len(bus.registrations()) == 1), "initial registration"
+        assert await _wait_for(lambda: len(bus.registrations) == 1), "initial registration"
 
         # Coordinator goes away, then comes back on the same port.
         await bus.stop()
-        restarted = FakeCoordinator()
-        await restarted.start(port=port)
+        restarted = LocalBus(port=port)
+        await restarted.start()
 
         try:
             reconnected = await _wait_for(
-                lambda: len(restarted.registrations()) >= 1, timeout=10.0
+                lambda: len(restarted.registrations) >= 1, timeout=10.0
             )
             assert reconnected, "agent did not reconnect and re-register"
         finally:
@@ -210,8 +118,9 @@ class TestReconnection:
 
     async def test_agent_retries_when_coordinator_is_down_at_startup(self):
         """Starting before the coordinator must not be fatal."""
-        bus = FakeCoordinator()
-        port = await bus.start()
+        bus = LocalBus()
+        await bus.start()
+        port = bus.port
         await bus.stop()  # free the port; nothing is listening now
 
         agent = RecordingAgent(
@@ -222,11 +131,11 @@ class TestReconnection:
         task = asyncio.create_task(agent.run_forever())
         await asyncio.sleep(0.3)  # let a few attempts fail
 
-        late = FakeCoordinator()
-        await late.start(port=port)
+        late = LocalBus(port=port)
+        await late.start()
         try:
             assert await _wait_for(
-                lambda: len(late.registrations()) >= 1, timeout=10.0
+                lambda: len(late.registrations) >= 1, timeout=10.0
             ), "agent never connected once the coordinator appeared"
         finally:
             await agent.stop()
@@ -246,7 +155,7 @@ class TestConcurrency:
             agent_id="a1", coordinator_uri=coordinator.uri, duration=1.0
         )
         task = asyncio.create_task(agent.run_forever())
-        assert await _wait_for(lambda: coordinator.registrations())
+        assert await _wait_for(lambda: coordinator.registrations)
 
         for marker in ("first", "second"):
             await coordinator.send(
@@ -273,7 +182,7 @@ class TestConcurrency:
             max_concurrent_tasks=2,
         )
         task = asyncio.create_task(agent.run_forever())
-        assert await _wait_for(lambda: coordinator.registrations())
+        assert await _wait_for(lambda: coordinator.registrations)
 
         for i in range(5):
             await coordinator.send(
@@ -301,7 +210,7 @@ class TestCancellation:
             agent_id="a1", coordinator_uri=coordinator.uri, duration=5.0
         )
         task = asyncio.create_task(agent.run_forever())
-        assert await _wait_for(lambda: coordinator.registrations())
+        assert await _wait_for(lambda: coordinator.registrations)
 
         await coordinator.send(
             MessageType.EXECUTE,
@@ -325,7 +234,7 @@ class TestCancellation:
             agent_id="a1", coordinator_uri=coordinator.uri, duration=2.0
         )
         task = asyncio.create_task(agent.run_forever())
-        assert await _wait_for(lambda: coordinator.registrations())
+        assert await _wait_for(lambda: coordinator.registrations)
 
         for marker in ("keep", "drop"):
             await coordinator.send(
@@ -347,7 +256,7 @@ class TestCancellation:
             agent_id="a1", coordinator_uri=coordinator.uri, duration=5.0
         )
         task = asyncio.create_task(agent.run_forever())
-        assert await _wait_for(lambda: coordinator.registrations())
+        assert await _wait_for(lambda: coordinator.registrations)
 
         await coordinator.send(
             MessageType.EXECUTE,
@@ -409,8 +318,9 @@ class TestAuthentication:
     async def test_token_is_refreshed_on_reconnect(self):
         """Short-lived tokens are the normal case, so a reconnect must not
         replay the token captured at startup."""
-        bus = FakeCoordinator()
-        port = await bus.start()
+        bus = LocalBus()
+        await bus.start()
+        port = bus.port
 
         issued: list[str] = []
 
@@ -430,8 +340,8 @@ class TestAuthentication:
         assert bus.auth_headers[0] == "Bearer token-0"
 
         await bus.stop()
-        restarted = FakeCoordinator()
-        await restarted.start(port=port)
+        restarted = LocalBus(port=port)
+        await restarted.start()
         try:
             assert await _wait_for(
                 lambda: restarted.auth_headers, timeout=10.0
@@ -459,7 +369,7 @@ class TestNoResourceLeaks:
             max_concurrent_tasks=1,
         )
         task = asyncio.create_task(agent.run_forever())
-        assert await _wait_for(lambda: coordinator.registrations())
+        assert await _wait_for(lambda: coordinator.registrations)
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -576,14 +486,16 @@ class TestRegisterPerformative:
     async def test_registration_uses_the_register_performative(self, coordinator):
         agent = RecordingAgent(agent_id="a1", coordinator_uri=coordinator.uri)
         task = asyncio.create_task(agent.run_forever())
-        assert await _wait_for(lambda: coordinator.registrations())
+        assert await _wait_for(lambda: coordinator.registrations)
 
-        message = coordinator.registrations()[0]
-        assert message["message_type"] == "register"
-        assert message["protocol_version"] == "0.2.0"
+        # The envelope, not the parsed payload — this asserts on the wire
+        # format, which is the whole point of the performative.
+        envelope = coordinator.messages_of_type(MessageType.REGISTER)[0]
+        assert envelope.message_type == MessageType.REGISTER
+        assert envelope.protocol_version == "0.2.0"
         # Fields sit directly in the payload, not nested under "registration".
-        assert message["payload"]["agent_id"] == "a1"
-        assert "registration" not in message["payload"]
+        assert envelope.payload["agent_id"] == "a1"
+        assert "registration" not in envelope.payload
 
         await agent.stop()
         task.cancel()
@@ -591,11 +503,11 @@ class TestRegisterPerformative:
     async def test_no_complete_message_is_used_for_registration(self, coordinator):
         agent = RecordingAgent(agent_id="a1", coordinator_uri=coordinator.uri)
         task = asyncio.create_task(agent.run_forever())
-        assert await _wait_for(lambda: coordinator.registrations())
+        assert await _wait_for(lambda: coordinator.registrations)
 
         legacy = [
-            m for m in coordinator.received
-            if m.get("session_id") == "__registration__"
+            m for m in coordinator.messages
+            if m.session_id == "__registration__"
         ]
         assert legacy == [], "still registering via the deprecated complete form"
 
@@ -647,11 +559,7 @@ class TestRegisterPerformative:
         """
         import logging as _logging
 
-        class SilentCoordinator(FakeCoordinator):
-            async def _answer_registration(self, ws, message):
-                return None  # pre-0.2.0 behaviour
-
-        bus = SilentCoordinator()
+        bus = LocalBus(answer_registrations=False)
         await bus.start()
         agent = RecordingAgent(
             agent_id="a1",
