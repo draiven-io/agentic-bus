@@ -36,6 +36,7 @@ from agentic_bus.core.protocol.envelope import (
     build_envelope,
 )
 from agentic_bus.core.session.manager import SessionManager, SessionPhase, SessionState
+from agentic_bus.core.ibac.capability import Capability
 from agentic_bus.core.ibac.engine import (
     IBACEngine,
     IBACRequest,
@@ -184,6 +185,28 @@ class ExecutionSupervisor:
                     status="denied",
                     metadata={"ibac_reason": ibac_result.reason},
                 )
+
+            # The approval becomes bounded authority. Without this an ALLOW
+            # governs only whether execution starts; the agents then run with
+            # nothing recording what they were actually authorised to do.
+            session.capability = Capability.issue(
+                session_id=session.session_id,
+                principals=list(session.composition_plan.get("participating_agents", []))
+                or [r.agent_id for r in session.offers if r.status == "accepted"],
+                purpose=str(
+                    (session.intent.context or {}).get("purpose", "")
+                    if session.intent
+                    else ""
+                ),
+                scopes=session.intent.ibac_claims_requested if session.intent else [],
+                constraints=ibac_result.constraints,
+            )
+            logger.info(
+                "Capability %s issued for session %s (expires %s)",
+                session.capability.capability_id,
+                session.session_id,
+                session.capability.expires_at,
+            )
 
             # 2. Transition to execution phase
             self._sessions.transition(session.session_id, SessionPhase.EXECUTION)

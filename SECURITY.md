@@ -58,11 +58,15 @@ What is still true, and worth stating plainly:
   evidence that the same request would be allowed again.
 - **Decisions are not signed.** A recorded decision cannot yet be
   independently verified after the fact.
-- **Approved constraints are not yet enforced at execution.** IBAC records
-  the scope it authorised, but the execution path does not yet check it, so
-  IBAC currently gates whether an intention starts rather than bounding what
-  it may touch. Until that lands, treat an ALLOW as admission, not as a
-  capability.
+- **Enforcement covers dispatch, not the agent's internal tool calls.** An
+  approval now issues a bounded capability — principals, scopes, constraints,
+  and an expiry — which is checked before *every* dispatch, so a long flow
+  cannot outlive its authorisation and a plan cannot route work to an agent
+  the approval never covered. What the coordinator does not see is what the
+  agent does inside its own execution: individual tool calls are not
+  mediated, so a capability bounds which agents run and what they are told
+  they may do, not every operation they perform. Enforce operation-level
+  limits in the systems the tools reach.
 
 ### Not every deterministic rule is a boundary
 

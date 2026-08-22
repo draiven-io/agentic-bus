@@ -2378,6 +2378,29 @@ Execution plan steps:
                 step_index=step_index,
             )
 
+            # --- Execution guard -------------------------------------
+            # The capability issued when execution was authorised is checked
+            # before *every* dispatch, not once at the start. A multi-step
+            # flow can outlive the approval that started it, and a plan can
+            # name an agent the approval never covered.
+            session_for_guard = runtime.sessions.get(session_id)
+            capability = getattr(session_for_guard, "capability", None)
+            if capability is not None:
+                violation = capability.check(principal=agent_id)
+                if violation is not None:
+                    await runtime._emit_event(
+                        session_id,
+                        "ibac",
+                        f"Execution refused for '{agent_id}': {violation.reason}",
+                        phase="execution",
+                        agent_id=agent_id,
+                        step_index=step_index,
+                        detail={"capability_id": violation.capability_id},
+                    )
+                    raise PermissionError(
+                        f"capability check failed for {agent_id}: {violation.reason}"
+                    )
+
             peer_id = runtime._agent_peers.get(agent_id)
             if not peer_id:
                 raise RuntimeError(f"Agent {agent_id} not connected")
@@ -2403,7 +2426,14 @@ Execution plan steps:
                         "context": state.get("context", {}),
                         "prior_results": state.get("step_results", {}),
                     },
-                    "authorized_scopes": [],
+                    # Carried from the capability rather than left empty, so
+                    # the agent is told what it was actually authorised for.
+                    "authorized_scopes": (
+                        capability.scopes if capability is not None else []
+                    ),
+                    "capability_id": (
+                        capability.capability_id if capability is not None else ""
+                    ),
                     "memory_snapshot": memory_snapshot,
                 },
                 inject_trace_context(),

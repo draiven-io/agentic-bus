@@ -11,6 +11,20 @@ from this package; protocol changes are called out explicitly below.
 
 ### Security
 
+- **An IBAC approval now produces a bounded capability, and it is checked.**
+  Approval previously governed only whether execution *started*: the returned
+  constraints went to the audit log and were dropped, and the execute message
+  carried `authorized_scopes: []`. An intention approved for "analyse sales"
+  and one approved for "export everything" produced identical authority.
+
+  Authorising execution now issues a `Capability` — principals, purpose,
+  scopes, constraints and an expiry — stored on the session and checked
+  before **every** dispatch, not once at the start. A multi-step flow can
+  outlive the approval that began it, and a composed plan can name an agent
+  the approval never covered; both are now refused, with the reason emitted
+  as an IBAC event and carried in the audit trail. `authorized_scopes` is
+  populated from the capability.
+
 - **The Intent Manifest separates what an agent claims from what the
   coordinator establishes.** Purpose-based authorization is only as strong as
   purpose attestation: a rule reading a field the governed component wrote

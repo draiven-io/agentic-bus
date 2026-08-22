@@ -17,6 +17,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from agentic_bus.core.ibac.capability import Capability
 from agentic_bus.core.protocol.envelope import (
     IntentPayload,
     AgBusEnvelope,
@@ -80,6 +81,10 @@ class SessionState(BaseModel):
 
     # IBAC
     ibac_decisions: list[dict[str, Any]] = Field(default_factory=list)
+    #: Bounded authority produced by the execution-authorisation approval.
+    #: Checked before every dispatch, so an approval governs what the session
+    #: may do rather than only whether it may start.
+    capability: Capability | None = None
 
     # Validation – agent-based answer validation (§ assigned agent validation)
     assigned_agent_id: str = Field(
