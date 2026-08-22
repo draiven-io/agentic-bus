@@ -17,10 +17,20 @@ export function useAsync<T>(
   const [error, setError] = useState<string | null>(null);
   const isMounted = useRef(true);
 
+  // The latest fetcher is held in a ref so `refetch` can stay stable. Passing
+  // the caller's `deps` straight to useCallback is not something the linter
+  // can verify (it is a runtime value, not a literal), and a `refetch` whose
+  // identity changed every render would retrigger the effect below endlessly.
+  const fetcherRef = useRef(fetcher);
+  useEffect(() => {
+    fetcherRef.current = fetcher;
+  });
+
   const refetch = useCallback(() => {
     setLoading(true);
     setError(null);
-    fetcher()
+    fetcherRef
+      .current()
       .then((result) => {
         if (isMounted.current) {
           setData(result);
@@ -33,16 +43,22 @@ export function useAsync<T>(
           setLoading(false);
         }
       });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
+  }, []);
 
   useEffect(() => {
     isMounted.current = true;
+    // Fetching on mount necessarily sets loading state from an effect. The
+    // rule's suggested alternatives — deriving during render, or subscribing
+    // to an external store — do not apply to a one-shot request; avoiding it
+    // entirely would mean adopting a data-fetching library.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     refetch();
     return () => {
       isMounted.current = false;
     };
-  }, [refetch]);
+    // The caller's deps decide when to refetch; `refetch` is stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
 
   return { data, loading, error, refetch } as const;
 }
