@@ -55,11 +55,11 @@ from agentic_bus.core.registry.capability_registry import (
     AgentRegistration,
     AgentCapability,
 )
+from agentic_bus.core.ibac.manifest import DeclaredIntent, DerivedFacts, IntentManifest
 from agentic_bus.core.ibac.engine import (
     IBACEngine,
     IBACRequest,
     IBACEvaluationPoint,
-    IBACDecision,
 )
 from agentic_bus.core.telemetry.tracing import agbus_span, inject_trace_context, init_telemetry
 from agentic_bus.core.auth.oidc import OIDCIdentity, DevVerifier
@@ -253,6 +253,51 @@ class CoordinatorRuntime:
                 logger.warning("Unhandled message type: %s", envelope.message_type)
 
     # -----------------------------------------------------------------------
+    # IBAC manifest
+    # -----------------------------------------------------------------------
+
+    def _build_manifest(
+        self,
+        *,
+        evaluation_point: IBACEvaluationPoint,
+        envelope: AgBusEnvelope | None = None,
+        peer: WSPeer | None = None,
+        session: Any | None = None,
+        declared: dict[str, Any] | None = None,
+    ) -> IntentManifest:
+        """Assemble an intent manifest, keeping claims and facts apart.
+
+        Everything the message body carries is *declared*. Everything resolved
+        from the authenticated connection or from the coordinator's own state
+        is *derived*. The distinction decides which rules can carry a
+        guarantee, so it is made here rather than trusted to each call site.
+        """
+        identity = self._identities.get(peer.peer_id) if peer is not None else None
+
+        # Resolved from the connection the message arrived on — not from the
+        # envelope's sender field, which the sender writes.
+        authenticated_agent_id = ""
+        if peer is not None:
+            for agent_id, peer_id in self._agent_peers.items():
+                if peer_id == peer.peer_id:
+                    authenticated_agent_id = agent_id
+                    break
+
+        return IntentManifest(
+            declared=DeclaredIntent(
+                claimed_agent_id=envelope.sender.id if envelope is not None else "",
+                **(declared or {}),
+            ),
+            derived=DerivedFacts(
+                evaluation_point=evaluation_point.value,
+                session_id=getattr(session, "session_id", "") if session else "",
+                authenticated_subject=identity.subject if identity else "",
+                authenticated_agent_id=authenticated_agent_id,
+                identity_verified=identity is not None,
+            ),
+        )
+
+    # -----------------------------------------------------------------------
     # Progress events
     # -----------------------------------------------------------------------
 
@@ -380,6 +425,18 @@ class CoordinatorRuntime:
                 intent_text=intent.intent_text,
                 intent_context=intent.context,
                 requested_scopes=intent.ibac_claims_requested,
+                manifest=self._build_manifest(
+                    evaluation_point=IBACEvaluationPoint.INTENT_ADMISSION,
+                    envelope=envelope,
+                    peer=peer,
+                    session=session,
+                    declared={
+                        "intent_text": intent.intent_text,
+                        "context": intent.context,
+                        "purpose": str(intent.context.get("purpose", "")),
+                        "requested_scopes": intent.ibac_claims_requested,
+                    },
+                ),
             )
             ibac_result = await self.ibac.evaluate_with_llm(ibac_req)
             session.ibac_decisions.append(ibac_result.model_dump())
@@ -393,7 +450,7 @@ class CoordinatorRuntime:
                 progress=0.15,
             )
 
-            if ibac_result.decision == IBACDecision.DENY:
+            if not ibac_result.is_allowed:
                 logger.warning("Intent denied by IBAC: %s", ibac_result.reason)
                 reject_env = build_envelope(
                     MessageType.REJECT,
@@ -554,6 +611,17 @@ class CoordinatorRuntime:
             intent_text=session.intent.intent_text if session.intent else "",
             proposed_capabilities=[offer.capability_id],
             requested_scopes=offer.required_scopes,
+            manifest=self._build_manifest(
+                evaluation_point=IBACEvaluationPoint.OFFER_ELIGIBILITY,
+                envelope=envelope,
+                peer=peer,
+                session=session,
+                declared={
+                    "intent_text": session.intent.intent_text if session.intent else "",
+                    "proposed_capabilities": [offer.capability_id],
+                    "requested_scopes": offer.required_scopes,
+                },
+            ),
         )
         ibac_result = await self.ibac.evaluate_with_llm(ibac_req)
         session.ibac_decisions.append(ibac_result.model_dump())
@@ -561,12 +629,12 @@ class CoordinatorRuntime:
         record = NegotiationRecord(
             agent_id=envelope.sender.id,
             offer=offer,
-            status="pending" if ibac_result.decision == IBACDecision.ALLOW else "rejected",
-            rejection_reason="" if ibac_result.decision == IBACDecision.ALLOW else ibac_result.reason,
+            status="pending" if ibac_result.is_allowed else "rejected",
+            rejection_reason="" if ibac_result.is_allowed else ibac_result.reason,
         )
         session.offers.append(record)
 
-        eligibility_status = "eligible" if ibac_result.decision == IBACDecision.ALLOW else "rejected"
+        eligibility_status = "eligible" if ibac_result.is_allowed else "rejected"
         await self._emit_event(
             session.session_id,
             "ibac",
@@ -648,7 +716,7 @@ class CoordinatorRuntime:
                 ibac_result = await self.ibac.evaluate_with_llm(ibac_req)
                 session.ibac_decisions.append(ibac_result.model_dump())
 
-                if ibac_result.decision == IBACDecision.ALLOW:
+                if ibac_result.is_allowed:
                     record.status = "accepted"
                     session.accepted_offers.append(record.agent_id)
                     await self._emit_event(
@@ -2310,6 +2378,29 @@ Execution plan steps:
                 step_index=step_index,
             )
 
+            # --- Execution guard -------------------------------------
+            # The capability issued when execution was authorised is checked
+            # before *every* dispatch, not once at the start. A multi-step
+            # flow can outlive the approval that started it, and a plan can
+            # name an agent the approval never covered.
+            session_for_guard = runtime.sessions.get(session_id)
+            capability = getattr(session_for_guard, "capability", None)
+            if capability is not None:
+                violation = capability.check(principal=agent_id)
+                if violation is not None:
+                    await runtime._emit_event(
+                        session_id,
+                        "ibac",
+                        f"Execution refused for '{agent_id}': {violation.reason}",
+                        phase="execution",
+                        agent_id=agent_id,
+                        step_index=step_index,
+                        detail={"capability_id": violation.capability_id},
+                    )
+                    raise PermissionError(
+                        f"capability check failed for {agent_id}: {violation.reason}"
+                    )
+
             peer_id = runtime._agent_peers.get(agent_id)
             if not peer_id:
                 raise RuntimeError(f"Agent {agent_id} not connected")
@@ -2335,7 +2426,14 @@ Execution plan steps:
                         "context": state.get("context", {}),
                         "prior_results": state.get("step_results", {}),
                     },
-                    "authorized_scopes": [],
+                    # Carried from the capability rather than left empty, so
+                    # the agent is told what it was actually authorised for.
+                    "authorized_scopes": (
+                        capability.scopes if capability is not None else []
+                    ),
+                    "capability_id": (
+                        capability.capability_id if capability is not None else ""
+                    ),
                     "memory_snapshot": memory_snapshot,
                 },
                 inject_trace_context(),

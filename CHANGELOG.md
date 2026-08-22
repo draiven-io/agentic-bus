@@ -50,6 +50,80 @@ from this package; protocol changes are called out explicitly below.
 
 ### Security
 
+- **An IBAC approval now produces a bounded capability, and it is checked.**
+  Approval previously governed only whether execution *started*: the returned
+  constraints went to the audit log and were dropped, and the execute message
+  carried `authorized_scopes: []`. An intention approved for "analyse sales"
+  and one approved for "export everything" produced identical authority.
+
+  Authorising execution now issues a `Capability` — principals, purpose,
+  scopes, constraints and an expiry — stored on the session and checked
+  before **every** dispatch, not once at the start. A multi-step flow can
+  outlive the approval that began it, and a composed plan can name an agent
+  the approval never covered; both are now refused, with the reason emitted
+  as an IBAC event and carried in the audit trail. `authorized_scopes` is
+  populated from the capability.
+
+- **The Intent Manifest separates what an agent claims from what the
+  coordinator establishes.** Purpose-based authorization is only as strong as
+  purpose attestation: a rule reading a field the governed component wrote
+  constrains nothing, because the agent writes something that passes.
+  `declared` carries intent text, stated purpose and requested scopes;
+  `derived` carries the authenticated subject, the identity resolved from the
+  connection, and resource facts. A new invariant layer reads only `derived`,
+  and `IBACResult.relies_on_declared_input` records whether a decision was a
+  boundary or a heuristic.
+
+- **Sender impersonation is detected and denied.** `envelope.sender.id` is
+  written by the sender and was used as the governed agent identity without
+  being checked against the authenticated connection — which the coordinator
+  already tracks. An agent could have policy evaluated, and recorded in the
+  audit trail, under another agent's identity.
+
+- Four call sites gated on `decision == IBACDecision.ALLOW`, which was safe
+  against DENY but would have rejected the new `ALLOW_WITH_SCOPE`. They now
+  use `is_allowed` like the rest.
+
+- **IBAC fails closed.** Every failure path previously ended in ALLOW: the
+  decision key defaulted to `"allow"`, so a truncated or malformed model
+  response authorised the intention; an unconfigured provider, a failed call
+  and an unreadable rule store all fell through to a permissive evaluator.
+  All of them now deny. An evaluation that did not happen is not permission.
+
+  An empty rule set is deliberately still an ALLOW — that is a completed
+  evaluation which found nothing prohibiting the intention, not a failure,
+  and denying there would make an unconfigured bus refuse everything.
+
+- **The two policy layers are ANDed rather than short-circuited.** The
+  grounded (deterministic) and semantic (model) layers both run on every
+  intention and the stricter outcome wins, so a grounded rule can deny
+  something the model approved. Previously whichever layer matched first
+  returned, which meant a semantic ALLOW ended the evaluation and the
+  grounded guarantees never applied — the one property the grounded layer
+  exists to provide.
+
+- **`require_human_approval` now blocks.** It was returned as a constraint on
+  an ALLOW that nothing downstream read, so an intention requiring sign-off
+  executed anyway. It is now its own decision, and does not permit execution.
+
+- The IBAC prompt states that intent text is untrusted input and that
+  instructions embedded in it are evidence of attempted evasion. This is
+  mitigation, not a guarantee: the accompanying tests assert that a grounded
+  denial survives a semantic approval obtained by injection.
+
+### Changed
+
+- `IBACDecision` gains `ALLOW_WITH_SCOPE` and `REQUIRE_HUMAN_APPROVAL`, and a
+  `permits_execution` property. `IBACResult.is_allowed` is now the supported
+  way to gate on a decision — a check written as `decision == DENY` treats
+  every outcome added later, including "evaluation failed", as permission.
+  The three call sites in the coordinator and execution supervisor were doing
+  exactly that and have been migrated.
+- `IBACResult.decided_by` records which layer produced the outcome
+  (`semantic`, `grounded`, `both`, or `fail-closed`), for audit.
+
+### Security
+
 - **All 91 Dependabot alerts resolved** (37 high, 48 moderate, 6 low). Every
   one was in `ui/package-lock.json`; none were Python. Next.js 16.1.6 →
   16.3.2 clears 28 directly and carries patched `postcss` and `sharp`;
