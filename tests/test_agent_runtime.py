@@ -38,6 +38,9 @@ class FakeCoordinator:
         self.auth_headers: list[str] = []
         self._server: Any = None
         self.port: int = 0
+        # Lets a test drive the refusal path.
+        self.accept_registrations = True
+        self.refusal_reason = "not approved"
 
     async def start(self, port: int = 0) -> int:
         self._server = await websockets.serve(self._handle, "127.0.0.1", port)
@@ -50,9 +53,37 @@ class FakeCoordinator:
         self.auth_headers.append(header)
         try:
             async for raw in ws:
-                self.received.append(json.loads(raw))
+                message = json.loads(raw)
+                self.received.append(message)
+                if message.get("message_type") == MessageType.REGISTER.value:
+                    await self._answer_registration(ws, message)
         except websockets.exceptions.ConnectionClosed:
             pass
+
+    async def _answer_registration(self, ws, message: dict[str, Any]) -> None:
+        """Reply with ``registered``, as a LIP 0.2.0 coordinator does."""
+        if not self.accept_registrations:
+            payload = {
+                "accepted": False,
+                "agent_id": message["payload"].get("agent_id", ""),
+                "reason": self.refusal_reason,
+            }
+        else:
+            payload = {
+                "accepted": True,
+                "agent_id": message["payload"].get("agent_id", ""),
+                "registered_capabilities": [
+                    c.get("capability_id", "")
+                    for c in message["payload"].get("capabilities", [])
+                ],
+            }
+        env = build_envelope(
+            MessageType.REGISTERED,
+            SenderInfo(kind=SenderKind.COORDINATOR, id="coordinator"),
+            "",
+            payload,
+        )
+        await ws.send(env.model_dump_json())
 
     async def send(self, message_type: MessageType, session_id: str, payload: dict) -> None:
         """Push a coordinator-originated message to the newest connection."""
@@ -80,7 +111,7 @@ class FakeCoordinator:
     def registrations(self) -> list[dict[str, Any]]:
         return [
             m for m in self.received
-            if m.get("session_id") == "__registration__"
+            if m.get("message_type") == MessageType.REGISTER.value
         ]
 
 
@@ -135,7 +166,7 @@ class TestRegistration:
 
         assert await _wait_for(lambda: coordinator.registrations()), "never registered"
 
-        reg = coordinator.registrations()[0]["payload"]["registration"]
+        reg = coordinator.registrations()[0]["payload"]
         assert reg["agent_id"] == "a1"
         assert [c["capability_id"] for c in reg["capabilities"]] == ["test-cap"]
 
@@ -533,3 +564,117 @@ class TestCredentialsNeverReachTheLog:
             )
 
 
+class TestRegisterPerformative:
+    """Registration is a protocol act (LIP 0.2.0), not a magic session id.
+
+    Before this, agents registered by sending ``complete`` with
+    ``session_id="__registration__"`` and a nested payload — a shape the
+    specification never described, so nobody could write an interoperable
+    agent from the spec alone.
+    """
+
+    async def test_registration_uses_the_register_performative(self, coordinator):
+        agent = RecordingAgent(agent_id="a1", coordinator_uri=coordinator.uri)
+        task = asyncio.create_task(agent.run_forever())
+        assert await _wait_for(lambda: coordinator.registrations())
+
+        message = coordinator.registrations()[0]
+        assert message["message_type"] == "register"
+        assert message["protocol_version"] == "0.2.0"
+        # Fields sit directly in the payload, not nested under "registration".
+        assert message["payload"]["agent_id"] == "a1"
+        assert "registration" not in message["payload"]
+
+        await agent.stop()
+        task.cancel()
+
+    async def test_no_complete_message_is_used_for_registration(self, coordinator):
+        agent = RecordingAgent(agent_id="a1", coordinator_uri=coordinator.uri)
+        task = asyncio.create_task(agent.run_forever())
+        assert await _wait_for(lambda: coordinator.registrations())
+
+        legacy = [
+            m for m in coordinator.received
+            if m.get("session_id") == "__registration__"
+        ]
+        assert legacy == [], "still registering via the deprecated complete form"
+
+        await agent.stop()
+        task.cancel()
+
+    async def test_accepted_registration_is_logged(self, coordinator, caplog):
+        import logging as _logging
+
+        agent = RecordingAgent(agent_id="a1", coordinator_uri=coordinator.uri)
+        with caplog.at_level(_logging.INFO):
+            task = asyncio.create_task(agent.run_forever())
+            assert await _wait_for(
+                lambda: any("registered 1 capabilities" in r.getMessage()
+                            for r in caplog.records)
+            ), "acceptance was never confirmed"
+            await agent.stop()
+            task.cancel()
+
+    async def test_refused_registration_is_surfaced(self, coordinator, caplog):
+        """A refusal must be loud: the agent is connected but will never be
+        asked to do anything."""
+        import logging as _logging
+
+        coordinator.accept_registrations = False
+        coordinator.refusal_reason = "agent not approved"
+
+        refusals: list[str] = []
+
+        class WatchfulAgent(RecordingAgent):
+            async def on_registration_refused(self, ack):
+                refusals.append(ack.reason)
+
+        agent = WatchfulAgent(agent_id="a1", coordinator_uri=coordinator.uri)
+        with caplog.at_level(_logging.ERROR):
+            task = asyncio.create_task(agent.run_forever())
+            assert await _wait_for(lambda: refusals), "refusal hook never fired"
+            await agent.stop()
+            task.cancel()
+
+        assert refusals == ["agent not approved"]
+        assert "refused registration" in caplog.text
+
+    async def test_missing_ack_does_not_stop_the_agent(self, caplog):
+        """A coordinator older than LIP 0.2.0 never answers.
+
+        Refusing to run against one would be a worse failure than running
+        without confirmation, so the agent warns and carries on.
+        """
+        import logging as _logging
+
+        class SilentCoordinator(FakeCoordinator):
+            async def _answer_registration(self, ws, message):
+                return None  # pre-0.2.0 behaviour
+
+        bus = SilentCoordinator()
+        await bus.start()
+        agent = RecordingAgent(
+            agent_id="a1",
+            coordinator_uri=bus.uri,
+            registration_timeout=0.2,
+        )
+        with caplog.at_level(_logging.WARNING):
+            task = asyncio.create_task(agent.run_forever())
+            assert await _wait_for(
+                lambda: any("no 'registered' answer" in r.getMessage()
+                            for r in caplog.records),
+                timeout=5.0,
+            ), "the missing acknowledgement was never reported"
+
+            # Still serving: the agent must accept work despite the silence.
+            await bus.send(
+                MessageType.EXECUTE,
+                "s1",
+                {"execution_plan": {"marker": "s1", "context": {}}},
+            )
+            assert await _wait_for(lambda: agent.finished == ["s1"]), (
+                "agent stopped serving after an unacknowledged registration"
+            )
+            await agent.stop()
+            task.cancel()
+        await bus.stop()

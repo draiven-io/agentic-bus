@@ -49,6 +49,7 @@ Usage (streaming)::
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -248,7 +249,7 @@ class IntentClient:
 
                     # Process responses
                     async for message in ws:
-                        envelope = AgBusEnvelope.model_validate_json(message)
+                        envelope = AgBusEnvelope.from_wire(json.loads(message))
                         
                         # Collect response
                         done = await self._process_message(
@@ -321,7 +322,7 @@ class IntentClient:
 
                     # Stream responses
                     async for message in ws:
-                        envelope = AgBusEnvelope.model_validate_json(message)
+                        envelope = AgBusEnvelope.from_wire(json.loads(message))
                         yield envelope
                         
                         # Stop on terminal messages

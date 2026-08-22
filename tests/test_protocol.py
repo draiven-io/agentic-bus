@@ -1,6 +1,7 @@
 """Tests for the Agentic Bus protocol envelope."""
 
 from agentic_bus.core.protocol.envelope import (
+    LIP_LEGACY_VERSION,
     LIP_PROTOCOL_VERSION,
     AgBusEnvelope,
     MessageType,
@@ -21,7 +22,10 @@ class TestMessageTypes:
     """Verify that all Agentic Bus message types are defined per §4.1.1."""
 
     def test_all_types_exist(self):
-        expected = {"intent", "offer", "accept", "reject", "execute", "complete", "dissolve", "event"}
+        expected = {
+            "register", "registered", "intent", "offer", "accept",
+            "reject", "execute", "complete", "dissolve", "event",
+        }
         actual = {m.value for m in MessageType}
         assert actual == expected
 
@@ -165,7 +169,14 @@ class TestProtocolVersion:
         assert restored.protocol_version == LIP_PROTOCOL_VERSION
 
     def test_messages_from_pre_versioning_peers_are_accepted(self):
-        """An envelope without the field is read as the baseline version."""
+        """An envelope arriving without the field is read as 0.1.0.
+
+        ``from_wire`` exists for exactly this: the field's *default* is the
+        current version, because that is right for envelopes we construct.
+        Applying that default to something received off the wire would read
+        a legacy peer's message as whatever version this build happens to
+        be — the misreading the field exists to prevent.
+        """
         legacy = {
             "message_id": "m-1",
             "session_id": "s-1",
@@ -174,8 +185,11 @@ class TestProtocolVersion:
             "sender": {"kind": "requester", "id": "req-1"},
             "payload": {"intent_text": "hello"},
         }
-        env = AgBusEnvelope.model_validate(legacy)
-        assert env.protocol_version == "0.1.0"
+        env = AgBusEnvelope.from_wire(legacy)
+        assert env.protocol_version == LIP_LEGACY_VERSION
+        assert LIP_LEGACY_VERSION != LIP_PROTOCOL_VERSION, (
+            "the legacy constant must not track the current version"
+        )
 
 
 class TestSchemaExport:

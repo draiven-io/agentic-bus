@@ -35,6 +35,8 @@ from agentic_bus.core.protocol.envelope import (
     RejectPayload,
     DissolvePayload,
     EventPayload,
+    RegisteredPayload,
+    LIP_PROTOCOL_VERSION,
     build_envelope,
 )
 from agentic_bus.core.transport.ws import WSServer, WSPeer
@@ -236,6 +238,7 @@ class CoordinatorRuntime:
             },
         ):
             handlers = {
+                MessageType.REGISTER: self._handle_register,
                 MessageType.INTENT: self._handle_intent,
                 MessageType.OFFER: self._handle_offer,
                 MessageType.ACCEPT: self._handle_accept,
@@ -1443,14 +1446,25 @@ Execution plan steps:
     # Completion & dissolution
     # -----------------------------------------------------------------------
 
+    async def _handle_register(self, envelope: AgBusEnvelope, peer: WSPeer) -> None:
+        """Handle the ``register`` performative (LIP 0.2.0)."""
+        await self._handle_agent_registration(envelope, peer)
+
     async def _handle_complete(self, envelope: AgBusEnvelope, peer: WSPeer) -> None:
         """Handle a complete message from an agent.
-        
-        Special case: If session_id is "__registration__", this is an agent
-        registering its capabilities (§7 AGENTS.md – dynamic capability registry).
+
+        Deprecated special case: before LIP 0.2.0 agents registered by
+        sending ``complete`` with ``session_id="__registration__"``. Still
+        accepted so that agents built against 0.1.0 keep working, but the
+        ``register`` performative is the specified way.
         """
-        # Handle agent registration (special session_id)
         if envelope.session_id == "__registration__":
+            logger.warning(
+                "Agent %s registered using the pre-0.2.0 'complete' form. "
+                "This still works but is deprecated — upgrade the agent to "
+                "send the 'register' performative.",
+                envelope.sender.id,
+            )
             await self._handle_agent_registration(envelope, peer)
             return
         
@@ -1474,11 +1488,18 @@ Execution plan steps:
         """
         try:
             payload = envelope.payload
-            if "registration" not in payload:
-                logger.warning("Registration message missing 'registration' key from %s", envelope.sender.id)
+            # ``register`` carries the fields directly; the deprecated
+            # ``complete`` form nested them under "registration".
+            reg_data = payload.get("registration", payload)
+            if not reg_data.get("agent_id"):
+                logger.warning(
+                    "Registration from %s carried no agent_id", envelope.sender.id
+                )
+                await self._send_registered(
+                    peer, "", accepted=False, reason="registration payload has no agent_id"
+                )
                 return
-            
-            reg_data = payload["registration"]
+
             registration = AgentRegistration.model_validate(reg_data)
             
             # Register in the capability registry and map to WS peer
@@ -1508,9 +1529,59 @@ Execution plan steps:
                     logger.debug("Agent %s persisted to database", registration.agent_id)
                 except Exception as e:
                     logger.warning("Failed to persist agent %s: %s", registration.agent_id, e)
-                
+
+            await self._send_registered(
+                peer,
+                registration.agent_id,
+                accepted=True,
+                capabilities=[c.capability_id for c in registration.capabilities],
+            )
+
         except Exception as e:
             logger.exception("Failed to register agent from %s: %s", envelope.sender.id, e)
+            # The agent is waiting on an answer. Without one it would sit
+            # connected and idle, believing it had registered.
+            await self._send_registered(
+                peer,
+                envelope.sender.id,
+                accepted=False,
+                reason=f"registration failed: {e}",
+            )
+
+    async def _send_registered(
+        self,
+        peer: WSPeer,
+        agent_id: str,
+        *,
+        accepted: bool,
+        reason: str = "",
+        capabilities: list[str] | None = None,
+    ) -> None:
+        """Answer a registration attempt.
+
+        Best-effort: if the socket has already gone, the agent will register
+        again on its next connection anyway, so a failure here must not
+        propagate into the registration path.
+        """
+        ack = build_envelope(
+            MessageType.REGISTERED,
+            COORDINATOR_SENDER,
+            "",
+            RegisteredPayload(
+                accepted=accepted,
+                agent_id=agent_id,
+                reason=reason,
+                registered_capabilities=capabilities or [],
+                coordinator_protocol_version=LIP_PROTOCOL_VERSION,
+            ),
+            inject_trace_context(),
+        )
+        try:
+            await peer.send_envelope(ack)
+        except Exception:
+            logger.warning(
+                "Could not send 'registered' answer to %s", agent_id or "<unknown>"
+            )
 
     async def _handle_accept(self, envelope: AgBusEnvelope, peer: WSPeer) -> None:
         """Handle an accept from the requester — the requester approves the plan.

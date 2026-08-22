@@ -6,6 +6,8 @@ Liquid Interface (§4.1.1 of the Liquid Interfaces paper, lip.md).
 
 Core message types
 ------------------
+- **register**   – an agent declares itself and its capabilities to the coordinator.
+- **registered** – the coordinator accepts or refuses that declaration.
 - **intent**   – articulates a high-level objective; instantiates a new interaction context.
 - **offer**    – declares capability relevant to the expressed intention.
 - **accept**   – signals negotiated agreement.
@@ -37,7 +39,15 @@ from pydantic import BaseModel, Field
 #: backwards-compatible additions (a new optional field, a new message type a
 #: peer may ignore), and the major component for anything that would break an
 #: existing implementation.
-LIP_PROTOCOL_VERSION = "0.1.0"
+LIP_PROTOCOL_VERSION = "0.2.0"
+
+#: Version assumed for an envelope that arrives with no ``protocol_version``.
+#:
+#: Pinned to the last version that predates the field. It must NOT track
+#: ``LIP_PROTOCOL_VERSION``: if it did, a message from an old peer would be
+#: read as whatever version this build happens to be, which is precisely the
+#: misreading the field exists to prevent.
+LIP_LEGACY_VERSION = "0.1.0"
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +60,8 @@ class MessageType(StrEnum):
     See §4.1.1 of the paper (``lip.md``) for their normative semantics.
     """
 
+    REGISTER = "register"
+    REGISTERED = "registered"
     INTENT = "intent"
     OFFER = "offer"
     ACCEPT = "accept"
@@ -117,10 +129,82 @@ class AgBusEnvelope(BaseModel):
     trace: TraceContext = Field(default_factory=TraceContext)
     payload: dict[str, Any] = Field(default_factory=dict)
 
+    @classmethod
+    def from_wire(cls, data: dict[str, Any]) -> "AgBusEnvelope":
+        """Parse an envelope received from a peer.
+
+        Use this rather than ``model_validate`` for anything arriving over
+        the transport. The field's default applies to envelopes *we*
+        construct, and so is the current version; an envelope that arrives
+        without the field came from a peer that predates it and must be read
+        as :data:`LIP_LEGACY_VERSION` instead.
+        """
+        if "protocol_version" not in data:
+            data = {**data, "protocol_version": LIP_LEGACY_VERSION}
+        return cls.model_validate(data)
+
 
 # ---------------------------------------------------------------------------
 # Typed payloads
 # ---------------------------------------------------------------------------
+
+class RegisterPayload(BaseModel):
+    """Payload for ``message_type='register'``.
+
+    An agent's declaration of itself: who it is, and what it can be asked to
+    do. Sent once per connection — the coordinator's capability registry is
+    held against the live socket, so a reconnecting agent must register
+    again or it is connected but undiscoverable.
+    """
+
+    agent_id: str
+    version: str = "0.1.0"
+    mode: str = Field(
+        default="ephemeral",
+        description=(
+            "'ephemeral' keeps the registration in memory only, discarded "
+            "when the connection ends; 'persistent' also records the agent "
+            "in the coordinator's database."
+        ),
+    )
+    capabilities: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Capability descriptors this agent is offering.",
+    )
+    semantic_description: str = ""
+    required_scopes: list[str] = Field(default_factory=list)
+    supported_data_domains: list[str] = Field(default_factory=list)
+    operational_constraints: dict[str, Any] = Field(default_factory=dict)
+
+
+class RegisteredPayload(BaseModel):
+    """Payload for ``message_type='registered'``.
+
+    The coordinator's answer to ``register``. Registration can legitimately
+    be refused — an agent may not be approved, or may declare a capability
+    it is not permitted to offer — and without this answer the agent has no
+    way to tell refusal from success, so it would keep serving nothing while
+    believing it was live.
+    """
+
+    accepted: bool
+    agent_id: str = ""
+    reason: str = Field(
+        default="",
+        description="Why registration was refused. Empty when accepted.",
+    )
+    registered_capabilities: list[str] = Field(
+        default_factory=list,
+        description="Capability IDs the coordinator actually accepted.",
+    )
+    coordinator_protocol_version: str = Field(
+        default="",
+        description=(
+            "The LIP version the coordinator implements, so an agent can "
+            "detect a mismatch rather than inferring it from failures."
+        ),
+    )
+
 
 class IntentPayload(BaseModel):
     """Payload for ``message_type='intent'``."""
@@ -286,6 +370,8 @@ class EventPayload(BaseModel):
 # ---------------------------------------------------------------------------
 
 PAYLOAD_TYPES: dict[MessageType, type[BaseModel]] = {
+    MessageType.REGISTER: RegisterPayload,
+    MessageType.REGISTERED: RegisteredPayload,
     MessageType.INTENT: IntentPayload,
     MessageType.OFFER: OfferPayload,
     MessageType.ACCEPT: AcceptPayload,

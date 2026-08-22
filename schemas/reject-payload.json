@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://liquidinterfaces.org/schemas/0.1.0/reject-payload.json",
-  "x-lip-version": "0.1.0",
+  "$id": "https://liquidinterfaces.org/schemas/0.2.0/reject-payload.json",
+  "x-lip-version": "0.2.0",
   "description": "Payload for ``message_type='reject'``.\n\nWhen sent by the coordinator: intent or negotiation failed.\nWhen sent by the requester: rejects the proposed plan.  If\n``renegotiation_hint`` is provided, the coordinator SHOULD attempt\na new discovery/negotiation cycle incorporating the feedback.",
   "properties": {
     "rejected_offers": {
