@@ -40,7 +40,6 @@ from agentic_bus.core.ibac.engine import (
     IBACEngine,
     IBACRequest,
     IBACEvaluationPoint,
-    IBACDecision,
 )
 from agentic_bus.core.telemetry.tracing import agbus_span, inject_trace_context
 from agentic_bus.coordinator.graph.builder import AgBusGraphState
@@ -178,7 +177,7 @@ class ExecutionSupervisor:
             ibac_result = await self._ibac.evaluate_with_llm(ibac_req)
             session.ibac_decisions.append(ibac_result.model_dump())
 
-            if ibac_result.decision == IBACDecision.DENY:
+            if not ibac_result.is_allowed:
                 logger.warning("IBAC denied execution for session %s", session.session_id)
                 return self._build_complete(
                     session,
@@ -392,7 +391,7 @@ class ExecutionSupervisor:
         ibac_result = await self._ibac.evaluate_with_llm(ibac_req)
         session.ibac_decisions.append(ibac_result.model_dump())
 
-        if ibac_result.decision == IBACDecision.DENY:
+        if not ibac_result.is_allowed:
             restrictions = ibac_restrictions.setdefault(agent_id, [])
             restrictions.append(ibac_result.reason)
             logger.warning(

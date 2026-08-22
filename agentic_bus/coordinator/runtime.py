@@ -393,7 +393,7 @@ class CoordinatorRuntime:
                 progress=0.15,
             )
 
-            if ibac_result.decision == IBACDecision.DENY:
+            if not ibac_result.is_allowed:
                 logger.warning("Intent denied by IBAC: %s", ibac_result.reason)
                 reject_env = build_envelope(
                     MessageType.REJECT,

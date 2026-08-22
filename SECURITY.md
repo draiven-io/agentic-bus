@@ -21,33 +21,52 @@ These are properties of the current design rather than bugs. They are listed
 here so that nobody deploys the runtime believing it offers a guarantee it
 does not.
 
-### IBAC decisions are made by a language model
+### IBAC combines a probabilistic layer with a deterministic one
 
-The primary evaluation path in `app/core/ibac/engine.py` presents the active
-rules and the request context to the configured LLM and asks it to decide.
-That is what allows a natural-language rule such as *"prevent agents from
-accessing internet websites"* to be enforced without a regex — and it is also
-the exposure:
+`agentic_bus/core/ibac/engine.py` evaluates every intention against two
+layers, and takes the stricter outcome:
 
-- **Prompt injection.** Intent text, capability descriptions and upstream
-  agent outputs all reach the policy prompt. Content crafted to read as
-  instruction can influence a decision.
-- **Non-determinism.** The same request may not produce the same decision
-  twice. Policy decisions are not reproducible from the record alone.
-- **No cryptographic binding.** A decision is not signed, so it cannot be
+- The **grounded layer** evaluates rules deterministically in code.
+- The **semantic layer** asks the configured model whether an intention
+  violates a policy expressed in natural language — which is what lets a rule
+  like *"do not disclose confidential information to competitors"* be
+  enforced without enumerating every competitor.
+
+The layers are ANDed, never short-circuited: a grounded rule can still deny
+something the model approved. That is the property the grounded layer exists
+to provide, and it only holds because a semantic ALLOW does not end the
+evaluation.
+
+**Evaluation fails closed.** No model configured, an unreachable provider, a
+call that raises, a malformed or unparseable answer, an unreadable rule
+store — every one of these denies. An evaluation that did not happen is not
+permission. (An empty rule set is different: that is a completed evaluation
+that found nothing prohibiting the intention, and it allows.)
+
+What is still true, and worth stating plainly:
+
+- **The semantic layer is exposed to prompt injection.** Intent text,
+  capability descriptions and upstream agent output all reach its prompt.
+  The prompt tells the model to treat that text as data and to deny when it
+  contains instructions, but no prompt makes a model injection-proof.
+  Consequently: **a policy you cannot afford to have bypassed must be
+  expressed as a grounded rule**, not left to the semantic layer alone. The
+  test suite asserts that a grounded denial survives an injected semantic
+  approval.
+- **Semantic decisions are not reproducible.** The same intention may not
+  produce the same semantic outcome twice, so a semantic ALLOW is not
+  evidence that the same request would be allowed again.
+- **Decisions are not signed.** A recorded decision cannot yet be
   independently verified after the fact.
+- **Approved constraints are not yet enforced at execution.** IBAC records
+  the scope it authorised, but the execution path does not yet check it, so
+  IBAC currently gates whether an intention starts rather than bounding what
+  it may touch. Until that lands, treat an ALLOW as admission, not as a
+  capability.
 
-A deterministic path (`IBACEngine.evaluate`) exists for fast programmatic
-checks and as a fallback when no LLM is configured.
-
-**Treat IBAC as defence in depth, not as a security boundary.** Enforce hard
-limits — credentials, network egress, spend, data residency — in the
-infrastructure the agents run on. Do not rely on IBAC alone to keep an agent
-away from something it must never reach.
-
-A hybrid policy decision point — deterministic constraints as a hard gate,
-LLM classification only within those bounds, plus signed and replayable
-decision records — is the planned direction.
+**Grounded rules are a boundary. Semantic rules are defence in depth.** Keep
+enforcing hard limits — credentials, network egress, spend, data residency —
+in the infrastructure the agents run on.
 
 ### Agent-supplied content is trusted input to coordination
 

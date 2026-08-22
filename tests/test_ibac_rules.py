@@ -320,7 +320,8 @@ class TestIBACEngineWithPersistedRules:
         )
         result = eng.evaluate(req)
         # Should ALLOW but with constraint
-        assert result.decision == IBACDecision.ALLOW
+        assert result.decision == IBACDecision.REQUIRE_HUMAN_APPROVAL
+        assert not result.is_allowed, "human approval must gate execution"
         assert result.constraints.get("require_human_approval") is True
 
     def test_evaluation_point_filtering(self, engine_with_db):
@@ -544,7 +545,12 @@ class TestIBACEngineWithLLM:
 
     @pytest.mark.asyncio
     async def test_llm_returns_constraints(self, engine_with_db):
-        """LLM returns a human-approval constraint when the rule requires it."""
+        """A human-approval rule produces its own outcome, not an ALLOW.
+
+        The constraint used to be returned on an ALLOW, where nothing
+        downstream read it — so an intention that required sign-off executed
+        anyway. It is now a decision that does not permit execution.
+        """
         eng, repo = engine_with_db
         repo.add(
             "sensitive-ops",
@@ -576,7 +582,8 @@ class TestIBACEngineWithLLM:
 
             result = await eng.evaluate_with_llm(req)
 
-        assert result.decision == IBACDecision.ALLOW
+        assert result.decision == IBACDecision.REQUIRE_HUMAN_APPROVAL
+        assert not result.is_allowed, "human approval must gate execution"
         assert result.constraints.get("require_human_approval") is True
 
     @pytest.mark.asyncio
