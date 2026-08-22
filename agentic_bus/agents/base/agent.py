@@ -39,7 +39,8 @@ from agentic_bus.core.protocol.envelope import (
     RegisteredPayload,
     build_envelope,
 )
-from agentic_bus.core.transport.ws import WSClient, WSPeer
+from agentic_bus.core.transport.base import Peer
+from agentic_bus.core.transport.ws import WSClient
 from agentic_bus.core.registry.capability_registry import AgentCapability, AgentRegistration
 from agentic_bus.core.telemetry.tracing import agbus_span, inject_trace_context
 
@@ -157,7 +158,7 @@ class BaseAgent(ABC):
         self.version = version
         self.semantic_description = semantic_description
         self._client: WSClient | None = None
-        self._peer: WSPeer | None = None
+        self._peer: Peer | None = None
         self._running = False
 
         self._token_provider = token_provider or self._default_token_provider
@@ -337,6 +338,36 @@ class BaseAgent(ABC):
         # connected but invisible to discovery.
         await self._register()
 
+    async def attach(self, transport: Any, peer_id: str | None = None) -> None:
+        """Join an in-process coordinator, instead of dialling one.
+
+        The same lifecycle as :meth:`start` — register, serve, honour
+        dissolution — with no socket in the middle. Use it when the
+        coordinator runs inside this process:
+
+        ::
+
+            transport = LocalTransport()
+            runtime = CoordinatorRuntime(transport=transport)
+            await runtime.start()
+            await my_agent.attach(transport)
+
+        Reconnection does not apply: there is no connection to lose. An agent
+        attached this way lives exactly as long as the process, so
+        :meth:`run_forever` is neither needed nor useful here.
+        """
+        self._peer = await transport.connect(
+            peer_id or f"{self.agent_id}-local",
+            on_receive=lambda envelope, _peer: self._on_message(envelope, _peer),
+        )
+        self._running = True
+        logger.info("Agent %s attached in-process", self.agent_id)
+
+        # Registration is per connection here too. An attached agent that
+        # skipped it would be reachable and undiscoverable, exactly as over a
+        # socket.
+        await self._register()
+
     def _default_token_provider(self) -> str:
         """Unsigned development identity, accepted only by ``DevVerifier``."""
         return json.dumps({"sub": self.agent_id, "iss": "dev"})
@@ -355,6 +386,12 @@ class BaseAgent(ABC):
         await self._cancel_session_tasks()
         if self._client:
             await self._client.disconnect()
+        elif self._peer is not None:
+            # Attached in-process: there is no client to disconnect, but the
+            # coordinator still has to learn the peer is gone or it will keep
+            # routing work to it.
+            await self._peer.close()
+            self._peer = None
         logger.info("Agent %s disconnected", self.agent_id)
 
     async def run_forever(self) -> None:
@@ -509,7 +546,7 @@ class BaseAgent(ABC):
     # Message handling
     # -----------------------------------------------------------------------
 
-    async def _on_message(self, envelope: AgBusEnvelope, peer: WSPeer) -> None:
+    async def _on_message(self, envelope: AgBusEnvelope, peer: Peer) -> None:
         """Route messages from the coordinator.
 
         Work that can take arbitrarily long — offer generation and task
