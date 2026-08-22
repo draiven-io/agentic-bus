@@ -172,6 +172,15 @@ class BaseAgent(ABC):
         self.registration_timeout = registration_timeout
         self._registration_ack: asyncio.Future[RegisteredPayload] | None = None
 
+    @property
+    def is_running(self) -> bool:
+        """Whether the agent is connected and serving.
+
+        False before ``start()``, after ``stop()``, and while the supervision
+        loop is between connection attempts.
+        """
+        return self._running and not self._stopping.is_set()
+
     # -----------------------------------------------------------------------
     # Abstract methods – implement in subclasses
     # -----------------------------------------------------------------------
