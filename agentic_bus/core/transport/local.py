@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 from agentic_bus.core.protocol.envelope import AgBusEnvelope
 from agentic_bus.core.transport.base import DisconnectHandler, MessageHandler
@@ -37,8 +38,10 @@ class LocalPeer:
         peer_id: str,
         deliver: MessageHandler | None,
         on_close: "LocalTransport | None" = None,
+        identity: Any = None,
     ) -> None:
         self.peer_id = peer_id
+        self.identity = identity
         self._deliver = deliver
         self._transport = on_close
         self._closed = False
@@ -169,6 +172,7 @@ class LocalTransport:
         peer_id: str | None = None,
         *,
         on_receive: MessageHandler | None = None,
+        identity: Any = None,
     ) -> LocalConnection:
         """Attach an in-process agent, as dialling the server would.
 
@@ -180,6 +184,12 @@ class LocalTransport:
             new one and must register again.
         on_receive:
             Coroutine invoked with every envelope the coordinator sends here.
+        identity:
+            Who this agent is. There is no handshake to establish it in-process
+            and no network to defend, so the embedding application asserts it —
+            it already knows, having constructed the agent. Leave it ``None``
+            and the peer is unauthenticated, which the coordinator will refuse
+            to register when a credential is required.
         """
         if peer_id is None:
             self._counter += 1
@@ -188,7 +198,7 @@ class LocalTransport:
         if peer_id in self._peers:
             raise ValueError(f"peer {peer_id!r} is already connected")
 
-        peer = LocalPeer(peer_id, on_receive, on_close=self)
+        peer = LocalPeer(peer_id, on_receive, on_close=self, identity=identity)
         self._peers[peer_id] = peer
         logger.info("Peer connected in-process: %s", peer_id)
         return LocalConnection(peer_id, self)

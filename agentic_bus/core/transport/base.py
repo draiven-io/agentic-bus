@@ -23,7 +23,7 @@ Two implementations ship with this package:
 
 from __future__ import annotations
 
-from typing import Awaitable, Callable, Protocol, runtime_checkable
+from typing import Any, Awaitable, Callable, Protocol, runtime_checkable
 
 from agentic_bus.core.protocol.envelope import AgBusEnvelope
 
@@ -33,6 +33,12 @@ MessageHandler = Callable[[AgBusEnvelope, "Peer"], Awaitable[None]]
 
 #: Invoked with a peer id when that peer goes away, however it went away.
 DisconnectHandler = Callable[[str], Awaitable[None]]
+
+#: Examines a bearer credential — or ``None`` when the peer presented one — and
+#: decides whether the connection is admitted. Deliberately takes the token
+#: rather than the underlying socket, so the same policy serves every
+#: transport instead of being reimplemented per wire format.
+AuthHandler = Callable[[str | None], Awaitable[Any]]
 
 
 @runtime_checkable
@@ -45,6 +51,12 @@ class Peer(Protocol):
     """
 
     peer_id: str
+
+    #: What this connection authenticated as, or ``None`` if it presented no
+    #: credential. It belongs to the channel rather than to a lookup table:
+    #: an identity that outlives the connection it was established on is a
+    #: stale fact waiting to be trusted.
+    identity: Any
 
     async def send_envelope(self, envelope: AgBusEnvelope) -> None:
         """Deliver an envelope to this peer.

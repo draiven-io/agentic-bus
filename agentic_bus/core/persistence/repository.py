@@ -197,6 +197,26 @@ class AgentRepository:
     # Queries
     # ------------------------------------------------------------------
 
+    def bind_subject(self, agent_id: str, subject: str) -> bool:
+        """Record the OIDC subject entitled to register as this agent.
+
+        Only ever fills an empty binding. Changing one is an administrative
+        act; letting a connection rebind an id it just authenticated against
+        would make the binding self-issued and therefore worthless.
+
+        Returns ``True`` if the binding was written.
+        """
+        if not subject:
+            return False
+        with get_session() as session:
+            agent = session.get(PersistentAgent, agent_id)
+            if agent is None or agent.oidc_subject:
+                return False
+            agent.oidc_subject = subject
+            session.commit()
+        logger.info("Agent %s bound to subject %s", agent_id, subject)
+        return True
+
     def get(self, agent_id: str) -> PersistentAgent | None:
         with get_session() as session:
             return session.get(PersistentAgent, agent_id)

@@ -338,7 +338,12 @@ class BaseAgent(ABC):
         # connected but invisible to discovery.
         await self._register()
 
-    async def attach(self, transport: Any, peer_id: str | None = None) -> None:
+    async def attach(
+        self,
+        transport: Any,
+        peer_id: str | None = None,
+        identity: Any = None,
+    ) -> None:
         """Join an in-process coordinator, instead of dialling one.
 
         The same lifecycle as :meth:`start` — register, serve, honour
@@ -355,10 +360,17 @@ class BaseAgent(ABC):
         Reconnection does not apply: there is no connection to lose. An agent
         attached this way lives exactly as long as the process, so
         :meth:`run_forever` is neither needed nor useful here.
+
+        There is no handshake in-process, so *identity* is asserted by the
+        embedding application rather than proved to it — which is sound only
+        because the application already constructed this agent. Leave it
+        ``None`` and the agent is unauthenticated, and the coordinator will
+        refuse to register it wherever a credential is required.
         """
         self._peer = await transport.connect(
             peer_id or f"{self.agent_id}-local",
             on_receive=lambda envelope, _peer: self._on_message(envelope, _peer),
+            identity=identity,
         )
         self._running = True
         logger.info("Agent %s attached in-process", self.agent_id)
