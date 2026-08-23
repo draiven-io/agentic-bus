@@ -119,6 +119,51 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in ("true", "1", "yes", "on")
 
 
+def narrow(requested: list[str], ceiling: list[str]) -> list[str]:
+    """Bound *requested* by *ceiling*, hierarchically.
+
+    The delegation step. An agent acts on a requester's behalf and cannot
+    exceed what the requester was entitled to; a capability cannot exceed what
+    an administrator bound to it. Each narrowing is one call to this.
+
+    An **empty ceiling expresses no limit** and returns *requested* unchanged.
+    That reading is deliberate and worth being explicit about, because the
+    opposite is also arguable: a credential that carries no ``scope`` claim is
+    usually one whose identity provider does not use scopes, not one whose
+    holder may do nothing. Treating absence as denial would refuse every
+    caller whose IdP is configured differently, to protect nothing — the limit
+    that matters is enforced by the layers that *were* configured.
+
+    Matching is hierarchical, so a ceiling of ``payments:*`` admits
+    ``payments:refund``.
+    """
+    if not ceiling:
+        return list(requested)
+    return [s for s in requested if covered_by_any(ceiling, s)]
+
+
+def intersect(requested: list[str], granted: list[str]) -> list[str]:
+    """Bound *requested* by an explicit grant. Empty grant, empty result.
+
+    The counterpart of :func:`narrow`, and the two differ in exactly one way
+    that matters more than anything else in this module:
+
+    ``narrow`` reads an empty ceiling as *no limit expressed* — right for a
+    credential, where a missing ``scope`` claim usually means the identity
+    provider does not use scopes.
+
+    ``intersect`` reads an empty grant as *nothing granted* — right for a
+    binding, where the absence of a decision is not permission to proceed.
+
+    Using the wrong one is not a subtle bug: it turns an unbound capability
+    into an unrestricted one. They are separate functions rather than a flag
+    so that each call site has to say which meaning it wants.
+    """
+    if not granted:
+        return []
+    return [s for s in requested if covered_by_any(granted, s)]
+
+
 def scope_enforcement_enabled(default: bool = False) -> bool:
     """Whether a missing grant refuses execution, or only warns.
 

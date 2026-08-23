@@ -72,6 +72,7 @@ from agentic_bus.core.persistence.scope_repository import ScopeRepository
 from agentic_bus.core.scopes import (
     ScopePolicy,
     covered_by_any,
+    intersect,
     scope_enforcement_enabled,
 )
 from agentic_bus.core.persistence.models import PersistentAgent, ManagedAgentStatus
@@ -441,6 +442,16 @@ class CoordinatorRuntime:
                 requester_id=envelope.sender.id,
                 oidc_subject=identity.subject if identity else "",
             )
+            # The ceiling for everything this interaction authorises. Read
+            # from the verified credential on the connection, so it is a
+            # derived fact — the requester cannot widen it by asking.
+            session.requester_authority = list(getattr(identity, "scopes", []) or [])
+            if session.requester_authority:
+                logger.info(
+                    "Session %s is bounded by the requester's authority: %s",
+                    session.session_id,
+                    ", ".join(session.requester_authority),
+                )
             session.intent = intent
             session.audit_log.append(envelope)
             self._session_requester_peers[session.session_id] = peer.peer_id
@@ -1685,6 +1696,46 @@ Execution plan steps:
             detail={"exceeded_scopes": exceeded, "granted": granted},
         )
 
+    def _grant_for(
+        self, agent_id: str, capability_id: str, capability_scopes: list[str]
+    ) -> list[str]:
+        """What this step is authorised to do, after every narrowing.
+
+        The chain, and why each step is justified:
+
+        1. the requester's credential — an agent cannot exceed what the person
+           it acts for was entitled to;
+        2. what the interaction claimed — already folded into
+           *capability_scopes* when the capability was issued;
+        3. what an administrator bound to this agent's capability.
+
+        Step 3 applies only under enforcement. Off, the agent receives the
+        capability's scopes as before, because narrowing to bindings nobody has
+        authored yet would refuse work that runs today — and the dispatch guard
+        is already warning about exactly that.
+        """
+        if not self._scope_enforcement:
+            return list(capability_scopes)
+
+        try:
+            bound = self.scope_repo.granted(agent_id, capability_id)
+        except Exception:
+            logger.exception(
+                "Could not read bindings for %s:%s", agent_id, capability_id
+            )
+            return []
+
+        if not capability_scopes:
+            # The capability expresses no constraint, so the binding is the
+            # whole of the authority rather than an intersection with nothing.
+            return list(bound)
+
+        # intersect(), not narrow(): an empty binding means nothing was
+        # granted, where an empty credential ceiling means no limit was
+        # expressed. Using narrow() here would turn an unbound capability
+        # into an unrestricted one.
+        return intersect(capability_scopes, bound)
+
     def _declared_scopes(self, agent_id: str, capability_id: str) -> list[str]:
         """What the agent said this capability needs.
 
@@ -2843,10 +2894,16 @@ Execution plan steps:
                         "context": state.get("context", {}),
                         "prior_results": state.get("step_results", {}),
                     },
-                    # Carried from the capability rather than left empty, so
-                    # the agent is told what it was actually authorised for.
-                    "authorized_scopes": (
-                        capability.scopes if capability is not None else []
+                    # The last link in the chain. The capability already
+                    # carries the requester's ceiling; under enforcement this
+                    # narrows again to what *this* agent's capability was
+                    # bound to, so require_scope() inside the agent refuses
+                    # anything it was not granted rather than anything the
+                    # requester happened to claim.
+                    "authorized_scopes": runtime._grant_for(
+                        agent_id,
+                        capability_id,
+                        list(getattr(capability, "scopes", []) or []),
                     ),
                     "capability_id": (
                         capability.capability_id if capability is not None else ""
