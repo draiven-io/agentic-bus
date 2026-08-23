@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://liquidinterfaces.org/schemas/0.2.0/event-payload.json",
-  "x-lip-version": "0.2.0",
+  "$id": "https://liquidinterfaces.org/schemas/0.3.0/event-payload.json",
+  "x-lip-version": "0.3.0",
   "description": "Payload for ``message_type='event'`` \u2014 progress / status notifications.\n\nEvents are informational messages emitted by the coordinator or agents to\nprovide real-time visibility into the session lifecycle.  They carry no\nperformative semantics and do not alter session state.\n\nCategories:\n- ``phase``       \u2013 coordinator phase transitions (e.g. discovery, negotiation)\n- ``agent``       \u2013 agent-emitted progress updates during execution\n- ``ibac``        \u2013 IBAC evaluation results\n- ``discovery``   \u2013 agent discovery events\n- ``negotiation`` \u2013 offer evaluation / convergence signals\n- ``execution``   \u2013 graph build / node execution progress\n- ``info``        \u2013 general informational messages\n- ``warning``     \u2013 non-fatal issues\n- ``error``       \u2013 error details (non-terminal)",
   "properties": {
     "category": {

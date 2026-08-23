@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://liquidinterfaces.org/schemas/0.2.0/offer-payload.json",
-  "x-lip-version": "0.2.0",
+  "$id": "https://liquidinterfaces.org/schemas/0.3.0/offer-payload.json",
+  "x-lip-version": "0.3.0",
   "description": "Payload for ``message_type='offer'``.\n\nWhen sent by an individual agent, this describes a single capability.\nWhen sent by the coordinator to the requester, it describes the full\ncomposed execution plan (multiple agents) for the requester to approve,\nreject, or renegotiate before execution begins.",
   "properties": {
     "capability_id": {

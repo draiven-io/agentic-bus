@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://liquidinterfaces.org/schemas/0.2.0/execute-payload.json",
-  "x-lip-version": "0.2.0",
+  "$id": "https://liquidinterfaces.org/schemas/0.3.0/execute-payload.json",
+  "x-lip-version": "0.3.0",
   "description": "Payload for ``message_type='execute'``.",
   "properties": {
     "execution_plan": {

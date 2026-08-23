@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://liquidinterfaces.org/schemas/0.2.0/registered-payload.json",
-  "x-lip-version": "0.2.0",
+  "$id": "https://liquidinterfaces.org/schemas/0.3.0/registered-payload.json",
+  "x-lip-version": "0.3.0",
   "description": "Payload for ``message_type='registered'``.\n\nThe coordinator's answer to ``register``. Registration can legitimately\nbe refused \u2014 an agent may not be approved, or may declare a capability\nit is not permitted to offer \u2014 and without this answer the agent has no\nway to tell refusal from success, so it would keep serving nothing while\nbelieving it was live.",
   "properties": {
     "accepted": {

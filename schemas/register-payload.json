@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://liquidinterfaces.org/schemas/0.2.0/register-payload.json",
-  "x-lip-version": "0.2.0",
+  "$id": "https://liquidinterfaces.org/schemas/0.3.0/register-payload.json",
+  "x-lip-version": "0.3.0",
   "description": "Payload for ``message_type='register'``.\n\nAn agent's declaration of itself: who it is, and what it can be asked to\ndo. Sent once per connection \u2014 the coordinator's capability registry is\nheld against the live socket, so a reconnecting agent must register\nagain or it is connected but undiscoverable.",
   "properties": {
     "agent_id": {

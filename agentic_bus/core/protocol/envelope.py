@@ -39,7 +39,7 @@ from pydantic import BaseModel, Field
 #: backwards-compatible additions (a new optional field, a new message type a
 #: peer may ignore), and the major component for anything that would break an
 #: existing implementation.
-LIP_PROTOCOL_VERSION = "0.2.0"
+LIP_PROTOCOL_VERSION = "0.3.0"
 
 #: Version assumed for an envelope that arrives with no ``protocol_version``.
 #:

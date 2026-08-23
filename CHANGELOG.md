@@ -9,7 +9,82 @@ from this package; protocol changes are called out explicitly below.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-08-23
+
+**Protocol: LIP 0.3.0.** Additive, and unusually for this protocol the
+compatibility matrix is symmetric — an old peer on either side degrades to
+0.2.0 behaviour. Nothing breaks; the new guarantees are simply unavailable
+until both sides are current.
+
+### Security
+
+- **Agents are authenticated.** `WSServer` accepted an `auth_handler` and
+  nothing passed one, a `DevVerifier` was constructed in the runtime and never
+  called, and the identity map was read in two places and assigned in none —
+  so the `Authorization` header agents send was never read and `identity` was
+  `None` at every IBAC evaluation point. Spec §12 requires authentication
+  before participating; this now does it.
+
+- **Registration performs admission control.** It previously validated the
+  payload and went straight to the registry, so a revoked agent could return
+  by reconnecting and `AGBUS_AGENT_AUTO_APPROVE` governed nothing on that
+  path. Rejected and revoked agents are now refused, in ephemeral mode too —
+  revocation escapable by reconnecting differently is a suggestion.
+
+- **An `agent_id` binds to the first authenticated subject that registers it.**
+  A credential proves who you are; it does not say which agent you may be, and
+  an agent that authenticates and then registers under a colleague's
+  identifier has authenticated perfectly and impersonated anyway.
+
+- **Tenant isolation on the coordination path.** The data model has had
+  tenants since the beginning and nothing consulted them: the registry was
+  global and discovery handed every registered agent's description to a
+  language model. Filtering is applied to discovery's *input*, because a
+  capability description reaching a prompt has been disclosed whatever the
+  model then picks. Tenant is derived from the authenticated subject and never
+  read from the envelope.
+
+- **The execution guard checks something.** `capability.check()` was called
+  with the principal alone, so its scope comparison iterated an empty list and
+  the capability's own constraint never applied to anything.
+
 ### Added
+
+- **A scope catalogue, and grants that come from bindings** (RFC 0003). A
+  scope was a free string an agent wrote from memory, so `carrier:qoute`
+  registered as successfully as `carrier:quote` and every rule guarding that
+  capability silently stopped applying. The vocabulary now belongs to the
+  deployment: an agent describes what it does, an administrator binds what
+  that requires, and unrecognised vocabulary is refused **with the catalogue**
+  — so an implementer learns by being corrected rather than from documentation
+  that goes stale. Matching is hierarchical. `agbus scope …`
+
+- **`require_scope()` and `scope_is_held()`**, enforcing a grant where the
+  work happens. Deliberate about which attacker this stops: not a malicious
+  agent binary, which can call and report anything — but a compromised agent
+  *brain*, which is the realistic threat when a model drives the agent. An
+  injected prompt can persuade the model to call `send_email`; it cannot
+  persuade the invocation path to skip the guard.
+
+- **Delegation.** An agent cannot exceed the person it acts for. The session
+  records `requester_authority` from the credential's `scope` claim — the
+  thing every identity provider already populates and this bus had never
+  consulted.
+
+- **Artifact validation** (RFC 0002). Every offer carries an `output_schema`
+  and nothing had ever read one, so an agent could promise `{"routes": [...]}`,
+  deliver `{"result": "ok"}`, and the failure would surface one or two hops
+  from its cause. Three outcomes are kept distinct — checked and matched,
+  checked and violated, and **nothing was promised**, which is not a pass.
+
+- **An embeddable coordinator.** `LocalTransport` runs the runtime as a
+  library inside an application that already owns a process: no port, no
+  socket, no second service. Envelopes are deep-copied across the in-process
+  boundary, because a local transport with looser semantics would let code
+  pass locally and misbehave over a network.
+
+- **`agbus tenant …`** — isolation nobody can configure is isolation nobody
+  has.
 
 - **`agentic_bus.conformance` and `agbus conformance`** — a suite that checks
   an agent implementation against the Liquid Interfaces specification. It
@@ -19,16 +94,26 @@ from this package; protocol changes are called out explicitly below.
   interoperate; until then "LIP-compliant" is an assertion nobody can check.
 
   Twelve requirements, graded MUST and SHOULD, each citing the section it
-  comes from. `--json` emits a machine-readable report.
-
-  The reference SDK is tested against the suite, so `BaseAgent` failing the
-  specification it publishes now breaks our own build. Each check is also
-  exercised against an agent that violates exactly that requirement — a
-  conformance suite everything passes certifies nothing.
+  comes from. `--json` emits a machine-readable report. The reference SDK is
+  tested against the suite, and each check is also exercised against an agent
+  that violates exactly that requirement — a conformance suite everything
+  passes certifies nothing.
 
 - `LocalBus.malformed` records frames that could not be parsed as an envelope.
   They never reach `messages`, so a malformed sender previously looked
-  identical to a silent one.
+  identical to a silent one. `LocalBus.execute` gains `authorized_scopes`, so
+  the shipped harness can exercise what an agent does when it is *not*
+  authorised.
+
+### Changed
+
+- `required_scopes` on `register` is a **request**, not an assertion. No wire
+  format changed; what changed is that a coordinator no longer grants a scope
+  because an agent asked for one.
+- `registered` gains `granted_scopes`, `unrecognised_scopes` and `catalogue`.
+- `complete` metadata gains `used_scopes`, `denied_scopes` and
+  `capability_id`.
+- `schema_violation` joins the error categories.
 
 ## [0.2.0] — 2026-08-22
 
