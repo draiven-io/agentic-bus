@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentic-bus"
-version = "0.2.0"
+version = "0.3.0"
 description = "Reference implementation of the Liquid Interfaces Protocol (LIP)"
 readme = "README.md"
 requires-python = ">=3.11"

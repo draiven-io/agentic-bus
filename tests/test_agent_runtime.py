@@ -19,7 +19,7 @@ import json
 import pytest
 
 from agentic_bus.agents.base.agent import BaseAgent, ReconnectPolicy
-from agentic_bus.core.protocol.envelope import MessageType
+from agentic_bus.core.protocol.envelope import LIP_PROTOCOL_VERSION, MessageType
 from agentic_bus.core.registry.capability_registry import AgentCapability
 from agentic_bus.testing import LocalBus
 
@@ -492,7 +492,10 @@ class TestRegisterPerformative:
         # format, which is the whole point of the performative.
         envelope = coordinator.messages_of_type(MessageType.REGISTER)[0]
         assert envelope.message_type == MessageType.REGISTER
-        assert envelope.protocol_version == "0.2.0"
+        # Against the constant, not a literal: this test is about the
+        # register performative, and hardcoding the version made it fail
+        # on an intentional bump. test_protocol.py owns versioning.
+        assert envelope.protocol_version == LIP_PROTOCOL_VERSION
         # Fields sit directly in the payload, not nested under "registration".
         assert envelope.payload["agent_id"] == "a1"
         assert "registration" not in envelope.payload
