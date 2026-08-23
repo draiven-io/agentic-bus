@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any
 
 from agentic_bus.core.protocol.envelope import (
@@ -69,6 +70,7 @@ from agentic_bus.core.persistence.database import init_db
 from agentic_bus.core.persistence.models import AgentStatus
 from agentic_bus.core.persistence.repository import AgentRepository
 from agentic_bus.core.persistence.scope_repository import ScopeRepository
+from agentic_bus.core.artifacts import validate_artifacts
 from agentic_bus.core.scopes import (
     ScopePolicy,
     covered_by_any,
@@ -92,6 +94,13 @@ from agentic_bus.core.persistence.session_archive_repository import SessionArchi
 from agentic_bus.core.persistence.mcp_server_repository import MCPServerRepository
 
 logger = logging.getLogger(__name__)
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("true", "1", "yes", "on")
 
 COORDINATOR_SENDER = SenderInfo(kind=SenderKind.COORDINATOR, id="coordinator")
 
@@ -180,6 +189,13 @@ class CoordinatorRuntime:
         # deciding to.
         self._scope_enforcement = scope_enforcement_enabled(
             default=self._scopes.enforced
+        )
+        # Whether an artifact that breaks its promise fails the step, or is
+        # only recorded. Recording is always on: the finding is most of the
+        # value, and failing a step that a deployment has been living with
+        # is the part that needs a decision.
+        self._artifact_validation_enforced = _env_flag(
+            "AGBUS_ARTIFACT_VALIDATION_ENFORCED", False
         )
         if self._scopes.auto_catalogues:
             logger.info(
@@ -1616,12 +1632,103 @@ Execution plan steps:
             session.execution_results.append(envelope.payload)
 
         await self._reconcile_scope_usage(envelope)
+        await self._validate_artifacts(envelope, session)
 
         # Resolve any pending execution future for this agent+session
         key = (envelope.session_id, envelope.sender.id)
         fut = self._pending_completions.pop(key, None)
         if fut and not fut.done():
             fut.set_result(envelope)
+
+    async def _validate_artifacts(
+        self, envelope: AgBusEnvelope, session: Any | None
+    ) -> None:
+        """Hold an agent to the shape its offer promised (RFC 0002).
+
+        Every offer carries an ``output_schema`` and nothing has ever checked
+        one, so an agent could promise ``{"routes": [...]}``, deliver
+        ``{"result": "ok"}``, and the interaction would proceed — until the
+        next step consumed the artifact and assumed a field that was not
+        there. Checking here turns a mysterious downstream failure into a
+        named agent and a named promise.
+
+        An absent schema is not a failure. The specification is explicit about
+        that, and an agent that cannot describe its output is still useful.
+        """
+        if session is None:
+            return
+
+        artifacts = envelope.payload.get("artifacts") or []
+        if not artifacts:
+            return
+
+        agent_id = envelope.sender.id
+        metadata = envelope.payload.get("metadata") or {}
+        capability_id = metadata.get("capability_id", "")
+
+        schema = self._promised_schema(session, agent_id, capability_id)
+        report = validate_artifacts(
+            artifacts,
+            schema,
+            agent_id=agent_id,
+            capability_id=capability_id,
+        )
+        if report.unchecked or report.ok:
+            return
+
+        # Recorded against the offering agent, so an agent whose artifacts
+        # persistently diverge from what it promises is visible across
+        # sessions rather than only within one.
+        self.audit_log.log(
+            action="artifact.schema_violation",
+            actor=agent_id,
+            target=envelope.session_id,
+            target_type="session",
+            details=report.summary(),
+            severity="warning",
+        )
+        logger.warning(
+            "Agent %s produced an artifact that does not match its offer: %s",
+            agent_id,
+            report.summary(),
+        )
+        await self._emit_event(
+            envelope.session_id,
+            "validation",
+            f"Artifact from '{agent_id}' does not match its declared schema",
+            phase="execution",
+            agent_id=agent_id,
+            detail={
+                "capability_id": capability_id,
+                "violations": [str(v) for v in report.violations],
+            },
+        )
+
+        if self._artifact_validation_enforced:
+            # The next step would otherwise consume something whose shape
+            # nobody can rely on.
+            envelope.payload["status"] = "error"
+            envelope.payload.setdefault("metadata", {})["schema_violation"] = (
+                report.summary()
+            )
+
+    @staticmethod
+    def _promised_schema(
+        session: Any, agent_id: str, capability_id: str
+    ) -> dict[str, Any] | None:
+        """The output_schema from the accepted offer behind this completion.
+
+        Matched on agent *and* capability: one agent can hold several accepted
+        capabilities in a session, and checking against the wrong promise
+        would produce a violation that is not one.
+        """
+        for record in getattr(session, "offers", []) or []:
+            if record.status != "accepted" or record.agent_id != agent_id:
+                continue
+            if capability_id and record.offer.capability_id != capability_id:
+                continue
+            return record.offer.output_schema or None
+        return None
 
     async def _reconcile_scope_usage(self, envelope: AgBusEnvelope) -> None:
         """Compare what an execution used against what it was granted.
