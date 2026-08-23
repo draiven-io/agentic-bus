@@ -1375,6 +1375,105 @@ def _scope_repo():
     return ScopeRepository()
 
 
+# ---------------------------------------------------------------------------
+# Tenancy
+# ---------------------------------------------------------------------------
+
+
+def _tenant_repos():
+    from agentic_bus.core.persistence.database import init_db
+    from agentic_bus.core.persistence.tenant_repository import TenantRepository
+    from agentic_bus.core.persistence.user_repository import UserRepository
+
+    init_db()
+    return TenantRepository(), UserRepository()
+
+
+def cmd_tenant_list(args: argparse.Namespace) -> None:
+    """List tenants and what each one holds."""
+    trepo, _ = _tenant_repos()
+    tenants = trepo.list_all()
+
+    if not tenants:
+        print()
+        print("  No tenants. Every agent is global and every requester sees all of")
+        print("  them, which is correct for a single-customer bus.")
+        print(f"  Create one with {_c('agbus tenant create <slug> <name>', _BOLD)}.")
+        print()
+        return
+
+    print()
+    print(f"  {_c('SLUG', _DIM):<20s}  {_c('NAME', _DIM):<28s}  {_c('AGENTS', _DIM)}")
+    print(f"  {'-' * 20}  {'-' * 28}  {'-' * 28}")
+    for tenant in tenants:
+        agents = trepo.get_tenant_agent_ids(tenant.id)
+        listed = ", ".join(agents) if agents else "-"
+        print(f"  {tenant.slug:<20s}  {tenant.name:<28s}  {listed}")
+    print()
+    print(f"  {len(tenants)} tenant(s)")
+    print()
+
+
+def cmd_tenant_create(args: argparse.Namespace) -> None:
+    trepo, _ = _tenant_repos()
+    tenant = trepo.create(slug=args.slug, name=args.name)
+    print()
+    print(f"  {_c('OK', _GREEN)} Tenant {_c(tenant.slug, _BOLD)} created (id {tenant.id})")
+    print()
+
+
+def cmd_tenant_assign(args: argparse.Namespace) -> None:
+    """Assign an agent to a tenant, which is what turns isolation on."""
+    trepo, _ = _tenant_repos()
+    tenant = trepo.get_by_slug(args.slug)
+    if tenant is None:
+        print()
+        print(f"  {_c('X', _RED)} No tenant with slug {args.slug!r}")
+        print()
+        raise SystemExit(1)
+
+    trepo.assign_agent(args.agent_id, tenant.id)
+    print()
+    print(f"  {_c('OK', _GREEN)} {args.agent_id} is now visible only to {tenant.slug}")
+    print("  An agent assigned to no tenant stays global; assigning this one")
+    print("  removes it from every other tenant's discovery.")
+    print()
+
+
+def cmd_tenant_unassign(args: argparse.Namespace) -> None:
+    trepo, _ = _tenant_repos()
+    tenant = trepo.get_by_slug(args.slug)
+    if tenant is None or not trepo.unassign_agent(args.agent_id, tenant.id):
+        print()
+        print(f"  {args.agent_id} is not assigned to {args.slug!r}")
+        print()
+        raise SystemExit(1)
+    print()
+    print(f"  {_c('OK', _GREEN)} {args.agent_id} removed from {args.slug}")
+    print()
+
+
+def cmd_tenant_enrol(args: argparse.Namespace) -> None:
+    """Enrol a user, by OIDC subject, into a tenant."""
+    trepo, urepo = _tenant_repos()
+    tenant = trepo.get_by_slug(args.slug)
+    if tenant is None:
+        print()
+        print(f"  {_c('X', _RED)} No tenant with slug {args.slug!r}")
+        print()
+        raise SystemExit(1)
+
+    user = urepo.get_by_subject(args.subject)
+    if user is None:
+        user = urepo.create(subject=args.subject, email=args.email or "")
+    urepo.assign_tenant(user.id, tenant.id)
+
+    print()
+    print(f"  {_c('OK', _GREEN)} {args.subject} enrolled in {tenant.slug}")
+    print("  Their sessions now discover this tenant's agents and the global ones.")
+    print()
+
+
 def cmd_scope_list(args: argparse.Namespace) -> None:
     """Show the scope catalogue."""
     entries = _scope_repo().catalogue_entries()
@@ -2378,6 +2477,33 @@ def build_parser() -> argparse.ArgumentParser:
     p_tools.set_defaults(func=cmd_agent_tools)
 
     # -- llm -----------------------------------------------------------------
+    p_tenant = sub.add_parser("tenant", help="Manage tenants and agent visibility")
+    tenant_sub = p_tenant.add_subparsers(dest="tenant_command", title="tenant commands")
+
+    p_t_list = tenant_sub.add_parser("list", help="List tenants and their agents")
+    p_t_list.set_defaults(func=cmd_tenant_list)
+
+    p_t_create = tenant_sub.add_parser("create", help="Create a tenant")
+    p_t_create.add_argument("slug", help="Short identifier, e.g. acme")
+    p_t_create.add_argument("name", help="Display name")
+    p_t_create.set_defaults(func=cmd_tenant_create)
+
+    p_t_assign = tenant_sub.add_parser("assign", help="Assign an agent to a tenant")
+    p_t_assign.add_argument("agent_id", help="Agent ID")
+    p_t_assign.add_argument("slug", help="Tenant slug")
+    p_t_assign.set_defaults(func=cmd_tenant_assign)
+
+    p_t_unassign = tenant_sub.add_parser("unassign", help="Remove an agent from a tenant")
+    p_t_unassign.add_argument("agent_id", help="Agent ID")
+    p_t_unassign.add_argument("slug", help="Tenant slug")
+    p_t_unassign.set_defaults(func=cmd_tenant_unassign)
+
+    p_t_enrol = tenant_sub.add_parser("enrol", help="Enrol a user in a tenant")
+    p_t_enrol.add_argument("subject", help="OIDC subject, e.g. auth0|abc123")
+    p_t_enrol.add_argument("slug", help="Tenant slug")
+    p_t_enrol.add_argument("--email", type=str, default="", help="Email address")
+    p_t_enrol.set_defaults(func=cmd_tenant_enrol)
+
     p_scope = sub.add_parser("scope", help="Manage the scope vocabulary")
     scope_sub = p_scope.add_subparsers(dest="scope_command", title="scope commands")
 

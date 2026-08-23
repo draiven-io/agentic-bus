@@ -71,6 +71,7 @@ from agentic_bus.core.persistence.models import AgentStatus
 from agentic_bus.core.persistence.repository import AgentRepository
 from agentic_bus.core.persistence.scope_repository import ScopeRepository
 from agentic_bus.core.artifacts import validate_artifacts
+from agentic_bus.core.tenancy import TenantResolver, TenantScope
 from agentic_bus.core.scopes import (
     ScopePolicy,
     covered_by_any,
@@ -153,6 +154,13 @@ class CoordinatorRuntime:
 
         self.user_repo = UserRepository()
         self.tenant_repo = TenantRepository()
+        # Tenancy on the coordination path. The data model has had tenants
+        # since the beginning and nothing here ever consulted them, so the
+        # registry was global and discovery described every customer's agents
+        # to a model.
+        self.tenants = TenantResolver(
+            user_repo=self.user_repo, tenant_repo=self.tenant_repo
+        )
 
         # LLM-dependent coordinator subsystems are lazily initialised.
         # The application CAN start without an LLM configured – the admin
@@ -373,6 +381,15 @@ class CoordinatorRuntime:
                 authenticated_subject=identity.subject if identity else "",
                 authenticated_agent_id=authenticated_agent_id,
                 identity_verified=identity is not None,
+                # Derived from the session, which derived it from the
+                # authenticated subject. Populating this is what makes the
+                # grounded boundary rules that read it — restricted material
+                # may not leave the tenant — able to fire at all.
+                tenant_id=TenantScope(
+                    tenant_ids=list(getattr(session, "tenant_ids", []) or [])
+                ).single_tenant_id
+                if session
+                else "",
             ),
         )
 
@@ -462,6 +479,12 @@ class CoordinatorRuntime:
             # from the verified credential on the connection, so it is a
             # derived fact — the requester cannot widen it by asking.
             session.requester_authority = list(getattr(identity, "scopes", []) or [])
+
+            # Derived from the authenticated subject, never read from the
+            # envelope: a tenant a caller can write is a tenant a caller can
+            # choose.
+            scope = self.tenants.scope_for(session.requester_oidc_subject)
+            session.tenant_ids = list(scope.tenant_ids)
             if session.requester_authority:
                 logger.info(
                     "Session %s is bounded by the requester's authority: %s",
@@ -587,7 +610,9 @@ class CoordinatorRuntime:
                 progress=0.35,
             )
 
-            candidates = await self.adjudicator.discover(intent)
+            candidates = await self.adjudicator.discover(
+                intent, visible_agents=self._visible_agents(session)
+            )
             session.discovered_agents = [c.agent_id for c in candidates]
 
             if not candidates:
@@ -1520,7 +1545,9 @@ Execution plan steps:
         )
 
         # Re-run discovery with enriched context
-        candidates = await self.adjudicator.discover(session.intent)
+        candidates = await self.adjudicator.discover(
+            session.intent, visible_agents=self._visible_agents(session)
+        )
         session.discovered_agents = [c.agent_id for c in candidates]
 
         if not candidates:
@@ -1842,6 +1869,38 @@ Execution plan steps:
         # expressed. Using narrow() here would turn an unbound capability
         # into an unrestricted one.
         return intersect(capability_scopes, bound)
+
+    def _visible_agents(self, session: Any) -> list[str] | None:
+        """Which registered agents this session may discover.
+
+        ``None`` means no restriction — the single-tenant case, and what a bus
+        that has never assigned an agent to a tenant always returns.
+
+        Applied to the *input* of discovery rather than its output. A
+        capability description reaching a prompt has been disclosed whatever
+        the model then picks, and "query ACME Corp's payroll database" names a
+        customer.
+        """
+        registered = [a.agent_id for a in self.registry.all_agents()]
+        if not self.tenants.any_agent_is_assigned(registered):
+            return None  # tenancy is not in use on this bus
+
+        scope = TenantScope(
+            tenant_ids=list(getattr(session, "tenant_ids", []) or []),
+            subject=getattr(session, "requester_oidc_subject", ""),
+        )
+        visible = self.tenants.visible_agents(scope, registered)
+
+        hidden = len(registered) - len(visible)
+        if hidden:
+            logger.info(
+                "Session %s may see %d of %d agents (%d outside its tenants)",
+                getattr(session, "session_id", "?"),
+                len(visible),
+                len(registered),
+                hidden,
+            )
+        return visible
 
     def _declared_scopes(self, agent_id: str, capability_id: str) -> list[str]:
         """What the agent said this capability needs.
@@ -2293,7 +2352,9 @@ Execution plan steps:
         )
 
         # Re-run discovery and offer solicitation
-        candidates = await self.adjudicator.discover(session.intent)
+        candidates = await self.adjudicator.discover(
+            session.intent, visible_agents=self._visible_agents(session)
+        )
         session.discovered_agents = [c.agent_id for c in candidates]
 
         if not candidates:
