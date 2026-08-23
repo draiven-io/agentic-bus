@@ -39,6 +39,12 @@ from agentic_bus.core.protocol.envelope import (
     RegisteredPayload,
     build_envelope,
 )
+from agentic_bus.agents.scope_guard import (
+    ScopeDenied,
+    ScopeGrant,
+    reset_grant,
+    set_grant,
+)
 from agentic_bus.core.transport.base import Peer
 from agentic_bus.core.transport.ws import WSClient
 from agentic_bus.core.registry.capability_registry import AgentCapability, AgentRegistration
@@ -727,6 +733,16 @@ class BaseAgent(ABC):
         execution_plan = payload.get("execution_plan", {})
         context = execution_plan.get("context", {})
 
+        # The grant for this execution, as the coordinator sent it. The agent
+        # does not choose its contents, and the invocation path — not the
+        # model — decides whether a call is checked against it.
+        grant = ScopeGrant(
+            session_id=envelope.session_id,
+            capability_id=payload.get("capability_id", ""),
+            granted=list(payload.get("authorized_scopes", []) or []),
+        )
+        token = set_grant(grant)
+
         await self.send_event(
             envelope.session_id,
             f"Agent '{self.agent_id}' starting task execution…",
@@ -742,6 +758,19 @@ class BaseAgent(ABC):
                 category="agent",
                 detail={"status": "success"},
             )
+        except ScopeDenied as exc:
+            # Distinct from a failure: the work was refused rather than
+            # attempted and broken, and the coordinator reconciles the
+            # attempt against what it granted.
+            logger.error("Agent %s was refused a scope: %s", self.agent_id, exc)
+            result = {"error": str(exc), "scope": exc.scope}
+            status = "denied"
+            await self.send_event(
+                envelope.session_id,
+                f"Agent '{self.agent_id}' was refused {exc.scope}",
+                category="ibac",
+                detail={"scope": exc.scope, "granted": exc.granted},
+            )
         except Exception as exc:
             logger.exception("Agent %s execution failed", self.agent_id)
             result = {"error": str(exc)}
@@ -752,6 +781,8 @@ class BaseAgent(ABC):
                 category="error",
                 detail={"error": str(exc)},
             )
+        finally:
+            reset_grant(token)
 
         complete_env = build_envelope(
             MessageType.COMPLETE,
@@ -760,7 +791,14 @@ class BaseAgent(ABC):
             CompletePayload(
                 status=status,
                 artifacts=[result],
-                metadata={"agent_id": self.agent_id},
+                metadata={
+                    "agent_id": self.agent_id,
+                    # Recorded by the invocation path, not volunteered by the
+                    # model, so the coordinator can reconcile it against what
+                    # it granted rather than take the agent's word for it.
+                    "used_scopes": grant.used,
+                    "denied_scopes": grant.denied,
+                },
             ),
             inject_trace_context(),
         )

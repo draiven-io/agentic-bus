@@ -1604,11 +1604,86 @@ Execution plan steps:
             session.audit_log.append(envelope)
             session.execution_results.append(envelope.payload)
 
+        await self._reconcile_scope_usage(envelope)
+
         # Resolve any pending execution future for this agent+session
         key = (envelope.session_id, envelope.sender.id)
         fut = self._pending_completions.pop(key, None)
         if fut and not fut.done():
             fut.set_result(envelope)
+
+    async def _reconcile_scope_usage(self, envelope: AgBusEnvelope) -> None:
+        """Compare what an execution used against what it was granted.
+
+        The report comes from the agent's invocation path rather than from its
+        model, so it reflects what was called. That is what makes this worth
+        reading: an agent talked into exceeding its authority by an injected
+        prompt shows up here, because the model chooses what to call and not
+        whether the call is recorded.
+
+        It is *detection*, not prevention, and the distinction matters. An
+        agent whose code is hostile can report whatever it likes — but such an
+        agent has already replaced everything this could have protected. What
+        this makes possible is attribution, and attribution is what makes
+        revocation mean something.
+        """
+        metadata = envelope.payload.get("metadata") or {}
+        used = [s for s in metadata.get("used_scopes", []) if s]
+        denied = [s for s in metadata.get("denied_scopes", []) if s]
+        if not used and not denied:
+            return
+
+        agent_id = envelope.sender.id
+        session = self.sessions.get(envelope.session_id)
+        capability = getattr(session, "capability", None)
+        granted = list(getattr(capability, "scopes", []) or [])
+
+        # Anything used that the grant does not cover. An empty grant is not
+        # treated as covering everything here: this reconciliation exists to
+        # notice use beyond authority, and "nothing was granted" is the case
+        # where all use is beyond it.
+        exceeded = [s for s in used if not covered_by_any(granted, s)] if granted else used
+
+        if denied:
+            self.audit_log.log(
+                action="scope.denied",
+                actor=agent_id,
+                target=envelope.session_id,
+                target_type="session",
+                details=f"refused {', '.join(denied)} during execution",
+                severity="warning",
+            )
+
+        if not exceeded:
+            return
+
+        # The finding. Recorded against the agent so a pattern is visible
+        # across sessions, not just within one.
+        self.audit_log.log(
+            action="scope.exceeded",
+            actor=agent_id,
+            target=envelope.session_id,
+            target_type="session",
+            details=(
+                f"used {', '.join(exceeded)} beyond the grant "
+                f"({', '.join(granted) or 'nothing'})"
+            ),
+            severity="critical",
+        )
+        logger.error(
+            "Agent %s used scopes beyond its grant in session %s: %s",
+            agent_id,
+            envelope.session_id,
+            ", ".join(exceeded),
+        )
+        await self._emit_event(
+            envelope.session_id,
+            "ibac",
+            f"Agent '{agent_id}' used {', '.join(exceeded)} beyond its grant",
+            phase="execution",
+            agent_id=agent_id,
+            detail={"exceeded_scopes": exceeded, "granted": granted},
+        )
 
     def _declared_scopes(self, agent_id: str, capability_id: str) -> list[str]:
         """What the agent said this capability needs.
