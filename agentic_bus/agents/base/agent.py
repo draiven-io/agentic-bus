@@ -793,6 +793,12 @@ class BaseAgent(ABC):
                 artifacts=[result],
                 metadata={
                     "agent_id": self.agent_id,
+                    # Echoed so the coordinator can find the offer that
+                    # promised this artifact's shape. An agent can hold
+                    # several accepted capabilities in one session, and
+                    # matching on agent alone would check against the wrong
+                    # promise.
+                    "capability_id": grant.capability_id,
                     # Recorded by the invocation path, not volunteered by the
                     # model, so the coordinator can reconcile it against what
                     # it granted rather than take the agent's word for it.

@@ -1674,6 +1674,7 @@ _CONFIG_KEYS: list[tuple[str, str, str]] = [
     ("AGBUS_REQUIRE_AGENT_AUTH", "false", "Demand a credential without an IdP"),
     ("AGBUS_SCOPE_CATALOGUE_ENFORCED", "false", "Refuse uncatalogued scopes instead of adding them"),
     ("AGBUS_SCOPE_ENFORCED", "(follows catalogue)", "Refuse a step the agent was not granted"),
+    ("AGBUS_ARTIFACT_VALIDATION_ENFORCED", "false", "Fail a step whose artifact breaks its schema"),
     ("AGBUS_OIDC_AUDIENCE", "(none)", "OIDC audience"),
     ("AGBUS_ADMIN_SUBJECTS", "(none)", "Admin OIDC subjects"),
     ("AGBUS_ADMIN_ROLE", "agbus:admin", "Admin role value"),
