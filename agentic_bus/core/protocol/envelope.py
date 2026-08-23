@@ -345,10 +345,35 @@ class RejectPayload(BaseModel):
 
 
 class ExecutePayload(BaseModel):
-    """Payload for ``message_type='execute'``."""
+    """Payload for ``message_type='execute'``.
+
+    The coordinator authorising one step, and telling the agent what that
+    step was authorised for.
+    """
 
     execution_plan: dict[str, Any] = Field(default_factory=dict)
-    authorized_scopes: list[str] = Field(default_factory=list)
+    authorized_scopes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "What this step may do, after every narrowing: the requester's "
+            "own authority, what the interaction claimed, and what this "
+            "agent's capability was bound to. An agent MUST NOT assume it "
+            "holds anything not listed here."
+        ),
+    )
+    capability_id: str = Field(
+        default="",
+        description=(
+            "Which of the agent's capabilities is being executed. Echoed back "
+            "on the completion so the coordinator can check the artifact "
+            "against the offer that promised its shape — one agent can hold "
+            "several accepted capabilities in a session."
+        ),
+    )
+    memory_snapshot: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Session memory this agent is permitted to read.",
+    )
 
 
 class CompletePayload(BaseModel):
