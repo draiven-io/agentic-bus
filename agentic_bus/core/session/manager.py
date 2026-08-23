@@ -71,6 +71,10 @@ class SessionState(BaseModel):
     #: the requester has none. Absence of a claim is not a restriction, so an
     #: empty list does not narrow anything.
     requester_authority: list[str] = Field(default_factory=list)
+    #: Tenants the requester belongs to, resolved from the authenticated
+    #: subject. Bounds what this session can discover. Empty means the
+    #: requester resolved to no tenant, and sees global agents only.
+    tenant_ids: list[int] = Field(default_factory=list)
 
     # Intent
     intent: IntentPayload | None = None
