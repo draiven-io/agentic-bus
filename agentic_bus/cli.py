@@ -1362,6 +1362,154 @@ def _print_llm_config_detail(cfg) -> None:
     print()
 
 
+# ---------------------------------------------------------------------------
+# Scope vocabulary (RFC 0003)
+# ---------------------------------------------------------------------------
+
+
+def _scope_repo():
+    from agentic_bus.core.persistence.database import init_db
+    from agentic_bus.core.persistence.scope_repository import ScopeRepository
+
+    init_db()
+    return ScopeRepository()
+
+
+def cmd_scope_list(args: argparse.Namespace) -> None:
+    """Show the scope catalogue."""
+    entries = _scope_repo().catalogue_entries()
+
+    if not entries:
+        print()
+        print("  The scope catalogue is empty.")
+        print(f"  Add one with {_c('agbus scope add carrier:quote', _BOLD)}, or let a")
+        print("  development coordinator catalogue what agents declare.")
+        print()
+        return
+
+    print()
+    print(f"  {_c('SCOPE', _DIM):<34s}  {_c('SOURCE', _DIM):<10s}  {_c('DESCRIPTION', _DIM)}")
+    print(f"  {'─' * 34}  {'─' * 10}  {'─' * 34}")
+    for entry in entries:
+        source = entry.created_by
+        # A catalogue that grew by accident is worth being able to see at a
+        # glance, so an operator can review what nobody actually decided.
+        coloured = _c(source, _YELLOW) if source == "auto" else source
+        print(f"  {entry.name:<34s}  {coloured:<10s}  {entry.description or '—'}")
+    print()
+    print(f"  {len(entries)} scope(s)")
+    print()
+
+
+def cmd_scope_add(args: argparse.Namespace) -> None:
+    """Add a scope to the catalogue."""
+    repo = _scope_repo()
+    try:
+        added = repo.add_scope(args.name, args.description or "", created_by="admin")
+    except ValueError as exc:
+        print()
+        print(f"  {_c('✗', _RED)} {exc}")
+        print("  A scope is segments separated by ':', optionally ending in '*'.")
+        print()
+        raise SystemExit(1)
+
+    print()
+    if added:
+        print(f"  {_c('✓', _GREEN)} Scope {_c(args.name, _BOLD)} catalogued")
+    else:
+        print(f"  Scope {_c(args.name, _BOLD)} was already catalogued")
+    print()
+
+
+def cmd_scope_remove(args: argparse.Namespace) -> None:
+    """Remove a scope, and any binding that granted it."""
+    repo = _scope_repo()
+    if not repo.remove_scope(args.name):
+        print()
+        print(f"  Scope {_c(args.name, _BOLD)} is not in the catalogue")
+        print()
+        raise SystemExit(1)
+    print()
+    print(f"  {_c('✓', _GREEN)} Scope {_c(args.name, _BOLD)} removed")
+    print()
+
+
+def cmd_scope_bind(args: argparse.Namespace) -> None:
+    """Grant catalogued scopes to one agent's capability."""
+    repo = _scope_repo()
+    try:
+        newly = repo.bind(args.agent_id, args.capability, args.scopes, bound_by="admin")
+    except ValueError as exc:
+        print()
+        print(f"  {_c('✗', _RED)} {exc}")
+        print(f"  Catalogue: {', '.join(repo.catalogue()) or '(empty)'}")
+        print()
+        raise SystemExit(1)
+
+    print()
+    if newly:
+        print(
+            f"  {_c('✓', _GREEN)} Granted {_c(', '.join(newly), _BOLD)} to "
+            f"{args.agent_id}:{args.capability}"
+        )
+    else:
+        print("  Already granted; nothing changed")
+    print()
+
+
+def cmd_scope_unbind(args: argparse.Namespace) -> None:
+    """Revoke one granted scope."""
+    repo = _scope_repo()
+    if not repo.unbind(args.agent_id, args.capability, args.scope):
+        print()
+        print(f"  {args.agent_id}:{args.capability} does not hold {args.scope}")
+        print()
+        raise SystemExit(1)
+    print()
+    print(f"  {_c('✓', _GREEN)} Revoked {_c(args.scope, _BOLD)}")
+    print()
+
+
+def cmd_scope_granted(args: argparse.Namespace) -> None:
+    """Show what an agent actually holds."""
+    bindings = _scope_repo().granted_for_agent(args.agent_id)
+
+    print()
+    if not bindings:
+        print(f"  {_c(args.agent_id, _BOLD)} holds no scopes.")
+        print("  An unbound capability is granted nothing — that is the default,")
+        print("  not an error. Grant one with:")
+        print(f"    {_c('agbus scope bind ' + args.agent_id + ' <capability> <scope>', _CYAN)}")
+        print()
+        return
+
+    print(f"  {_c(args.agent_id, _BOLD)}")
+    for capability, scopes in sorted(bindings.items()):
+        print(f"    {capability:<28s}  {', '.join(scopes)}")
+    print()
+
+
+def cmd_scope_requests(args: argparse.Namespace) -> None:
+    """Show scopes agents asked for that nobody has catalogued."""
+    pending = _scope_repo().pending_requests()
+
+    if not pending:
+        print()
+        print("  No outstanding scope requests.")
+        print()
+        return
+
+    print()
+    print(f"  {_c('SCOPE', _DIM):<30s}  {_c('AGENT', _DIM):<26s}  {_c('ASKED', _DIM)}")
+    print(f"  {'─' * 30}  {'─' * 26}  {'─' * 8}")
+    for req in pending:
+        print(f"  {req.scope:<30s}  {req.agent_id:<26s}  {req.request_count}×")
+    print()
+    print(f"  {len(pending)} request(s). These are agents telling you what they need.")
+    print(f"  Catalogue one with {_c('agbus scope add <name>', _CYAN)}, then bind it.")
+    print()
+
+
 def cmd_llm_list(args: argparse.Namespace) -> None:
     """List all LLM configurations."""
     repo = _get_llm_repo()
@@ -1524,6 +1672,8 @@ _CONFIG_KEYS: list[tuple[str, str, str]] = [
     ("AGBUS_AGENT_AUTO_APPROVE", "false", "Auto-approve enrolments"),
     ("AGBUS_OIDC_ISSUER", "(none)", "OIDC issuer — set it and agents must authenticate"),
     ("AGBUS_REQUIRE_AGENT_AUTH", "false", "Demand a credential without an IdP"),
+    ("AGBUS_SCOPE_CATALOGUE_ENFORCED", "false", "Refuse uncatalogued scopes instead of adding them"),
+    ("AGBUS_SCOPE_ENFORCED", "(follows catalogue)", "Refuse a step the agent was not granted"),
     ("AGBUS_OIDC_AUDIENCE", "(none)", "OIDC audience"),
     ("AGBUS_ADMIN_SUBJECTS", "(none)", "Admin OIDC subjects"),
     ("AGBUS_ADMIN_ROLE", "agbus:admin", "Admin role value"),
@@ -2227,6 +2377,41 @@ def build_parser() -> argparse.ArgumentParser:
     p_tools.set_defaults(func=cmd_agent_tools)
 
     # -- llm -----------------------------------------------------------------
+    p_scope = sub.add_parser("scope", help="Manage the scope vocabulary")
+    scope_sub = p_scope.add_subparsers(dest="scope_command", title="scope commands")
+
+    p_scope_list = scope_sub.add_parser("list", help="Show the scope catalogue")
+    p_scope_list.set_defaults(func=cmd_scope_list)
+
+    p_scope_add = scope_sub.add_parser("add", help="Add a scope to the catalogue")
+    p_scope_add.add_argument("name", help="Scope name, e.g. carrier:quote")
+    p_scope_add.add_argument("--description", type=str, default="",
+                             help="What holding this permits")
+    p_scope_add.set_defaults(func=cmd_scope_add)
+
+    p_scope_rm = scope_sub.add_parser("remove", help="Remove a scope and its bindings")
+    p_scope_rm.add_argument("name", help="Scope name")
+    p_scope_rm.set_defaults(func=cmd_scope_remove)
+
+    p_scope_bind = scope_sub.add_parser("bind", help="Grant scopes to a capability")
+    p_scope_bind.add_argument("agent_id", help="Agent ID")
+    p_scope_bind.add_argument("capability", help="Capability ID")
+    p_scope_bind.add_argument("scopes", nargs="+", help="Catalogued scope names")
+    p_scope_bind.set_defaults(func=cmd_scope_bind)
+
+    p_scope_unbind = scope_sub.add_parser("unbind", help="Revoke a granted scope")
+    p_scope_unbind.add_argument("agent_id", help="Agent ID")
+    p_scope_unbind.add_argument("capability", help="Capability ID")
+    p_scope_unbind.add_argument("scope", help="Scope name")
+    p_scope_unbind.set_defaults(func=cmd_scope_unbind)
+
+    p_scope_granted = scope_sub.add_parser("granted", help="Show what an agent holds")
+    p_scope_granted.add_argument("agent_id", help="Agent ID")
+    p_scope_granted.set_defaults(func=cmd_scope_granted)
+
+    p_scope_req = scope_sub.add_parser("requests", help="Scopes agents asked for")
+    p_scope_req.set_defaults(func=cmd_scope_requests)
+
     p_llm = sub.add_parser("llm", help="Manage LLM provider configurations")
     llm_sub = p_llm.add_subparsers(dest="llm_command", title="llm commands")
 

@@ -295,6 +295,22 @@ class WeatherAgent(BaseAgent):
 WeatherAgent(agent_id="weather-01").run_forever()
 ```
 
+Work that a permission is meant to govern says so where the work happens:
+
+```python
+from agentic_bus import require_scope
+
+async def execute_task(self, payload, context):
+    require_scope("payments:refund")      # raises if this execution was not granted it
+    return {"refunded": payload["order_id"]}
+```
+
+The grant comes from the coordinator, not from the agent asking — an agent
+declares what it *does* and an administrator decides what that requires
+(RFC 0003). `scope_is_held()` is the non-raising form, for narrowing an answer
+rather than refusing one. Both record the attempt, so a coordinator can tell
+afterwards what an execution reached for.
+
 It connects to a coordinator (`AGBUS_COORDINATOR_URI`, default
 `ws://localhost:8765`), registers its capabilities, and from then on
 participates in discovery, negotiation, IBAC governance and execution. You

@@ -68,6 +68,13 @@ from agentic_bus.core.auth.admin import AdminPolicy
 from agentic_bus.core.persistence.database import init_db
 from agentic_bus.core.persistence.models import AgentStatus
 from agentic_bus.core.persistence.repository import AgentRepository
+from agentic_bus.core.persistence.scope_repository import ScopeRepository
+from agentic_bus.core.scopes import (
+    ScopePolicy,
+    covered_by_any,
+    intersect,
+    scope_enforcement_enabled,
+)
 from agentic_bus.core.persistence.models import PersistentAgent, ManagedAgentStatus
 from agentic_bus.agents.managed_server import ManagedAgentServer
 from agentic_bus.coordinator.admin.service import AdminService
@@ -161,6 +168,25 @@ class CoordinatorRuntime:
         # was constructed here and never consulted, so a production deployment
         # with an IdP configured still authenticated nobody.
         self._auth = AgentAuthPolicy()
+        # Scope vocabulary (RFC 0003): the catalogue belongs to this
+        # deployment, and a grant comes from a binding rather than from an
+        # agent having declared it.
+        self.scope_repo = ScopeRepository()
+        self._scopes = ScopePolicy()
+        # Whether a missing grant refuses execution or only warns. Defaults to
+        # following the catalogue posture — a deployment enforcing its
+        # vocabulary has already decided grants mean something — but is
+        # separable, because binding every capability takes longer than
+        # deciding to.
+        self._scope_enforcement = scope_enforcement_enabled(
+            default=self._scopes.enforced
+        )
+        if self._scopes.auto_catalogues:
+            logger.info(
+                "Scope catalogue is permissive — unrecognised scopes are added "
+                "on first sight. Set AGBUS_SCOPE_CATALOGUE_ENFORCED=true to "
+                "refuse them instead."
+            )
         if self._auth.is_development:
             logger.warning(
                 "No AGBUS_OIDC_ISSUER configured — agent credentials are not "
@@ -416,6 +442,16 @@ class CoordinatorRuntime:
                 requester_id=envelope.sender.id,
                 oidc_subject=identity.subject if identity else "",
             )
+            # The ceiling for everything this interaction authorises. Read
+            # from the verified credential on the connection, so it is a
+            # derived fact — the requester cannot widen it by asking.
+            session.requester_authority = list(getattr(identity, "scopes", []) or [])
+            if session.requester_authority:
+                logger.info(
+                    "Session %s is bounded by the requester's authority: %s",
+                    session.session_id,
+                    ", ".join(session.requester_authority),
+                )
             session.intent = intent
             session.audit_log.append(envelope)
             self._session_requester_peers[session.session_id] = peer.peer_id
@@ -1579,11 +1615,254 @@ Execution plan steps:
             session.audit_log.append(envelope)
             session.execution_results.append(envelope.payload)
 
+        await self._reconcile_scope_usage(envelope)
+
         # Resolve any pending execution future for this agent+session
         key = (envelope.session_id, envelope.sender.id)
         fut = self._pending_completions.pop(key, None)
         if fut and not fut.done():
             fut.set_result(envelope)
+
+    async def _reconcile_scope_usage(self, envelope: AgBusEnvelope) -> None:
+        """Compare what an execution used against what it was granted.
+
+        The report comes from the agent's invocation path rather than from its
+        model, so it reflects what was called. That is what makes this worth
+        reading: an agent talked into exceeding its authority by an injected
+        prompt shows up here, because the model chooses what to call and not
+        whether the call is recorded.
+
+        It is *detection*, not prevention, and the distinction matters. An
+        agent whose code is hostile can report whatever it likes — but such an
+        agent has already replaced everything this could have protected. What
+        this makes possible is attribution, and attribution is what makes
+        revocation mean something.
+        """
+        metadata = envelope.payload.get("metadata") or {}
+        used = [s for s in metadata.get("used_scopes", []) if s]
+        denied = [s for s in metadata.get("denied_scopes", []) if s]
+        if not used and not denied:
+            return
+
+        agent_id = envelope.sender.id
+        session = self.sessions.get(envelope.session_id)
+        capability = getattr(session, "capability", None)
+        granted = list(getattr(capability, "scopes", []) or [])
+
+        # Anything used that the grant does not cover. An empty grant is not
+        # treated as covering everything here: this reconciliation exists to
+        # notice use beyond authority, and "nothing was granted" is the case
+        # where all use is beyond it.
+        exceeded = [s for s in used if not covered_by_any(granted, s)] if granted else used
+
+        if denied:
+            self.audit_log.log(
+                action="scope.denied",
+                actor=agent_id,
+                target=envelope.session_id,
+                target_type="session",
+                details=f"refused {', '.join(denied)} during execution",
+                severity="warning",
+            )
+
+        if not exceeded:
+            return
+
+        # The finding. Recorded against the agent so a pattern is visible
+        # across sessions, not just within one.
+        self.audit_log.log(
+            action="scope.exceeded",
+            actor=agent_id,
+            target=envelope.session_id,
+            target_type="session",
+            details=(
+                f"used {', '.join(exceeded)} beyond the grant "
+                f"({', '.join(granted) or 'nothing'})"
+            ),
+            severity="critical",
+        )
+        logger.error(
+            "Agent %s used scopes beyond its grant in session %s: %s",
+            agent_id,
+            envelope.session_id,
+            ", ".join(exceeded),
+        )
+        await self._emit_event(
+            envelope.session_id,
+            "ibac",
+            f"Agent '{agent_id}' used {', '.join(exceeded)} beyond its grant",
+            phase="execution",
+            agent_id=agent_id,
+            detail={"exceeded_scopes": exceeded, "granted": granted},
+        )
+
+    def _grant_for(
+        self, agent_id: str, capability_id: str, capability_scopes: list[str]
+    ) -> list[str]:
+        """What this step is authorised to do, after every narrowing.
+
+        The chain, and why each step is justified:
+
+        1. the requester's credential — an agent cannot exceed what the person
+           it acts for was entitled to;
+        2. what the interaction claimed — already folded into
+           *capability_scopes* when the capability was issued;
+        3. what an administrator bound to this agent's capability.
+
+        Step 3 applies only under enforcement. Off, the agent receives the
+        capability's scopes as before, because narrowing to bindings nobody has
+        authored yet would refuse work that runs today — and the dispatch guard
+        is already warning about exactly that.
+        """
+        if not self._scope_enforcement:
+            return list(capability_scopes)
+
+        try:
+            bound = self.scope_repo.granted(agent_id, capability_id)
+        except Exception:
+            logger.exception(
+                "Could not read bindings for %s:%s", agent_id, capability_id
+            )
+            return []
+
+        if not capability_scopes:
+            # The capability expresses no constraint, so the binding is the
+            # whole of the authority rather than an intersection with nothing.
+            return list(bound)
+
+        # intersect(), not narrow(): an empty binding means nothing was
+        # granted, where an empty credential ceiling means no limit was
+        # expressed. Using narrow() here would turn an unbound capability
+        # into an unrestricted one.
+        return intersect(capability_scopes, bound)
+
+    def _declared_scopes(self, agent_id: str, capability_id: str) -> list[str]:
+        """What the agent said this capability needs.
+
+        Declared input, and treated as such: an agent that under-declares is
+        not caught by anything downstream of this. What it makes possible is
+        catching an agent that declared honestly and was never granted what it
+        asked for — a misconfiguration that otherwise surfaces inside the
+        agent, one layer away from its cause, or not at all.
+        """
+        registration = self.registry.get(agent_id)
+        if registration is None:
+            return []
+        for capability in registration.capabilities:
+            if capability.capability_id == capability_id:
+                return list(capability.required_scopes or [])
+        return []
+
+    def _ungranted_scopes(
+        self, agent_id: str, capability_id: str, required: list[str]
+    ) -> list[str]:
+        """Of what this capability needs, what it has not been granted.
+
+        Grants come from bindings an administrator authored (RFC 0003), never
+        from the agent having asked — so an unbound capability leaves every
+        required scope in this list, which is the intended default and the
+        reason this is checked against bindings rather than against the
+        issued capability's own scope list.
+        """
+        if not required or not capability_id:
+            return []
+        try:
+            granted = self.scope_repo.granted(agent_id, capability_id)
+        except Exception:
+            # A grant that cannot be read is not a grant.
+            logger.exception(
+                "Could not read bindings for %s:%s", agent_id, capability_id
+            )
+            return list(required)
+        return [s for s in required if not covered_by_any(granted, s)]
+
+    def _resolve_scopes(self, registration: AgentRegistration) -> dict[str, list[str]]:
+        """Decide what this agent actually holds, and record what it asked for.
+
+        RFC 0003. The agent's declared ``required_scopes`` is a **request**;
+        the grant comes from a binding an administrator authored. So this
+        never returns a scope because an agent named it — the two lists are
+        computed independently and only reported together.
+
+        Three outcomes per declared name:
+
+        *recognised* — the catalogue has it. Says nothing about whether this
+        agent may hold it.
+
+        *unrecognised* — recorded as a request, so an operator can see what
+        agents are asking for. Previously this information was discarded.
+
+        *catalogued* — development only: added on first sight, because a local
+        bus should not need a catalogue authored before anything runs.
+        """
+        declared = list(registration.required_scopes or [])
+        for capability in registration.capabilities:
+            declared.extend(capability.required_scopes or [])
+
+        try:
+            catalogue = self.scope_repo.catalogue()
+        except Exception:
+            # A catalogue that cannot be read must not become an open door,
+            # but it also must not break registration: report nothing granted.
+            logger.exception("Could not read the scope catalogue")
+            return {"granted": [], "unrecognised": [], "catalogue": []}
+
+        decision = self._scopes.resolve(declared, catalogue)
+
+        for scope in decision.catalogued:
+            try:
+                self.scope_repo.add_scope(
+                    scope,
+                    description=f"Added on first sight from {registration.agent_id!r}",
+                    created_by="auto",
+                )
+                logger.warning(
+                    "Scope %r was not catalogued and has been added automatically. "
+                    "Set AGBUS_SCOPE_CATALOGUE_ENFORCED=true to refuse instead.",
+                    scope,
+                )
+            except ValueError:
+                pass
+
+        for scope in decision.unrecognised:
+            try:
+                self.scope_repo.record_request(registration.agent_id, scope)
+            except Exception:
+                logger.exception("Could not record the scope request for %r", scope)
+
+        # The grant. Note what is *not* consulted here: anything the agent
+        # declared. An unbound capability holds nothing.
+        granted: set[str] = set()
+        for capability in registration.capabilities:
+            try:
+                granted.update(
+                    self.scope_repo.granted(
+                        registration.agent_id, capability.capability_id
+                    )
+                )
+            except Exception:
+                logger.exception(
+                    "Could not read bindings for %s:%s",
+                    registration.agent_id,
+                    capability.capability_id,
+                )
+
+        if decision.unrecognised:
+            logger.info(
+                "Agent %s asked for uncatalogued scopes: %s",
+                registration.agent_id,
+                ", ".join(decision.unrecognised),
+            )
+
+        return {
+            "granted": sorted(granted),
+            "unrecognised": decision.unrecognised,
+            # Only worth returning when the agent named something outside it;
+            # otherwise it is noise on every successful registration.
+            "catalogue": (
+                self.scope_repo.catalogue() if decision.unrecognised else []
+            ),
+        }
 
     def _admit(
         self, registration: AgentRegistration, peer: Peer
@@ -1693,11 +1972,16 @@ Execution plan steps:
                 len(registration.capabilities),
             )
 
+            scopes = self._resolve_scopes(registration)
+
             await self._send_registered(
                 peer,
                 registration.agent_id,
                 accepted=True,
                 capabilities=[c.capability_id for c in registration.capabilities],
+                granted_scopes=scopes["granted"],
+                unrecognised_scopes=scopes["unrecognised"],
+                catalogue=scopes["catalogue"],
             )
 
         except Exception as e:
@@ -1719,6 +2003,9 @@ Execution plan steps:
         accepted: bool,
         reason: str = "",
         capabilities: list[str] | None = None,
+        granted_scopes: list[str] | None = None,
+        unrecognised_scopes: list[str] | None = None,
+        catalogue: list[str] | None = None,
     ) -> None:
         """Answer a registration attempt.
 
@@ -1735,6 +2022,9 @@ Execution plan steps:
                 agent_id=agent_id,
                 reason=reason,
                 registered_capabilities=capabilities or [],
+                granted_scopes=granted_scopes or [],
+                unrecognised_scopes=unrecognised_scopes or [],
+                catalogue=catalogue or [],
                 coordinator_protocol_version=LIP_PROTOCOL_VERSION,
             ),
             inject_trace_context(),
@@ -2497,10 +2787,33 @@ Execution plan steps:
             # before *every* dispatch, not once at the start. A multi-step
             # flow can outlive the approval that started it, and a plan can
             # name an agent the approval never covered.
+            capability_id = state.get("_capability_id", "")
+            required_scopes = runtime._declared_scopes(agent_id, capability_id)
+
+            # Two questions with different answers when nothing is set, and
+            # conflating them is how a guard ends up enforcing nothing:
+            #
+            #   Does the issued capability constrain this step?
+            #       An empty scope list is *no constraint*, not "all scopes" —
+            #       the capability simply is not expressing one.
+            #
+            #   Has this agent been granted what its capability needs?
+            #       Answered from bindings (RFC 0003), where empty means
+            #       nothing was granted.
+            #
+            # The second is checked below, against the binding rather than
+            # against the capability, precisely so the first can keep its
+            # permissive empty case safely.
             session_for_guard = runtime.sessions.get(session_id)
             capability = getattr(session_for_guard, "capability", None)
             if capability is not None:
-                violation = capability.check(principal=agent_id)
+                # Passing the scopes is the point: previously this was called
+                # with the principal alone, so the loop comparing scopes ran
+                # over an empty list and the capability's own constraint never
+                # applied to anything.
+                violation = capability.check(
+                    principal=agent_id, scopes=required_scopes
+                )
                 if violation is not None:
                     await runtime._emit_event(
                         session_id,
@@ -2514,6 +2827,47 @@ Execution plan steps:
                     raise PermissionError(
                         f"capability check failed for {agent_id}: {violation.reason}"
                     )
+
+            # --- Grant check -----------------------------------------
+            # What the agent said it needs, against what an administrator
+            # actually granted it. This catches an agent dispatched without
+            # the authority its own capability declares — which previously
+            # surfaced inside the agent, one layer from the cause, or not at
+            # all.
+            missing = runtime._ungranted_scopes(agent_id, capability_id, required_scopes)
+            if missing:
+                detail = (
+                    f"{agent_id}:{capability_id} requires "
+                    f"{', '.join(missing)}, which it has not been granted"
+                )
+                if runtime._scope_enforcement:
+                    await runtime._emit_event(
+                        session_id,
+                        "ibac",
+                        f"Execution refused for '{agent_id}': {detail}",
+                        phase="execution",
+                        agent_id=agent_id,
+                        step_index=step_index,
+                        detail={"missing_scopes": missing},
+                    )
+                    raise PermissionError(detail)
+
+                # Loud but not fatal, so a running deployment can see what
+                # enforcement would refuse before it starts refusing.
+                logger.warning(
+                    "%s — allowed because scope enforcement is off. Set "
+                    "AGBUS_SCOPE_ENFORCED=true once bindings are in place.",
+                    detail,
+                )
+                await runtime._emit_event(
+                    session_id,
+                    "ibac",
+                    f"'{agent_id}' is running without {', '.join(missing)}",
+                    phase="execution",
+                    agent_id=agent_id,
+                    step_index=step_index,
+                    detail={"missing_scopes": missing, "enforced": False},
+                )
 
             peer_id = runtime._agent_peers.get(agent_id)
             if not peer_id:
@@ -2540,10 +2894,16 @@ Execution plan steps:
                         "context": state.get("context", {}),
                         "prior_results": state.get("step_results", {}),
                     },
-                    # Carried from the capability rather than left empty, so
-                    # the agent is told what it was actually authorised for.
-                    "authorized_scopes": (
-                        capability.scopes if capability is not None else []
+                    # The last link in the chain. The capability already
+                    # carries the requester's ceiling; under enforcement this
+                    # narrows again to what *this* agent's capability was
+                    # bound to, so require_scope() inside the agent refuses
+                    # anything it was not granted rather than anything the
+                    # requester happened to claim.
+                    "authorized_scopes": runtime._grant_for(
+                        agent_id,
+                        capability_id,
+                        list(getattr(capability, "scopes", []) or []),
                     ),
                     "capability_id": (
                         capability.capability_id if capability is not None else ""

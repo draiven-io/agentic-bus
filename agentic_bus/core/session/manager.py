@@ -62,6 +62,15 @@ class SessionState(BaseModel):
     phase: SessionPhase = SessionPhase.CREATED
     requester_id: str = ""
     requester_oidc_subject: str = ""
+    #: Scopes the requester's own credential carries — the ceiling on this
+    #: interaction. An agent acts on the requester's behalf and cannot
+    #: exceed what the requester was entitled to, which is the delegation
+    #: link agent protocols are usually criticised for not expressing.
+    #:
+    #: Empty means the credential expressed no scope-based limit, not that
+    #: the requester has none. Absence of a claim is not a restriction, so an
+    #: empty list does not narrow anything.
+    requester_authority: list[str] = Field(default_factory=list)
 
     # Intent
     intent: IntentPayload | None = None

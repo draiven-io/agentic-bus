@@ -521,6 +521,100 @@ class SessionOutcome(str, PyEnum):
     CANCELLED = "cancelled"
 
 
+# ---------------------------------------------------------------------------
+# Scope vocabulary (RFC 0003)
+# ---------------------------------------------------------------------------
+
+
+class ScopeCatalogueEntry(Base):
+    """A scope name this coordinator recognises.
+
+    The vocabulary belongs to the deployment, not to whoever wrote an agent.
+    Without this table a scope was a free string nobody validated, so
+    ``carrier:qoute`` registered exactly as successfully as ``carrier:quote``
+    and every rule guarding that capability silently stopped applying.
+    """
+
+    __tablename__ = "scope_catalogue"
+
+    name: str = Column(String(128), primary_key=True)
+    #: What holding this permits, in the deployment's own words. Shown to an
+    #: administrator deciding a binding, and in the refusal that teaches an
+    #: agent author the right name — so it is worth writing properly.
+    description: str = Column(Text, nullable=False, default="")
+    created_at: datetime = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    #: "admin" when authored, "auto" when a development coordinator added it
+    #: on first sight. The distinction matters when reviewing a catalogue that
+    #: grew by accident.
+    created_by: str = Column(String(256), nullable=False, default="admin")
+
+
+class CapabilityScopeBinding(Base):
+    """Which catalogued scopes one agent's capability has been granted.
+
+    The binding is the authority. An agent's declared ``required_scopes`` is a
+    request and never a grant — RFC 0003 — so an unbound capability holds
+    nothing, deliberately. Treating "nobody decided" as "everything permitted"
+    is the fail-open shape this protocol has already had to remove twice.
+    """
+
+    __tablename__ = "capability_scope_bindings"
+    __table_args__ = (
+        UniqueConstraint(
+            "agent_id", "capability_id", "scope", name="uq_capability_scope"
+        ),
+    )
+
+    id: int = Column(Integer, primary_key=True, autoincrement=True)
+    agent_id: str = Column(String(256), nullable=False, index=True)
+    capability_id: str = Column(String(256), nullable=False, index=True)
+    scope: str = Column(String(128), nullable=False)
+    bound_at: datetime = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    bound_by: str = Column(String(256), nullable=False, default="admin")
+
+
+class ScopeRequest(Base):
+    """A scope an agent asked for that the catalogue did not recognise.
+
+    Recorded rather than discarded, because it is an agent telling an operator
+    what it needs. Previously this information had nowhere to go: the name
+    either passed unnoticed or failed without explanation.
+    """
+
+    __tablename__ = "scope_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "agent_id", "capability_id", "scope", name="uq_scope_request"
+        ),
+    )
+
+    id: int = Column(Integer, primary_key=True, autoincrement=True)
+    agent_id: str = Column(String(256), nullable=False, index=True)
+    capability_id: str = Column(String(256), nullable=False, default="")
+    scope: str = Column(String(128), nullable=False)
+    first_requested_at: datetime = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    last_requested_at: datetime = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    #: How often the agent has asked. A capability that keeps requesting the
+    #: same scope is making a case for itself.
+    request_count: int = Column(Integer, nullable=False, default=1)
+
+
 class SessionArchive(Base):
     """Archived snapshot of a dissolved Agentic Bus session.
 

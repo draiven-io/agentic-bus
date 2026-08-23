@@ -33,6 +33,11 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 
 from agentic_bus.agents.base.agent import BaseAgent, ReconnectPolicy, TokenProvider
+from agentic_bus.agents.scope_guard import (
+    ScopeDenied,
+    require_scope,
+    scope_is_held,
+)
 from agentic_bus.agents.requester import (
     IntentClient,
     IntentResult,
@@ -67,6 +72,9 @@ except PackageNotFoundError:  # running from a source checkout
     __version__ = "0.0.0.dev0"
 
 __all__ = [
+    "scope_is_held",
+    "require_scope",
+    "ScopeDenied",
     # Version
     "__version__",
     "LIP_PROTOCOL_VERSION",

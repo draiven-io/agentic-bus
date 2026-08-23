@@ -34,6 +34,7 @@
       "type": "string"
     },
     "required_scopes": {
+      "description": "Scopes this agent believes it needs. A **request**, never a grant: under RFC 0003 the vocabulary belongs to the deployment and a scope is granted by a binding an administrator authored. An agent SHOULD describe its capabilities and leave this empty; the coordinator answers with what was actually granted.",
       "items": {
         "type": "string"
       },
