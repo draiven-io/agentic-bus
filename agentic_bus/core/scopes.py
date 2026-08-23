@@ -119,6 +119,22 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in ("true", "1", "yes", "on")
 
 
+def scope_enforcement_enabled(default: bool = False) -> bool:
+    """Whether a missing grant refuses execution, or only warns.
+
+    Separate from the catalogue posture, and defaulting to it. A deployment
+    that enforces its vocabulary has decided grants mean something — but
+    binding every capability takes longer than deciding to, so the two are
+    separable and this can be turned on afterwards.
+
+    ``AGBUS_SCOPE_ENFORCED`` overrides in either direction.
+    """
+    raw = os.getenv("AGBUS_SCOPE_ENFORCED")
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("true", "1", "yes", "on")
+
+
 @dataclass
 class ScopeDecision:
     """How a registration's declared scopes were resolved."""

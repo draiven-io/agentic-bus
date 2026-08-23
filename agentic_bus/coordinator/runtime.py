@@ -69,7 +69,11 @@ from agentic_bus.core.persistence.database import init_db
 from agentic_bus.core.persistence.models import AgentStatus
 from agentic_bus.core.persistence.repository import AgentRepository
 from agentic_bus.core.persistence.scope_repository import ScopeRepository
-from agentic_bus.core.scopes import ScopePolicy
+from agentic_bus.core.scopes import (
+    ScopePolicy,
+    covered_by_any,
+    scope_enforcement_enabled,
+)
 from agentic_bus.core.persistence.models import PersistentAgent, ManagedAgentStatus
 from agentic_bus.agents.managed_server import ManagedAgentServer
 from agentic_bus.coordinator.admin.service import AdminService
@@ -168,6 +172,14 @@ class CoordinatorRuntime:
         # agent having declared it.
         self.scope_repo = ScopeRepository()
         self._scopes = ScopePolicy()
+        # Whether a missing grant refuses execution or only warns. Defaults to
+        # following the catalogue posture — a deployment enforcing its
+        # vocabulary has already decided grants mean something — but is
+        # separable, because binding every capability takes longer than
+        # deciding to.
+        self._scope_enforcement = scope_enforcement_enabled(
+            default=self._scopes.enforced
+        )
         if self._scopes.auto_catalogues:
             logger.info(
                 "Scope catalogue is permissive — unrecognised scopes are added "
@@ -1598,6 +1610,46 @@ Execution plan steps:
         if fut and not fut.done():
             fut.set_result(envelope)
 
+    def _declared_scopes(self, agent_id: str, capability_id: str) -> list[str]:
+        """What the agent said this capability needs.
+
+        Declared input, and treated as such: an agent that under-declares is
+        not caught by anything downstream of this. What it makes possible is
+        catching an agent that declared honestly and was never granted what it
+        asked for — a misconfiguration that otherwise surfaces inside the
+        agent, one layer away from its cause, or not at all.
+        """
+        registration = self.registry.get(agent_id)
+        if registration is None:
+            return []
+        for capability in registration.capabilities:
+            if capability.capability_id == capability_id:
+                return list(capability.required_scopes or [])
+        return []
+
+    def _ungranted_scopes(
+        self, agent_id: str, capability_id: str, required: list[str]
+    ) -> list[str]:
+        """Of what this capability needs, what it has not been granted.
+
+        Grants come from bindings an administrator authored (RFC 0003), never
+        from the agent having asked — so an unbound capability leaves every
+        required scope in this list, which is the intended default and the
+        reason this is checked against bindings rather than against the
+        issued capability's own scope list.
+        """
+        if not required or not capability_id:
+            return []
+        try:
+            granted = self.scope_repo.granted(agent_id, capability_id)
+        except Exception:
+            # A grant that cannot be read is not a grant.
+            logger.exception(
+                "Could not read bindings for %s:%s", agent_id, capability_id
+            )
+            return list(required)
+        return [s for s in required if not covered_by_any(granted, s)]
+
     def _resolve_scopes(self, registration: AgentRegistration) -> dict[str, list[str]]:
         """Decide what this agent actually holds, and record what it asked for.
 
@@ -2609,10 +2661,33 @@ Execution plan steps:
             # before *every* dispatch, not once at the start. A multi-step
             # flow can outlive the approval that started it, and a plan can
             # name an agent the approval never covered.
+            capability_id = state.get("_capability_id", "")
+            required_scopes = runtime._declared_scopes(agent_id, capability_id)
+
+            # Two questions with different answers when nothing is set, and
+            # conflating them is how a guard ends up enforcing nothing:
+            #
+            #   Does the issued capability constrain this step?
+            #       An empty scope list is *no constraint*, not "all scopes" —
+            #       the capability simply is not expressing one.
+            #
+            #   Has this agent been granted what its capability needs?
+            #       Answered from bindings (RFC 0003), where empty means
+            #       nothing was granted.
+            #
+            # The second is checked below, against the binding rather than
+            # against the capability, precisely so the first can keep its
+            # permissive empty case safely.
             session_for_guard = runtime.sessions.get(session_id)
             capability = getattr(session_for_guard, "capability", None)
             if capability is not None:
-                violation = capability.check(principal=agent_id)
+                # Passing the scopes is the point: previously this was called
+                # with the principal alone, so the loop comparing scopes ran
+                # over an empty list and the capability's own constraint never
+                # applied to anything.
+                violation = capability.check(
+                    principal=agent_id, scopes=required_scopes
+                )
                 if violation is not None:
                     await runtime._emit_event(
                         session_id,
@@ -2626,6 +2701,47 @@ Execution plan steps:
                     raise PermissionError(
                         f"capability check failed for {agent_id}: {violation.reason}"
                     )
+
+            # --- Grant check -----------------------------------------
+            # What the agent said it needs, against what an administrator
+            # actually granted it. This catches an agent dispatched without
+            # the authority its own capability declares — which previously
+            # surfaced inside the agent, one layer from the cause, or not at
+            # all.
+            missing = runtime._ungranted_scopes(agent_id, capability_id, required_scopes)
+            if missing:
+                detail = (
+                    f"{agent_id}:{capability_id} requires "
+                    f"{', '.join(missing)}, which it has not been granted"
+                )
+                if runtime._scope_enforcement:
+                    await runtime._emit_event(
+                        session_id,
+                        "ibac",
+                        f"Execution refused for '{agent_id}': {detail}",
+                        phase="execution",
+                        agent_id=agent_id,
+                        step_index=step_index,
+                        detail={"missing_scopes": missing},
+                    )
+                    raise PermissionError(detail)
+
+                # Loud but not fatal, so a running deployment can see what
+                # enforcement would refuse before it starts refusing.
+                logger.warning(
+                    "%s — allowed because scope enforcement is off. Set "
+                    "AGBUS_SCOPE_ENFORCED=true once bindings are in place.",
+                    detail,
+                )
+                await runtime._emit_event(
+                    session_id,
+                    "ibac",
+                    f"'{agent_id}' is running without {', '.join(missing)}",
+                    phase="execution",
+                    agent_id=agent_id,
+                    step_index=step_index,
+                    detail={"missing_scopes": missing, "enforced": False},
+                )
 
             peer_id = runtime._agent_peers.get(agent_id)
             if not peer_id:
