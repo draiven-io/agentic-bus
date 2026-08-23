@@ -68,6 +68,8 @@ from agentic_bus.core.auth.admin import AdminPolicy
 from agentic_bus.core.persistence.database import init_db
 from agentic_bus.core.persistence.models import AgentStatus
 from agentic_bus.core.persistence.repository import AgentRepository
+from agentic_bus.core.persistence.scope_repository import ScopeRepository
+from agentic_bus.core.scopes import ScopePolicy
 from agentic_bus.core.persistence.models import PersistentAgent, ManagedAgentStatus
 from agentic_bus.agents.managed_server import ManagedAgentServer
 from agentic_bus.coordinator.admin.service import AdminService
@@ -161,6 +163,17 @@ class CoordinatorRuntime:
         # was constructed here and never consulted, so a production deployment
         # with an IdP configured still authenticated nobody.
         self._auth = AgentAuthPolicy()
+        # Scope vocabulary (RFC 0003): the catalogue belongs to this
+        # deployment, and a grant comes from a binding rather than from an
+        # agent having declared it.
+        self.scope_repo = ScopeRepository()
+        self._scopes = ScopePolicy()
+        if self._scopes.auto_catalogues:
+            logger.info(
+                "Scope catalogue is permissive — unrecognised scopes are added "
+                "on first sight. Set AGBUS_SCOPE_CATALOGUE_ENFORCED=true to "
+                "refuse them instead."
+            )
         if self._auth.is_development:
             logger.warning(
                 "No AGBUS_OIDC_ISSUER configured — agent credentials are not "
@@ -1585,6 +1598,94 @@ Execution plan steps:
         if fut and not fut.done():
             fut.set_result(envelope)
 
+    def _resolve_scopes(self, registration: AgentRegistration) -> dict[str, list[str]]:
+        """Decide what this agent actually holds, and record what it asked for.
+
+        RFC 0003. The agent's declared ``required_scopes`` is a **request**;
+        the grant comes from a binding an administrator authored. So this
+        never returns a scope because an agent named it — the two lists are
+        computed independently and only reported together.
+
+        Three outcomes per declared name:
+
+        *recognised* — the catalogue has it. Says nothing about whether this
+        agent may hold it.
+
+        *unrecognised* — recorded as a request, so an operator can see what
+        agents are asking for. Previously this information was discarded.
+
+        *catalogued* — development only: added on first sight, because a local
+        bus should not need a catalogue authored before anything runs.
+        """
+        declared = list(registration.required_scopes or [])
+        for capability in registration.capabilities:
+            declared.extend(capability.required_scopes or [])
+
+        try:
+            catalogue = self.scope_repo.catalogue()
+        except Exception:
+            # A catalogue that cannot be read must not become an open door,
+            # but it also must not break registration: report nothing granted.
+            logger.exception("Could not read the scope catalogue")
+            return {"granted": [], "unrecognised": [], "catalogue": []}
+
+        decision = self._scopes.resolve(declared, catalogue)
+
+        for scope in decision.catalogued:
+            try:
+                self.scope_repo.add_scope(
+                    scope,
+                    description=f"Added on first sight from {registration.agent_id!r}",
+                    created_by="auto",
+                )
+                logger.warning(
+                    "Scope %r was not catalogued and has been added automatically. "
+                    "Set AGBUS_SCOPE_CATALOGUE_ENFORCED=true to refuse instead.",
+                    scope,
+                )
+            except ValueError:
+                pass
+
+        for scope in decision.unrecognised:
+            try:
+                self.scope_repo.record_request(registration.agent_id, scope)
+            except Exception:
+                logger.exception("Could not record the scope request for %r", scope)
+
+        # The grant. Note what is *not* consulted here: anything the agent
+        # declared. An unbound capability holds nothing.
+        granted: set[str] = set()
+        for capability in registration.capabilities:
+            try:
+                granted.update(
+                    self.scope_repo.granted(
+                        registration.agent_id, capability.capability_id
+                    )
+                )
+            except Exception:
+                logger.exception(
+                    "Could not read bindings for %s:%s",
+                    registration.agent_id,
+                    capability.capability_id,
+                )
+
+        if decision.unrecognised:
+            logger.info(
+                "Agent %s asked for uncatalogued scopes: %s",
+                registration.agent_id,
+                ", ".join(decision.unrecognised),
+            )
+
+        return {
+            "granted": sorted(granted),
+            "unrecognised": decision.unrecognised,
+            # Only worth returning when the agent named something outside it;
+            # otherwise it is noise on every successful registration.
+            "catalogue": (
+                self.scope_repo.catalogue() if decision.unrecognised else []
+            ),
+        }
+
     def _admit(
         self, registration: AgentRegistration, peer: Peer
     ) -> tuple[bool, str]:
@@ -1693,11 +1794,16 @@ Execution plan steps:
                 len(registration.capabilities),
             )
 
+            scopes = self._resolve_scopes(registration)
+
             await self._send_registered(
                 peer,
                 registration.agent_id,
                 accepted=True,
                 capabilities=[c.capability_id for c in registration.capabilities],
+                granted_scopes=scopes["granted"],
+                unrecognised_scopes=scopes["unrecognised"],
+                catalogue=scopes["catalogue"],
             )
 
         except Exception as e:
@@ -1719,6 +1825,9 @@ Execution plan steps:
         accepted: bool,
         reason: str = "",
         capabilities: list[str] | None = None,
+        granted_scopes: list[str] | None = None,
+        unrecognised_scopes: list[str] | None = None,
+        catalogue: list[str] | None = None,
     ) -> None:
         """Answer a registration attempt.
 
@@ -1735,6 +1844,9 @@ Execution plan steps:
                 agent_id=agent_id,
                 reason=reason,
                 registered_capabilities=capabilities or [],
+                granted_scopes=granted_scopes or [],
+                unrecognised_scopes=unrecognised_scopes or [],
+                catalogue=catalogue or [],
                 coordinator_protocol_version=LIP_PROTOCOL_VERSION,
             ),
             inject_trace_context(),

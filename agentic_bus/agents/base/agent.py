@@ -160,6 +160,9 @@ class BaseAgent(ABC):
         self._client: WSClient | None = None
         self._peer: Peer | None = None
         self._running = False
+        #: Scopes the coordinator actually granted, populated at registration.
+        #: Empty until then, and not the same as what this agent declared.
+        self.granted_scopes: list[str] = []
 
         self._token_provider = token_provider or self._default_token_provider
         self._reconnect = reconnect or ReconnectPolicy()
@@ -528,11 +531,26 @@ class BaseAgent(ABC):
             self._registration_ack = None
 
         if ack.accepted:
+            self.granted_scopes = list(ack.granted_scopes)
             logger.info(
                 "Agent %s registered %d capabilities",
                 self.agent_id,
                 len(ack.registered_capabilities) or capability_count,
             )
+
+            # RFC 0003: what was asked for and what was granted are different
+            # things, and an agent that assumes otherwise fails later, in a
+            # less obvious place than registration.
+            if ack.unrecognised_scopes:
+                logger.warning(
+                    "Agent %s asked for scopes this coordinator does not "
+                    "recognise: %s. It recognises: %s",
+                    self.agent_id,
+                    ", ".join(ack.unrecognised_scopes),
+                    ", ".join(ack.catalogue) or "(nothing catalogued)",
+                )
+
+            await self.on_registered(ack)
             return
 
         # Refusal is a normal outcome — an unapproved agent, or one offering
@@ -544,6 +562,18 @@ class BaseAgent(ABC):
             ack.reason or "no reason given",
         )
         await self.on_registration_refused(ack)
+
+    async def on_registered(self, ack: RegisteredPayload) -> None:
+        """Hook for a successful registration. Override to react.
+
+        Worth overriding to compare :attr:`granted_scopes` against what this
+        agent declared. They are not the same thing — a scope is granted by a
+        binding an administrator authored, never by an agent having asked
+        (RFC 0003) — and an agent that assumes its request was honoured
+        discovers otherwise at the point of use, which is a worse place to
+        find out.
+        """
+        return None
 
     async def on_registration_refused(self, ack: RegisteredPayload) -> None:
         """Hook for a refused registration. Override to react.
