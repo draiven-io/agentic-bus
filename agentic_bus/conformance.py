@@ -130,6 +130,15 @@ class CheckResult:
     detail: str = ""
     skipped: bool = False
 
+    def __post_init__(self) -> None:
+        # `detail` explains why a check did not pass. Checks that phrase it as
+        # a comparison ("expected X, got Y") would otherwise read as a failure
+        # on a passing result, so it is dropped here rather than at every call
+        # site — and consumers of `to_dict()` see it only where it means
+        # something.
+        if self.passed and not self.skipped:
+            self.detail = ""
+
     @property
     def status(self) -> str:
         if self.skipped:
@@ -228,7 +237,7 @@ def _check_messages(bus: LocalBus, report: ConformanceReport) -> None:
     # LIP-MSG-003 — the message set is closed.
     known = {m.value for m in MessageType}
     unknown = sorted(
-        {e.message_type for e in raw_messages if e.message_type not in known}
+        {str(e.message_type) for e in raw_messages if e.message_type not in known}
     )
     report.record(
         "LIP-MSG-003",
@@ -276,10 +285,12 @@ async def _check_registration(bus: LocalBus, report: ConformanceReport) -> bool:
 
     # LIP-REG-001 — register must come first, before anything else.
     first = bus.messages[0]
+    first_is_register = first.message_type == MessageType.REGISTER
     report.record(
         "LIP-REG-001",
-        first.message_type == MessageType.REGISTER,
-        f"first message was {first.message_type!r}, expected 'register'",
+        first_is_register,
+        f"first message was '{first.message_type}', expected 'register'"
+        if not first_is_register else "",
     )
 
     if not registers:
