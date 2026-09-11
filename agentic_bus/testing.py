@@ -272,6 +272,8 @@ class LocalBus:
         *,
         session_id: str | None = None,
         context: dict[str, Any] | None = None,
+        authorized_scopes: list[str] | None = None,
+        capability_id: str = "",
         timeout: float = 10.0,
     ) -> CompletePayload:
         """Authorise execution and wait for the agent's completion.
@@ -279,6 +281,12 @@ class LocalBus:
         The completion is returned whether the agent succeeded or failed —
         check ``status``, since a failing task is a normal outcome the agent
         is expected to report rather than raise.
+
+        *authorized_scopes* is the grant this execution carries. An agent
+        calling :func:`~agentic_bus.agents.scope_guard.require_scope` is
+        refused anything outside it and completes with ``status="denied"``,
+        so this is how a test exercises what an agent does when it is *not*
+        authorised — which is the path least likely to be covered otherwise.
         """
         session_id = session_id or f"session-{uuid.uuid4().hex[:8]}"
         plan = dict(payload or {})
@@ -292,7 +300,11 @@ class LocalBus:
             )
         )
         await self._send(
-            {"execution_plan": plan, "authorized_scopes": []},
+            {
+                "execution_plan": plan,
+                "authorized_scopes": list(authorized_scopes or []),
+                "capability_id": capability_id,
+            },
             MessageType.EXECUTE,
             session_id,
             agent_id,

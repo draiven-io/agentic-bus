@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://liquidinterfaces.org/schemas/0.2.0/index.json",
+  "$id": "https://liquidinterfaces.org/schemas/0.3.0/index.json",
   "title": "Liquid Interfaces Protocol schema index",
-  "x-lip-version": "0.2.0",
+  "x-lip-version": "0.3.0",
   "envelope": "envelope.json",
   "payloads": {
     "register": "register-payload.json",

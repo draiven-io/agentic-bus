@@ -139,8 +139,16 @@ class DynamicGraphBuilder:
         async def _node(state: AgBusGraphState) -> dict[str, Any]:
             try:
                 # Inject the current step index so the executor (and events)
-                # can distinguish between multiple invocations of the same agent.
-                state_with_step = {**state, "_current_step_index": step_index}
+                # can distinguish between multiple invocations of the same
+                # agent, and the capability being invoked so the execution
+                # guard can ask what *this step* was granted. The same agent
+                # can appear twice in a plan under different capabilities,
+                # holding different scopes.
+                state_with_step = {
+                    **state,
+                    "_current_step_index": step_index,
+                    "_capability_id": step.get("capability_id", ""),
+                }
                 updated = await executor(state_with_step)
                 results = dict(state.get("step_results", {}))
                 results[agent_id] = updated.get("step_results", {}).get(agent_id, "ok")

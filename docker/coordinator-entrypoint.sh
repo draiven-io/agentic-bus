@@ -92,6 +92,13 @@ if [ "${AGBUS_SEED_DEMO:-false}" = "true" ]; then
     python -m agentic_bus.agents.examples.logistics_agent.seed_managed_agents >/dev/null 2>&1 \
         && log "demo agents ready" \
         || log "demo agent seeding failed — the coordinator will start without them"
+
+    # The agents show what the bus can do; the policies show what it will
+    # refuse to do. A demo without the second half is only half the system.
+    log "seeding IBAC demo policies"
+    python -m agentic_bus.agents.examples.logistics_agent.seed_ibac_rules >/dev/null 2>&1 \
+        && log "demo policies ready" \
+        || log "IBAC policy seeding failed — the bus will run without guardrails"
 fi
 
 log "starting coordinator"

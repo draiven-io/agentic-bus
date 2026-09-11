@@ -176,13 +176,25 @@ class CapabilityRegistry:
             if domain in a.supported_data_domains
         ]
 
-    def capability_summaries(self) -> list[dict[str, Any]]:
+    def capability_summaries(
+        self, only: list[str] | None = None
+    ) -> list[dict[str, Any]]:
         """Return a lightweight list of agent+capability descriptions.
 
-        This is the input fed to the LLM-based semantic adjudicator.
+        This is the input fed to the LLM-based semantic adjudicator, which
+        makes *only* the security-relevant parameter rather than a
+        convenience: a capability description is not innocuous — "query ACME
+        Corp's payroll database" names a customer — and once it is in a prompt
+        it has been disclosed, whatever the model then chooses. Filtering the
+        candidates afterwards would be too late.
+
+        ``None`` means no restriction, which is the single-tenant case.
         """
+        allowed = None if only is None else set(only)
         summaries: list[dict[str, Any]] = []
         for agent in self._agents.values():
+            if allowed is not None and agent.agent_id not in allowed:
+                continue
             for cap in agent.capabilities:
                 summaries.append(
                     {

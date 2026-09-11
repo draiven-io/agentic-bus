@@ -342,6 +342,8 @@ export interface CoordinatorSettings {
   oidc_audience: string;
   auto_approve: boolean;
   database_url: string;
+  /** The LIP version this coordinator speaks. */
+  protocol_version: string;
 }
 
 export async function fetchSettings(

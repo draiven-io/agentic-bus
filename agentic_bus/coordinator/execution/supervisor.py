@@ -36,6 +36,7 @@ from agentic_bus.core.protocol.envelope import (
     build_envelope,
 )
 from agentic_bus.core.session.manager import SessionManager, SessionPhase, SessionState
+from agentic_bus.core.scopes import narrow
 from agentic_bus.core.ibac.capability import Capability
 from agentic_bus.core.ibac.engine import (
     IBACEngine,
@@ -198,7 +199,13 @@ class ExecutionSupervisor:
                     if session.intent
                     else ""
                 ),
-                scopes=session.intent.ibac_claims_requested if session.intent else [],
+                # Bounded by the requester's own authority: an agent acts on
+                # their behalf and cannot be granted more than they held.
+                # Claiming a scope is asking; the ceiling decides.
+                scopes=narrow(
+                    session.intent.ibac_claims_requested if session.intent else [],
+                    session.requester_authority,
+                ),
                 constraints=ibac_result.constraints,
             )
             logger.info(

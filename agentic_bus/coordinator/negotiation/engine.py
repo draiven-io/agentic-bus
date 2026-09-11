@@ -120,14 +120,25 @@ class SemanticAdjudicator:
     async def discover(
         self,
         intent: IntentPayload,
+        visible_agents: list[str] | None = None,
     ) -> list[CandidateScore]:
         """Discover and rank agents for the given intent.
 
+        *visible_agents* bounds what the adjudicator is even shown. It is
+        applied before the summaries are built rather than to the candidates
+        afterwards, because a capability description reaching a prompt has
+        already been disclosed.
+
         Returns a list of ``CandidateScore`` objects sorted by combined score.
         """
-        summaries = self._registry.capability_summaries()
+        summaries = self._registry.capability_summaries(only=visible_agents)
         if not summaries:
-            logger.warning("No agents registered – discovery returns empty")
+            if visible_agents is not None:
+                logger.info(
+                    "No agents visible to this requester – discovery returns empty"
+                )
+            else:
+                logger.warning("No agents registered – discovery returns empty")
             return []
 
         result = await self._chain.ainvoke(

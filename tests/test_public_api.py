@@ -45,6 +45,9 @@ PUBLIC_NAMES = [
     "DissolvePayload",
     "EventPayload",
     "LIP_PROTOCOL_VERSION",
+    "require_scope",
+    "scope_is_held",
+    "ScopeDenied",
     "__version__",
 ]
 

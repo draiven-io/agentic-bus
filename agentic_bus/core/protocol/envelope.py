@@ -39,7 +39,7 @@ from pydantic import BaseModel, Field
 #: backwards-compatible additions (a new optional field, a new message type a
 #: peer may ignore), and the major component for anything that would break an
 #: existing implementation.
-LIP_PROTOCOL_VERSION = "0.2.0"
+LIP_PROTOCOL_VERSION = "0.3.0"
 
 #: Version assumed for an envelope that arrives with no ``protocol_version``.
 #:
@@ -172,7 +172,16 @@ class RegisterPayload(BaseModel):
         description="Capability descriptors this agent is offering.",
     )
     semantic_description: str = ""
-    required_scopes: list[str] = Field(default_factory=list)
+    required_scopes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Scopes this agent believes it needs. A **request**, never a "
+            "grant: under RFC 0003 the vocabulary belongs to the deployment "
+            "and a scope is granted by a binding an administrator authored. "
+            "An agent SHOULD describe its capabilities and leave this empty; "
+            "the coordinator answers with what was actually granted."
+        ),
+    )
     supported_data_domains: list[str] = Field(default_factory=list)
     operational_constraints: dict[str, Any] = Field(default_factory=dict)
 
@@ -196,6 +205,31 @@ class RegisteredPayload(BaseModel):
     registered_capabilities: list[str] = Field(
         default_factory=list,
         description="Capability IDs the coordinator actually accepted.",
+    )
+    granted_scopes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Scopes this agent was actually granted, which is not what it "
+            "asked for. A scope is granted by a binding an administrator "
+            "authored (RFC 0003), never by an agent having declared it, so "
+            "an agent MUST NOT assume its request was honoured."
+        ),
+    )
+    unrecognised_scopes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Declared scopes this coordinator's catalogue does not contain. "
+            "Recorded as a request for an administrator rather than granted."
+        ),
+    )
+    catalogue: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Scope names this coordinator recognises, returned when a "
+            "declaration named something outside it. The refusal is how the "
+            "vocabulary propagates: an implementer learns the right name by "
+            "being corrected, instead of from documentation that goes stale."
+        ),
     )
     coordinator_protocol_version: str = Field(
         default="",
@@ -311,10 +345,35 @@ class RejectPayload(BaseModel):
 
 
 class ExecutePayload(BaseModel):
-    """Payload for ``message_type='execute'``."""
+    """Payload for ``message_type='execute'``.
+
+    The coordinator authorising one step, and telling the agent what that
+    step was authorised for.
+    """
 
     execution_plan: dict[str, Any] = Field(default_factory=dict)
-    authorized_scopes: list[str] = Field(default_factory=list)
+    authorized_scopes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "What this step may do, after every narrowing: the requester's "
+            "own authority, what the interaction claimed, and what this "
+            "agent's capability was bound to. An agent MUST NOT assume it "
+            "holds anything not listed here."
+        ),
+    )
+    capability_id: str = Field(
+        default="",
+        description=(
+            "Which of the agent's capabilities is being executed. Echoed back "
+            "on the completion so the coordinator can check the artifact "
+            "against the offer that promised its shape — one agent can hold "
+            "several accepted capabilities in a session."
+        ),
+    )
+    memory_snapshot: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Session memory this agent is permitted to read.",
+    )
 
 
 class CompletePayload(BaseModel):

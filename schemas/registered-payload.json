@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://liquidinterfaces.org/schemas/0.2.0/registered-payload.json",
-  "x-lip-version": "0.2.0",
+  "$id": "https://liquidinterfaces.org/schemas/0.3.0/registered-payload.json",
+  "x-lip-version": "0.3.0",
   "description": "Payload for ``message_type='registered'``.\n\nThe coordinator's answer to ``register``. Registration can legitimately\nbe refused \u2014 an agent may not be approved, or may declare a capability\nit is not permitted to offer \u2014 and without this answer the agent has no\nway to tell refusal from success, so it would keep serving nothing while\nbelieving it was live.",
   "properties": {
     "accepted": {
@@ -25,6 +25,30 @@
         "type": "string"
       },
       "title": "Registered Capabilities",
+      "type": "array"
+    },
+    "granted_scopes": {
+      "description": "Scopes this agent was actually granted, which is not what it asked for. A scope is granted by a binding an administrator authored (RFC 0003), never by an agent having declared it, so an agent MUST NOT assume its request was honoured.",
+      "items": {
+        "type": "string"
+      },
+      "title": "Granted Scopes",
+      "type": "array"
+    },
+    "unrecognised_scopes": {
+      "description": "Declared scopes this coordinator's catalogue does not contain. Recorded as a request for an administrator rather than granted.",
+      "items": {
+        "type": "string"
+      },
+      "title": "Unrecognised Scopes",
+      "type": "array"
+    },
+    "catalogue": {
+      "description": "Scope names this coordinator recognises, returned when a declaration named something outside it. The refusal is how the vocabulary propagates: an implementer learns the right name by being corrected, instead of from documentation that goes stale.",
+      "items": {
+        "type": "string"
+      },
+      "title": "Catalogue",
       "type": "array"
     },
     "coordinator_protocol_version": {

@@ -12,9 +12,11 @@
 </p>
 
 <p align="center">
+  <a href="#-see-it-work">See It Work</a> •
   <a href="#-quick-start">Quick Start</a> •
   <a href="#-architecture">Architecture</a> •
   <a href="#-key-concepts">Key Concepts</a> •
+  <a href="#-embedding-the-coordinator">Embedding</a> •
   <a href="#-admin-dashboard-ui">Dashboard UI</a> •
   <a href="#-admin-rest-api">REST API</a> •
   <a href="#-cli-reference">CLI Reference</a> •
@@ -41,6 +43,44 @@
 Instead of pre-wired API contracts, a requesting agent simply states its intent in natural language — e.g., *"deliver this container within 200 km of the closed port, optimizing for cost and time"* — and the runtime **discovers** capable agents, **negotiates** terms, **composes** an execution graph, and **dissolves** everything once the task is complete, leaving zero technical debt.
 
 > 📄 Read the full paper: [**lip.md**](lip.md) — *"Liquid Interfaces: A Dynamic Ontology for the Interoperability of Autonomous Systems"*
+
+---
+
+## 👀 See it work
+
+A single sentence — *"a storm has closed the Port of Rotterdam, reroute our
+refrigerated pharmaceuticals from Hamburg to Madrid within 5 days"* — decomposed,
+negotiated across four agents that were never wired to each other, executed,
+and dissolved.
+
+**The plan, waiting for a human.** The coordinator has admitted the intent,
+broken it into sub-intents, discovered which agents can serve them, collected
+their offers and composed an execution graph — and stops there, because
+committing to a carrier creates a contractual obligation.
+
+<img src="https://raw.githubusercontent.com/draiven-io/agentic-bus/main/docs/images/01-negotiation-plan.png" alt="An execution plan awaiting approval, with its rationale and the agents that offered" width="100%" />
+
+**Approved and carried out.** Every step green, agent quality scored, and the
+session dissolved on completion — Invariant II: nothing outlives the
+interaction that created it.
+
+<img src="https://raw.githubusercontent.com/draiven-io/agentic-bus/main/docs/images/02-negotiation-complete.png" alt="The completed execution graph, timeline and synthesised result" width="100%" />
+
+**Authorisation, at five points in the lifecycle.** IBAC judges the *purpose*
+of a request, not the endpoint it targets — so the same intent is evaluated
+again at admission, offer eligibility, negotiation, execution and artifact
+emission, each time against what is known by then.
+
+<img src="https://raw.githubusercontent.com/draiven-io/agentic-bus/main/docs/images/06-ibac.png" alt="IBAC policies across five evaluation points" width="100%" />
+
+**And the run afterwards.** Which agents took part, what they cost, what was
+produced, and every decision that allowed it.
+
+<img src="https://raw.githubusercontent.com/draiven-io/agentic-bus/main/docs/images/04-dashboard.png" alt="The coordinator dashboard" width="100%" />
+
+<sub>Reproduce these against your own bus with
+<code>node ui/scripts/capture-screenshots.mjs http://localhost:3000</code> — it drives a
+real intent through a running coordinator rather than mocking one.</sub>
 
 ---
 
@@ -255,6 +295,22 @@ class WeatherAgent(BaseAgent):
 WeatherAgent(agent_id="weather-01").run_forever()
 ```
 
+Work that a permission is meant to govern says so where the work happens:
+
+```python
+from agentic_bus import require_scope
+
+async def execute_task(self, payload, context):
+    require_scope("payments:refund")      # raises if this execution was not granted it
+    return {"refunded": payload["order_id"]}
+```
+
+The grant comes from the coordinator, not from the agent asking — an agent
+declares what it *does* and an administrator decides what that requires
+(RFC 0003). `scope_is_held()` is the non-raising form, for narrowing an answer
+rather than refusing one. Both record the attempt, so a coordinator can tell
+afterwards what an execution reached for.
+
 It connects to a coordinator (`AGBUS_COORDINATOR_URI`, default
 `ws://localhost:8765`), registers its capabilities, and from then on
 participates in discovery, negotiation, IBAC governance and execution. You
@@ -432,6 +488,39 @@ Run `agbus config show` to display the resolved runtime configuration and the
 active LLM provider.
 
 ---
+
+## 🧩 Embedding the coordinator
+
+Agentic Bus runs as a service by default: agents connect over WebSocket from
+wherever they live. But the coordination logic never touches the wire — it asks
+a transport for a peer and sends an envelope — so it can also run as a library
+inside an application you already have.
+
+```python
+from agentic_bus.coordinator.runtime import CoordinatorRuntime
+from agentic_bus.core.transport.local import LocalTransport
+
+transport = LocalTransport()
+runtime = CoordinatorRuntime(transport=transport)
+await runtime.start()          # no port bound, no socket opened
+
+await my_agent.attach(transport)   # instead of dialling a URI
+```
+
+No port, no second service to operate, no loopback serialisation between
+co-located agents. Everything else is unchanged: agents still register per
+connection, IBAC still evaluates, sessions still dissolve.
+
+Envelopes are deep-copied across the in-process boundary. That costs
+something, and it is deliberate — a socket hands each side its own object, and
+a local transport that skipped the copy would let code pass here and misbehave
+over a network. The point of the abstraction is that both paths mean the same
+thing.
+
+Two things do not carry over. A `LocalTransport` has no address, so
+`agent_endpoint` is `None` and the coordinator cannot spawn managed agents or
+MCP bridges — there is nowhere for them to dial, and it says so rather than
+guessing. Attach your own agents instead.
 
 ## 🖥️ Admin Dashboard (UI)
 

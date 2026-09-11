@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import {
   LayoutDashboard,
   Bot,
@@ -15,6 +16,7 @@ import {
   History,
 } from "lucide-react";
 
+import { fetchSettings } from "@/lib/api";
 import {
   Sidebar,
   SidebarContent,
@@ -53,6 +55,27 @@ const secondaryItems = [
 
 export function AppSidebar() {
   const pathname = usePathname();
+
+  // Read the version from the coordinator rather than hardcoding it. A
+  // pinned string in the footer goes stale silently, and the protocol
+  // version is the one a reader actually needs: it says what this bus
+  // can talk to.
+  const [protocolVersion, setProtocolVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchSettings()
+      .then((settings) => {
+        if (!cancelled) setProtocolVersion(settings.protocol_version);
+      })
+      .catch(() => {
+        // The footer is decoration; a coordinator that is down is already
+        // obvious from every other panel on the page.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <Sidebar collapsible="icon">
@@ -179,7 +202,7 @@ export function AppSidebar() {
               </div>
               <div className="grid flex-1 text-left text-sm leading-tight">
                 <span className="truncate text-xs text-muted-foreground">
-                  v0.1.0-dev
+                  {protocolVersion ? `LIP ${protocolVersion}` : "connecting…"}
                 </span>
               </div>
             </SidebarMenuButton>

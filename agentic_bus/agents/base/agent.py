@@ -39,7 +39,14 @@ from agentic_bus.core.protocol.envelope import (
     RegisteredPayload,
     build_envelope,
 )
-from agentic_bus.core.transport.ws import WSClient, WSPeer
+from agentic_bus.agents.scope_guard import (
+    ScopeDenied,
+    ScopeGrant,
+    reset_grant,
+    set_grant,
+)
+from agentic_bus.core.transport.base import Peer
+from agentic_bus.core.transport.ws import WSClient
 from agentic_bus.core.registry.capability_registry import AgentCapability, AgentRegistration
 from agentic_bus.core.telemetry.tracing import agbus_span, inject_trace_context
 
@@ -157,8 +164,11 @@ class BaseAgent(ABC):
         self.version = version
         self.semantic_description = semantic_description
         self._client: WSClient | None = None
-        self._peer: WSPeer | None = None
+        self._peer: Peer | None = None
         self._running = False
+        #: Scopes the coordinator actually granted, populated at registration.
+        #: Empty until then, and not the same as what this agent declared.
+        self.granted_scopes: list[str] = []
 
         self._token_provider = token_provider or self._default_token_provider
         self._reconnect = reconnect or ReconnectPolicy()
@@ -337,6 +347,48 @@ class BaseAgent(ABC):
         # connected but invisible to discovery.
         await self._register()
 
+    async def attach(
+        self,
+        transport: Any,
+        peer_id: str | None = None,
+        identity: Any = None,
+    ) -> None:
+        """Join an in-process coordinator, instead of dialling one.
+
+        The same lifecycle as :meth:`start` — register, serve, honour
+        dissolution — with no socket in the middle. Use it when the
+        coordinator runs inside this process:
+
+        ::
+
+            transport = LocalTransport()
+            runtime = CoordinatorRuntime(transport=transport)
+            await runtime.start()
+            await my_agent.attach(transport)
+
+        Reconnection does not apply: there is no connection to lose. An agent
+        attached this way lives exactly as long as the process, so
+        :meth:`run_forever` is neither needed nor useful here.
+
+        There is no handshake in-process, so *identity* is asserted by the
+        embedding application rather than proved to it — which is sound only
+        because the application already constructed this agent. Leave it
+        ``None`` and the agent is unauthenticated, and the coordinator will
+        refuse to register it wherever a credential is required.
+        """
+        self._peer = await transport.connect(
+            peer_id or f"{self.agent_id}-local",
+            on_receive=lambda envelope, _peer: self._on_message(envelope, _peer),
+            identity=identity,
+        )
+        self._running = True
+        logger.info("Agent %s attached in-process", self.agent_id)
+
+        # Registration is per connection here too. An attached agent that
+        # skipped it would be reachable and undiscoverable, exactly as over a
+        # socket.
+        await self._register()
+
     def _default_token_provider(self) -> str:
         """Unsigned development identity, accepted only by ``DevVerifier``."""
         return json.dumps({"sub": self.agent_id, "iss": "dev"})
@@ -355,6 +407,12 @@ class BaseAgent(ABC):
         await self._cancel_session_tasks()
         if self._client:
             await self._client.disconnect()
+        elif self._peer is not None:
+            # Attached in-process: there is no client to disconnect, but the
+            # coordinator still has to learn the peer is gone or it will keep
+            # routing work to it.
+            await self._peer.close()
+            self._peer = None
         logger.info("Agent %s disconnected", self.agent_id)
 
     async def run_forever(self) -> None:
@@ -479,11 +537,26 @@ class BaseAgent(ABC):
             self._registration_ack = None
 
         if ack.accepted:
+            self.granted_scopes = list(ack.granted_scopes)
             logger.info(
                 "Agent %s registered %d capabilities",
                 self.agent_id,
                 len(ack.registered_capabilities) or capability_count,
             )
+
+            # RFC 0003: what was asked for and what was granted are different
+            # things, and an agent that assumes otherwise fails later, in a
+            # less obvious place than registration.
+            if ack.unrecognised_scopes:
+                logger.warning(
+                    "Agent %s asked for scopes this coordinator does not "
+                    "recognise: %s. It recognises: %s",
+                    self.agent_id,
+                    ", ".join(ack.unrecognised_scopes),
+                    ", ".join(ack.catalogue) or "(nothing catalogued)",
+                )
+
+            await self.on_registered(ack)
             return
 
         # Refusal is a normal outcome — an unapproved agent, or one offering
@@ -495,6 +568,18 @@ class BaseAgent(ABC):
             ack.reason or "no reason given",
         )
         await self.on_registration_refused(ack)
+
+    async def on_registered(self, ack: RegisteredPayload) -> None:
+        """Hook for a successful registration. Override to react.
+
+        Worth overriding to compare :attr:`granted_scopes` against what this
+        agent declared. They are not the same thing — a scope is granted by a
+        binding an administrator authored, never by an agent having asked
+        (RFC 0003) — and an agent that assumes its request was honoured
+        discovers otherwise at the point of use, which is a worse place to
+        find out.
+        """
+        return None
 
     async def on_registration_refused(self, ack: RegisteredPayload) -> None:
         """Hook for a refused registration. Override to react.
@@ -509,7 +594,7 @@ class BaseAgent(ABC):
     # Message handling
     # -----------------------------------------------------------------------
 
-    async def _on_message(self, envelope: AgBusEnvelope, peer: WSPeer) -> None:
+    async def _on_message(self, envelope: AgBusEnvelope, peer: Peer) -> None:
         """Route messages from the coordinator.
 
         Work that can take arbitrarily long — offer generation and task
@@ -648,6 +733,16 @@ class BaseAgent(ABC):
         execution_plan = payload.get("execution_plan", {})
         context = execution_plan.get("context", {})
 
+        # The grant for this execution, as the coordinator sent it. The agent
+        # does not choose its contents, and the invocation path — not the
+        # model — decides whether a call is checked against it.
+        grant = ScopeGrant(
+            session_id=envelope.session_id,
+            capability_id=payload.get("capability_id", ""),
+            granted=list(payload.get("authorized_scopes", []) or []),
+        )
+        token = set_grant(grant)
+
         await self.send_event(
             envelope.session_id,
             f"Agent '{self.agent_id}' starting task execution…",
@@ -663,6 +758,19 @@ class BaseAgent(ABC):
                 category="agent",
                 detail={"status": "success"},
             )
+        except ScopeDenied as exc:
+            # Distinct from a failure: the work was refused rather than
+            # attempted and broken, and the coordinator reconciles the
+            # attempt against what it granted.
+            logger.error("Agent %s was refused a scope: %s", self.agent_id, exc)
+            result = {"error": str(exc), "scope": exc.scope}
+            status = "denied"
+            await self.send_event(
+                envelope.session_id,
+                f"Agent '{self.agent_id}' was refused {exc.scope}",
+                category="ibac",
+                detail={"scope": exc.scope, "granted": exc.granted},
+            )
         except Exception as exc:
             logger.exception("Agent %s execution failed", self.agent_id)
             result = {"error": str(exc)}
@@ -673,6 +781,8 @@ class BaseAgent(ABC):
                 category="error",
                 detail={"error": str(exc)},
             )
+        finally:
+            reset_grant(token)
 
         complete_env = build_envelope(
             MessageType.COMPLETE,
@@ -681,7 +791,20 @@ class BaseAgent(ABC):
             CompletePayload(
                 status=status,
                 artifacts=[result],
-                metadata={"agent_id": self.agent_id},
+                metadata={
+                    "agent_id": self.agent_id,
+                    # Echoed so the coordinator can find the offer that
+                    # promised this artifact's shape. An agent can hold
+                    # several accepted capabilities in one session, and
+                    # matching on agent alone would check against the wrong
+                    # promise.
+                    "capability_id": grant.capability_id,
+                    # Recorded by the invocation path, not volunteered by the
+                    # model, so the coordinator can reconcile it against what
+                    # it granted rather than take the agent's word for it.
+                    "used_scopes": grant.used,
+                    "denied_scopes": grant.denied,
+                },
             ),
             inject_trace_context(),
         )

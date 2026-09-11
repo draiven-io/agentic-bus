@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any
 
 from agentic_bus.core.protocol.envelope import (
@@ -39,7 +40,8 @@ from agentic_bus.core.protocol.envelope import (
     LIP_PROTOCOL_VERSION,
     build_envelope,
 )
-from agentic_bus.core.transport.ws import WSServer, WSPeer
+from agentic_bus.core.transport.base import Peer, Transport
+from agentic_bus.core.transport.ws import WSServer
 from agentic_bus.core.session.manager import (
     SessionManager,
     SessionPhase,
@@ -62,10 +64,20 @@ from agentic_bus.core.ibac.engine import (
     IBACEvaluationPoint,
 )
 from agentic_bus.core.telemetry.tracing import agbus_span, inject_trace_context, init_telemetry
-from agentic_bus.core.auth.oidc import OIDCIdentity, DevVerifier
+from agentic_bus.core.auth.agent_auth import AgentAuthPolicy
 from agentic_bus.core.auth.admin import AdminPolicy
 from agentic_bus.core.persistence.database import init_db
+from agentic_bus.core.persistence.models import AgentStatus
 from agentic_bus.core.persistence.repository import AgentRepository
+from agentic_bus.core.persistence.scope_repository import ScopeRepository
+from agentic_bus.core.artifacts import validate_artifacts
+from agentic_bus.core.tenancy import TenantResolver, TenantScope
+from agentic_bus.core.scopes import (
+    ScopePolicy,
+    covered_by_any,
+    intersect,
+    scope_enforcement_enabled,
+)
 from agentic_bus.core.persistence.models import PersistentAgent, ManagedAgentStatus
 from agentic_bus.agents.managed_server import ManagedAgentServer
 from agentic_bus.coordinator.admin.service import AdminService
@@ -83,6 +95,13 @@ from agentic_bus.core.persistence.session_archive_repository import SessionArchi
 from agentic_bus.core.persistence.mcp_server_repository import MCPServerRepository
 
 logger = logging.getLogger(__name__)
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("true", "1", "yes", "on")
 
 COORDINATOR_SENDER = SenderInfo(kind=SenderKind.COORDINATOR, id="coordinator")
 
@@ -102,7 +121,21 @@ class CoordinatorRuntime:
         self,
         host: str = "0.0.0.0",
         port: int = 8765,
+        transport: Transport | None = None,
     ):
+        """
+        Parameters
+        ----------
+        host, port:
+            Bind address for the default WebSocket transport. Ignored when
+            *transport* is supplied.
+        transport:
+            Where peers arrive. Defaults to a WebSocket server, which is what
+            you want when agents are separate processes. Pass a
+            :class:`~agentic_bus.core.transport.local.LocalTransport` to run
+            the coordinator as a library inside a host application, with no
+            socket and no port.
+        """
         # Core subsystems
         self.sessions = SessionManager()
         self.registry = CapabilityRegistry()
@@ -121,6 +154,13 @@ class CoordinatorRuntime:
 
         self.user_repo = UserRepository()
         self.tenant_repo = TenantRepository()
+        # Tenancy on the coordination path. The data model has had tenants
+        # since the beginning and nothing here ever consulted them, so the
+        # registry was global and discovery described every customer's agents
+        # to a model.
+        self.tenants = TenantResolver(
+            user_repo=self.user_repo, tenant_repo=self.tenant_repo
+        )
 
         # LLM-dependent coordinator subsystems are lazily initialised.
         # The application CAN start without an LLM configured – the admin
@@ -140,19 +180,66 @@ class CoordinatorRuntime:
         # agents that run in-process).  External agents are validated via WS.
         self._validator_agents: dict[str, Any] = {}
 
-        # Auth (dev mode by default – swap for OIDCVerifier in production)
-        self._verifier = DevVerifier()
-
-        # Transport
-        self._server = WSServer(
-            host=host,
-            port=port,
-            on_message=self._on_message,
-            on_disconnect=self.handle_disconnect,
+        # Admission control. The policy picks its own verifier: OIDC when an
+        # issuer is configured, permissive otherwise. Previously a DevVerifier
+        # was constructed here and never consulted, so a production deployment
+        # with an IdP configured still authenticated nobody.
+        self._auth = AgentAuthPolicy()
+        # Scope vocabulary (RFC 0003): the catalogue belongs to this
+        # deployment, and a grant comes from a binding rather than from an
+        # agent having declared it.
+        self.scope_repo = ScopeRepository()
+        self._scopes = ScopePolicy()
+        # Whether a missing grant refuses execution or only warns. Defaults to
+        # following the catalogue posture — a deployment enforcing its
+        # vocabulary has already decided grants mean something — but is
+        # separable, because binding every capability takes longer than
+        # deciding to.
+        self._scope_enforcement = scope_enforcement_enabled(
+            default=self._scopes.enforced
         )
+        # Whether an artifact that breaks its promise fails the step, or is
+        # only recorded. Recording is always on: the finding is most of the
+        # value, and failing a step that a deployment has been living with
+        # is the part that needs a decision.
+        self._artifact_validation_enforced = _env_flag(
+            "AGBUS_ARTIFACT_VALIDATION_ENFORCED", False
+        )
+        if self._scopes.auto_catalogues:
+            logger.info(
+                "Scope catalogue is permissive — unrecognised scopes are added "
+                "on first sight. Set AGBUS_SCOPE_CATALOGUE_ENFORCED=true to "
+                "refuse them instead."
+            )
+        if self._auth.is_development:
+            logger.warning(
+                "No AGBUS_OIDC_ISSUER configured — agent credentials are not "
+                "cryptographically verified. Set one before exposing this bus."
+            )
 
-        # Peer tracking: peer_id -> OIDCIdentity
-        self._identities: dict[str, OIDCIdentity] = {}
+        # Transport. The coordination logic below never touches the wire —
+        # it asks for a peer and sends an envelope — so the choice is the
+        # caller's.
+        if transport is not None:
+            self._server: Transport = transport
+            for attr, handler in (
+                ("_on_message", self._on_message),
+                ("_on_disconnect", self.handle_disconnect),
+            ):
+                # Both shipped transports take their handlers at construction,
+                # but an injected one is built before the runtime exists, so
+                # the wiring happens here instead.
+                if getattr(transport, attr, None) is None:
+                    setattr(transport, attr, handler)
+        else:
+            self._server = WSServer(
+                host=host,
+                port=port,
+                on_message=self._on_message,
+                on_disconnect=self.handle_disconnect,
+                auth_handler=self._auth.authenticate,
+            )
+
         # Agent peer mapping: agent_id -> peer_id
         self._agent_peers: dict[str, str] = {}
         # Session -> peer mapping for requesters
@@ -207,7 +294,7 @@ class CoordinatorRuntime:
             actor="coordinator",
             target="coordinator",
             target_type="system",
-            details=f"Coordinator runtime started on {self._server.host}:{self._server.port}",
+            details=f"Coordinator runtime started on {self._server.description}",
             severity="info",
         )
         logger.info("Coordinator runtime started")
@@ -227,7 +314,7 @@ class CoordinatorRuntime:
     # Message router
     # -----------------------------------------------------------------------
 
-    async def _on_message(self, envelope: AgBusEnvelope, peer: WSPeer) -> None:
+    async def _on_message(self, envelope: AgBusEnvelope, peer: Peer) -> None:
         """Route incoming Agentic Bus messages to the appropriate handler."""
         with agbus_span(
             f"agbus.message.{envelope.message_type}",
@@ -261,7 +348,7 @@ class CoordinatorRuntime:
         *,
         evaluation_point: IBACEvaluationPoint,
         envelope: AgBusEnvelope | None = None,
-        peer: WSPeer | None = None,
+        peer: Peer | None = None,
         session: Any | None = None,
         declared: dict[str, Any] | None = None,
     ) -> IntentManifest:
@@ -272,7 +359,7 @@ class CoordinatorRuntime:
         is *derived*. The distinction decides which rules can carry a
         guarantee, so it is made here rather than trusted to each call site.
         """
-        identity = self._identities.get(peer.peer_id) if peer is not None else None
+        identity = getattr(peer, "identity", None) if peer is not None else None
 
         # Resolved from the connection the message arrived on — not from the
         # envelope's sender field, which the sender writes.
@@ -294,6 +381,15 @@ class CoordinatorRuntime:
                 authenticated_subject=identity.subject if identity else "",
                 authenticated_agent_id=authenticated_agent_id,
                 identity_verified=identity is not None,
+                # Derived from the session, which derived it from the
+                # authenticated subject. Populating this is what makes the
+                # grounded boundary rules that read it — restricted material
+                # may not leave the tenant — able to fire at all.
+                tenant_id=TenantScope(
+                    tenant_ids=list(getattr(session, "tenant_ids", []) or [])
+                ).single_tenant_id
+                if session
+                else "",
             ),
         )
 
@@ -345,7 +441,7 @@ class CoordinatorRuntime:
         except Exception:
             logger.debug("Failed to send event to requester for session %s", session_id)
 
-    async def _handle_agent_event(self, envelope: AgBusEnvelope, peer: WSPeer) -> None:
+    async def _handle_agent_event(self, envelope: AgBusEnvelope, peer: Peer) -> None:
         """Forward an event from an agent to the session's requester.
 
         Agents emit ``EVENT`` messages during execution to report progress,
@@ -368,17 +464,33 @@ class CoordinatorRuntime:
     # Intent handling
     # -----------------------------------------------------------------------
 
-    async def _handle_intent(self, envelope: AgBusEnvelope, peer: WSPeer) -> None:
+    async def _handle_intent(self, envelope: AgBusEnvelope, peer: Peer) -> None:
         """Handle an incoming intent – the start of a Agentic Bus lifecycle."""
         with agbus_span("agbus.intent.admission"):
             intent = IntentPayload.model_validate(envelope.payload)
 
             # 1. Create session
-            identity = self._identities.get(peer.peer_id)
+            identity = getattr(peer, "identity", None)
             session = self.sessions.create(
                 requester_id=envelope.sender.id,
                 oidc_subject=identity.subject if identity else "",
             )
+            # The ceiling for everything this interaction authorises. Read
+            # from the verified credential on the connection, so it is a
+            # derived fact — the requester cannot widen it by asking.
+            session.requester_authority = list(getattr(identity, "scopes", []) or [])
+
+            # Derived from the authenticated subject, never read from the
+            # envelope: a tenant a caller can write is a tenant a caller can
+            # choose.
+            scope = self.tenants.scope_for(session.requester_oidc_subject)
+            session.tenant_ids = list(scope.tenant_ids)
+            if session.requester_authority:
+                logger.info(
+                    "Session %s is bounded by the requester's authority: %s",
+                    session.session_id,
+                    ", ".join(session.requester_authority),
+                )
             session.intent = intent
             session.audit_log.append(envelope)
             self._session_requester_peers[session.session_id] = peer.peer_id
@@ -498,7 +610,9 @@ class CoordinatorRuntime:
                 progress=0.35,
             )
 
-            candidates = await self.adjudicator.discover(intent)
+            candidates = await self.adjudicator.discover(
+                intent, visible_agents=self._visible_agents(session)
+            )
             session.discovered_agents = [c.agent_id for c in candidates]
 
             if not candidates:
@@ -572,7 +686,7 @@ class CoordinatorRuntime:
             )
             await peer.send_envelope(intent_env)
 
-    async def _handle_offer(self, envelope: AgBusEnvelope, peer: WSPeer) -> None:
+    async def _handle_offer(self, envelope: AgBusEnvelope, peer: Peer) -> None:
         """Handle an offer from a provider agent."""
         session = self.sessions.get(envelope.session_id)
         if session is None:
@@ -1431,7 +1545,9 @@ Execution plan steps:
         )
 
         # Re-run discovery with enriched context
-        candidates = await self.adjudicator.discover(session.intent)
+        candidates = await self.adjudicator.discover(
+            session.intent, visible_agents=self._visible_agents(session)
+        )
         session.discovered_agents = [c.agent_id for c in candidates]
 
         if not candidates:
@@ -1514,11 +1630,11 @@ Execution plan steps:
     # Completion & dissolution
     # -----------------------------------------------------------------------
 
-    async def _handle_register(self, envelope: AgBusEnvelope, peer: WSPeer) -> None:
+    async def _handle_register(self, envelope: AgBusEnvelope, peer: Peer) -> None:
         """Handle the ``register`` performative (LIP 0.2.0)."""
         await self._handle_agent_registration(envelope, peer)
 
-    async def _handle_complete(self, envelope: AgBusEnvelope, peer: WSPeer) -> None:
+    async def _handle_complete(self, envelope: AgBusEnvelope, peer: Peer) -> None:
         """Handle a complete message from an agent.
 
         Deprecated special case: before LIP 0.2.0 agents registered by
@@ -1542,13 +1658,442 @@ Execution plan steps:
             session.audit_log.append(envelope)
             session.execution_results.append(envelope.payload)
 
+        await self._reconcile_scope_usage(envelope)
+        await self._validate_artifacts(envelope, session)
+
         # Resolve any pending execution future for this agent+session
         key = (envelope.session_id, envelope.sender.id)
         fut = self._pending_completions.pop(key, None)
         if fut and not fut.done():
             fut.set_result(envelope)
 
-    async def _handle_agent_registration(self, envelope: AgBusEnvelope, peer: WSPeer) -> None:
+    async def _validate_artifacts(
+        self, envelope: AgBusEnvelope, session: Any | None
+    ) -> None:
+        """Hold an agent to the shape its offer promised (RFC 0002).
+
+        Every offer carries an ``output_schema`` and nothing has ever checked
+        one, so an agent could promise ``{"routes": [...]}``, deliver
+        ``{"result": "ok"}``, and the interaction would proceed — until the
+        next step consumed the artifact and assumed a field that was not
+        there. Checking here turns a mysterious downstream failure into a
+        named agent and a named promise.
+
+        An absent schema is not a failure. The specification is explicit about
+        that, and an agent that cannot describe its output is still useful.
+        """
+        if session is None:
+            return
+
+        artifacts = envelope.payload.get("artifacts") or []
+        if not artifacts:
+            return
+
+        agent_id = envelope.sender.id
+        metadata = envelope.payload.get("metadata") or {}
+        capability_id = metadata.get("capability_id", "")
+
+        schema = self._promised_schema(session, agent_id, capability_id)
+        report = validate_artifacts(
+            artifacts,
+            schema,
+            agent_id=agent_id,
+            capability_id=capability_id,
+        )
+        if report.unchecked or report.ok:
+            return
+
+        # Recorded against the offering agent, so an agent whose artifacts
+        # persistently diverge from what it promises is visible across
+        # sessions rather than only within one.
+        self.audit_log.log(
+            action="artifact.schema_violation",
+            actor=agent_id,
+            target=envelope.session_id,
+            target_type="session",
+            details=report.summary(),
+            severity="warning",
+        )
+        logger.warning(
+            "Agent %s produced an artifact that does not match its offer: %s",
+            agent_id,
+            report.summary(),
+        )
+        await self._emit_event(
+            envelope.session_id,
+            "validation",
+            f"Artifact from '{agent_id}' does not match its declared schema",
+            phase="execution",
+            agent_id=agent_id,
+            detail={
+                "capability_id": capability_id,
+                "violations": [str(v) for v in report.violations],
+            },
+        )
+
+        if self._artifact_validation_enforced:
+            # The next step would otherwise consume something whose shape
+            # nobody can rely on.
+            envelope.payload["status"] = "error"
+            envelope.payload.setdefault("metadata", {})["schema_violation"] = (
+                report.summary()
+            )
+
+    @staticmethod
+    def _promised_schema(
+        session: Any, agent_id: str, capability_id: str
+    ) -> dict[str, Any] | None:
+        """The output_schema from the accepted offer behind this completion.
+
+        Matched on agent *and* capability: one agent can hold several accepted
+        capabilities in a session, and checking against the wrong promise
+        would produce a violation that is not one.
+        """
+        for record in getattr(session, "offers", []) or []:
+            if record.status != "accepted" or record.agent_id != agent_id:
+                continue
+            if capability_id and record.offer.capability_id != capability_id:
+                continue
+            return record.offer.output_schema or None
+        return None
+
+    async def _reconcile_scope_usage(self, envelope: AgBusEnvelope) -> None:
+        """Compare what an execution used against what it was granted.
+
+        The report comes from the agent's invocation path rather than from its
+        model, so it reflects what was called. That is what makes this worth
+        reading: an agent talked into exceeding its authority by an injected
+        prompt shows up here, because the model chooses what to call and not
+        whether the call is recorded.
+
+        It is *detection*, not prevention, and the distinction matters. An
+        agent whose code is hostile can report whatever it likes — but such an
+        agent has already replaced everything this could have protected. What
+        this makes possible is attribution, and attribution is what makes
+        revocation mean something.
+        """
+        metadata = envelope.payload.get("metadata") or {}
+        used = [s for s in metadata.get("used_scopes", []) if s]
+        denied = [s for s in metadata.get("denied_scopes", []) if s]
+        if not used and not denied:
+            return
+
+        agent_id = envelope.sender.id
+        session = self.sessions.get(envelope.session_id)
+        capability = getattr(session, "capability", None)
+        granted = list(getattr(capability, "scopes", []) or [])
+
+        # Anything used that the grant does not cover. An empty grant is not
+        # treated as covering everything here: this reconciliation exists to
+        # notice use beyond authority, and "nothing was granted" is the case
+        # where all use is beyond it.
+        exceeded = [s for s in used if not covered_by_any(granted, s)] if granted else used
+
+        if denied:
+            self.audit_log.log(
+                action="scope.denied",
+                actor=agent_id,
+                target=envelope.session_id,
+                target_type="session",
+                details=f"refused {', '.join(denied)} during execution",
+                severity="warning",
+            )
+
+        if not exceeded:
+            return
+
+        # The finding. Recorded against the agent so a pattern is visible
+        # across sessions, not just within one.
+        self.audit_log.log(
+            action="scope.exceeded",
+            actor=agent_id,
+            target=envelope.session_id,
+            target_type="session",
+            details=(
+                f"used {', '.join(exceeded)} beyond the grant "
+                f"({', '.join(granted) or 'nothing'})"
+            ),
+            severity="critical",
+        )
+        logger.error(
+            "Agent %s used scopes beyond its grant in session %s: %s",
+            agent_id,
+            envelope.session_id,
+            ", ".join(exceeded),
+        )
+        await self._emit_event(
+            envelope.session_id,
+            "ibac",
+            f"Agent '{agent_id}' used {', '.join(exceeded)} beyond its grant",
+            phase="execution",
+            agent_id=agent_id,
+            detail={"exceeded_scopes": exceeded, "granted": granted},
+        )
+
+    def _grant_for(
+        self, agent_id: str, capability_id: str, capability_scopes: list[str]
+    ) -> list[str]:
+        """What this step is authorised to do, after every narrowing.
+
+        The chain, and why each step is justified:
+
+        1. the requester's credential — an agent cannot exceed what the person
+           it acts for was entitled to;
+        2. what the interaction claimed — already folded into
+           *capability_scopes* when the capability was issued;
+        3. what an administrator bound to this agent's capability.
+
+        Step 3 applies only under enforcement. Off, the agent receives the
+        capability's scopes as before, because narrowing to bindings nobody has
+        authored yet would refuse work that runs today — and the dispatch guard
+        is already warning about exactly that.
+        """
+        if not self._scope_enforcement:
+            return list(capability_scopes)
+
+        try:
+            bound = self.scope_repo.granted(agent_id, capability_id)
+        except Exception:
+            logger.exception(
+                "Could not read bindings for %s:%s", agent_id, capability_id
+            )
+            return []
+
+        if not capability_scopes:
+            # The capability expresses no constraint, so the binding is the
+            # whole of the authority rather than an intersection with nothing.
+            return list(bound)
+
+        # intersect(), not narrow(): an empty binding means nothing was
+        # granted, where an empty credential ceiling means no limit was
+        # expressed. Using narrow() here would turn an unbound capability
+        # into an unrestricted one.
+        return intersect(capability_scopes, bound)
+
+    def _visible_agents(self, session: Any) -> list[str] | None:
+        """Which registered agents this session may discover.
+
+        ``None`` means no restriction — the single-tenant case, and what a bus
+        that has never assigned an agent to a tenant always returns.
+
+        Applied to the *input* of discovery rather than its output. A
+        capability description reaching a prompt has been disclosed whatever
+        the model then picks, and "query ACME Corp's payroll database" names a
+        customer.
+        """
+        registered = [a.agent_id for a in self.registry.all_agents()]
+        if not self.tenants.any_agent_is_assigned(registered):
+            return None  # tenancy is not in use on this bus
+
+        scope = TenantScope(
+            tenant_ids=list(getattr(session, "tenant_ids", []) or []),
+            subject=getattr(session, "requester_oidc_subject", ""),
+        )
+        visible = self.tenants.visible_agents(scope, registered)
+
+        hidden = len(registered) - len(visible)
+        if hidden:
+            logger.info(
+                "Session %s may see %d of %d agents (%d outside its tenants)",
+                getattr(session, "session_id", "?"),
+                len(visible),
+                len(registered),
+                hidden,
+            )
+        return visible
+
+    def _declared_scopes(self, agent_id: str, capability_id: str) -> list[str]:
+        """What the agent said this capability needs.
+
+        Declared input, and treated as such: an agent that under-declares is
+        not caught by anything downstream of this. What it makes possible is
+        catching an agent that declared honestly and was never granted what it
+        asked for — a misconfiguration that otherwise surfaces inside the
+        agent, one layer away from its cause, or not at all.
+        """
+        registration = self.registry.get(agent_id)
+        if registration is None:
+            return []
+        for capability in registration.capabilities:
+            if capability.capability_id == capability_id:
+                return list(capability.required_scopes or [])
+        return []
+
+    def _ungranted_scopes(
+        self, agent_id: str, capability_id: str, required: list[str]
+    ) -> list[str]:
+        """Of what this capability needs, what it has not been granted.
+
+        Grants come from bindings an administrator authored (RFC 0003), never
+        from the agent having asked — so an unbound capability leaves every
+        required scope in this list, which is the intended default and the
+        reason this is checked against bindings rather than against the
+        issued capability's own scope list.
+        """
+        if not required or not capability_id:
+            return []
+        try:
+            granted = self.scope_repo.granted(agent_id, capability_id)
+        except Exception:
+            # A grant that cannot be read is not a grant.
+            logger.exception(
+                "Could not read bindings for %s:%s", agent_id, capability_id
+            )
+            return list(required)
+        return [s for s in required if not covered_by_any(granted, s)]
+
+    def _resolve_scopes(self, registration: AgentRegistration) -> dict[str, list[str]]:
+        """Decide what this agent actually holds, and record what it asked for.
+
+        RFC 0003. The agent's declared ``required_scopes`` is a **request**;
+        the grant comes from a binding an administrator authored. So this
+        never returns a scope because an agent named it — the two lists are
+        computed independently and only reported together.
+
+        Three outcomes per declared name:
+
+        *recognised* — the catalogue has it. Says nothing about whether this
+        agent may hold it.
+
+        *unrecognised* — recorded as a request, so an operator can see what
+        agents are asking for. Previously this information was discarded.
+
+        *catalogued* — development only: added on first sight, because a local
+        bus should not need a catalogue authored before anything runs.
+        """
+        declared = list(registration.required_scopes or [])
+        for capability in registration.capabilities:
+            declared.extend(capability.required_scopes or [])
+
+        try:
+            catalogue = self.scope_repo.catalogue()
+        except Exception:
+            # A catalogue that cannot be read must not become an open door,
+            # but it also must not break registration: report nothing granted.
+            logger.exception("Could not read the scope catalogue")
+            return {"granted": [], "unrecognised": [], "catalogue": []}
+
+        decision = self._scopes.resolve(declared, catalogue)
+
+        for scope in decision.catalogued:
+            try:
+                self.scope_repo.add_scope(
+                    scope,
+                    description=f"Added on first sight from {registration.agent_id!r}",
+                    created_by="auto",
+                )
+                logger.warning(
+                    "Scope %r was not catalogued and has been added automatically. "
+                    "Set AGBUS_SCOPE_CATALOGUE_ENFORCED=true to refuse instead.",
+                    scope,
+                )
+            except ValueError:
+                pass
+
+        for scope in decision.unrecognised:
+            try:
+                self.scope_repo.record_request(registration.agent_id, scope)
+            except Exception:
+                logger.exception("Could not record the scope request for %r", scope)
+
+        # The grant. Note what is *not* consulted here: anything the agent
+        # declared. An unbound capability holds nothing.
+        granted: set[str] = set()
+        for capability in registration.capabilities:
+            try:
+                granted.update(
+                    self.scope_repo.granted(
+                        registration.agent_id, capability.capability_id
+                    )
+                )
+            except Exception:
+                logger.exception(
+                    "Could not read bindings for %s:%s",
+                    registration.agent_id,
+                    capability.capability_id,
+                )
+
+        if decision.unrecognised:
+            logger.info(
+                "Agent %s asked for uncatalogued scopes: %s",
+                registration.agent_id,
+                ", ".join(decision.unrecognised),
+            )
+
+        return {
+            "granted": sorted(granted),
+            "unrecognised": decision.unrecognised,
+            # Only worth returning when the agent named something outside it;
+            # otherwise it is noise on every successful registration.
+            "catalogue": (
+                self.scope_repo.catalogue() if decision.unrecognised else []
+            ),
+        }
+
+    def _admit(
+        self, registration: AgentRegistration, peer: Peer
+    ) -> tuple[bool, str]:
+        """Decide whether this agent may join the bus, and say why not.
+
+        Three questions, in order of how cheaply they can be answered:
+
+        1. Is the connection authenticated, when this deployment requires it?
+        2. Has this ``agent_id`` been rejected or revoked by an administrator?
+        3. Is the authenticated subject entitled to *this* ``agent_id``?
+
+        Revocation is checked for ephemeral agents too, even though they keep
+        no state of their own. An agent that an administrator revoked could
+        otherwise return by reconnecting as ephemeral, which would make
+        revocation a suggestion.
+        """
+        identity = getattr(peer, "identity", None)
+        agent_id = registration.agent_id
+
+        record = None
+        try:
+            record = self.agent_repo.get(agent_id)
+        except Exception:
+            # A registry lookup failure must not become an open door.
+            logger.exception("Could not load the agent record for %s", agent_id)
+            return False, "agent record could not be read"
+
+        if record is not None and record.status in (
+            AgentStatus.REJECTED,
+            AgentStatus.REVOKED,
+        ):
+            return False, f"agent {agent_id!r} is {record.status.value}"
+
+        if record is not None and registration.mode == "persistent":
+            if record.status != AgentStatus.APPROVED:
+                return False, (
+                    f"agent {agent_id!r} is awaiting approval; "
+                    "an administrator must approve the enrolment"
+                )
+
+        allowed, reason = self._auth.entitled_to_register(
+            identity,
+            agent_id,
+            bound_subject=getattr(record, "oidc_subject", "") or "",
+        )
+        if not allowed:
+            return False, reason
+
+        # First authenticated registration binds the id to the subject, so a
+        # second credential cannot later claim it. Only ever recorded, never
+        # overwritten — rebinding is an administrative act, not something a
+        # connection can do to itself.
+        if record is not None and identity is not None and not record.oidc_subject:
+            try:
+                self.agent_repo.bind_subject(agent_id, identity.subject)
+                logger.info(
+                    "Agent %s is now bound to subject %s", agent_id, identity.subject
+                )
+            except Exception:
+                logger.exception("Could not bind %s to a subject", agent_id)
+
+        return True, ""
+
+    async def _handle_agent_registration(self, envelope: AgBusEnvelope, peer: Peer) -> None:
         """Handle agent capability registration (§7 AGENTS.md).
         
         Agents register by sending a COMPLETE message with session_id="__registration__"
@@ -1569,10 +2114,22 @@ Execution plan steps:
                 return
 
             registration = AgentRegistration.model_validate(reg_data)
-            
-            # Register in the capability registry and map to WS peer
+
+            # Admission control, before the registry hears about it. An agent
+            # admitted first and vetted afterwards is discoverable in the
+            # window between, which is the whole window that matters.
+            admitted, reason = self._admit(registration, peer)
+            if not admitted:
+                logger.warning(
+                    "Refused registration of %s: %s", registration.agent_id, reason
+                )
+                await self._send_registered(
+                    peer, registration.agent_id, accepted=False, reason=reason
+                )
+                return
+
             self.register_agent(registration, peer.peer_id)
-            
+
             logger.info(
                 "✅ Agent registered: %s (version %s, mode=%s) with %d capabilities",
                 registration.agent_id,
@@ -1580,29 +2137,17 @@ Execution plan steps:
                 registration.mode,
                 len(registration.capabilities),
             )
-            
-            # Only persist to database for persistent agents.
-            # Ephemeral agents are in-memory only (§5.1.2 — zero residual state).
-            if registration.mode == "persistent":
-                try:
-                    persistent_agent = PersistentAgent(
-                        agent_id=registration.agent_id,
-                        version=registration.version,
-                        semantic_description=registration.semantic_description,
-                        capabilities=registration.model_dump()["capabilities"],
-                        required_scopes=registration.required_scopes,
-                        supported_data_domains=registration.supported_data_domains,
-                    )
-                    self.agent_repo.save(persistent_agent)
-                    logger.debug("Agent %s persisted to database", registration.agent_id)
-                except Exception as e:
-                    logger.warning("Failed to persist agent %s: %s", registration.agent_id, e)
+
+            scopes = self._resolve_scopes(registration)
 
             await self._send_registered(
                 peer,
                 registration.agent_id,
                 accepted=True,
                 capabilities=[c.capability_id for c in registration.capabilities],
+                granted_scopes=scopes["granted"],
+                unrecognised_scopes=scopes["unrecognised"],
+                catalogue=scopes["catalogue"],
             )
 
         except Exception as e:
@@ -1618,12 +2163,15 @@ Execution plan steps:
 
     async def _send_registered(
         self,
-        peer: WSPeer,
+        peer: Peer,
         agent_id: str,
         *,
         accepted: bool,
         reason: str = "",
         capabilities: list[str] | None = None,
+        granted_scopes: list[str] | None = None,
+        unrecognised_scopes: list[str] | None = None,
+        catalogue: list[str] | None = None,
     ) -> None:
         """Answer a registration attempt.
 
@@ -1640,6 +2188,9 @@ Execution plan steps:
                 agent_id=agent_id,
                 reason=reason,
                 registered_capabilities=capabilities or [],
+                granted_scopes=granted_scopes or [],
+                unrecognised_scopes=unrecognised_scopes or [],
+                catalogue=catalogue or [],
                 coordinator_protocol_version=LIP_PROTOCOL_VERSION,
             ),
             inject_trace_context(),
@@ -1651,7 +2202,7 @@ Execution plan steps:
                 "Could not send 'registered' answer to %s", agent_id or "<unknown>"
             )
 
-    async def _handle_accept(self, envelope: AgBusEnvelope, peer: WSPeer) -> None:
+    async def _handle_accept(self, envelope: AgBusEnvelope, peer: Peer) -> None:
         """Handle an accept from the requester — the requester approves the plan.
 
         This is the critical gate: execution proceeds ONLY after the requester
@@ -1710,7 +2261,7 @@ Execution plan steps:
         # Now proceed to execution
         await self._finalize_negotiation(session)
 
-    async def _handle_reject(self, envelope: AgBusEnvelope, peer: WSPeer) -> None:
+    async def _handle_reject(self, envelope: AgBusEnvelope, peer: Peer) -> None:
         """Handle a reject — may trigger renegotiation or dissolution.
 
         If the requester sends ``reject`` with ``renegotiate=True``, the
@@ -1748,7 +2299,7 @@ Execution plan steps:
         self,
         session: SessionState,
         reject_payload: RejectPayload,
-        peer: WSPeer,
+        peer: Peer,
     ) -> None:
         """Handle a renegotiation request from the requester.
 
@@ -1801,7 +2352,9 @@ Execution plan steps:
         )
 
         # Re-run discovery and offer solicitation
-        candidates = await self.adjudicator.discover(session.intent)
+        candidates = await self.adjudicator.discover(
+            session.intent, visible_agents=self._visible_agents(session)
+        )
         session.discovered_agents = [c.agent_id for c in candidates]
 
         if not candidates:
@@ -1937,7 +2490,12 @@ Execution plan steps:
             intent_domain = ""
             decomposition: dict = {}
             if snapshot.intent:
-                intent_text = snapshot.intent.text if hasattr(snapshot.intent, "text") else str(snapshot.intent)
+                # IntentPayload carries the text as `intent_text`. Falling back
+                # to str() puts the model's repr in the archive — which then
+                # reaches the dashboard and the history API as the intent.
+                intent_text = getattr(snapshot.intent, "intent_text", "") or getattr(
+                    snapshot.intent, "text", ""
+                )
                 intent_domain = snapshot.intent.domain if hasattr(snapshot.intent, "domain") else ""
                 if hasattr(snapshot.intent, "decomposition") and snapshot.intent.decomposition:
                     decomposition = snapshot.intent.decomposition if isinstance(snapshot.intent.decomposition, dict) else {}
@@ -2079,10 +2637,19 @@ Execution plan steps:
             logger.error("Managed agent %r not found in database", agent_id)
             return False
 
-        uri = f"ws://{self._server.host}:{self._server.port}"
-        # Use 127.0.0.1 when the server binds to 0.0.0.0
-        if self._server.host == "0.0.0.0":
-            uri = f"ws://127.0.0.1:{self._server.port}"
+        uri = self._server.agent_endpoint
+        if uri is None:
+            # An in-process transport has no address to hand out, so a managed
+            # agent has nowhere to dial. The host application attaches its own
+            # agents instead; spawning one here would start a process that can
+            # never connect.
+            logger.warning(
+                "Cannot start managed agent %r: the %s transport has no endpoint "
+                "for an agent to dial. Attach agents in-process instead.",
+                agent_id,
+                self._server.description,
+            )
+            return False
 
         server = ManagedAgentServer(ma, coordinator_uri=uri)
 
@@ -2182,9 +2749,15 @@ Execution plan steps:
 
         from agentic_bus.agents.mcp_bridge import MCPBridgeAgent
 
-        uri = f"ws://{self._server.host}:{self._server.port}"
-        if self._server.host == "0.0.0.0":
-            uri = f"ws://127.0.0.1:{self._server.port}"
+        uri = self._server.agent_endpoint
+        if uri is None:
+            logger.warning(
+                "Cannot start MCP bridge %r: the %s transport has no endpoint "
+                "for an agent to dial.",
+                server_id,
+                self._server.description,
+            )
+            return False
 
         bridge = MCPBridgeAgent(mcp, coordinator_uri=uri)
         self._mcp_bridge_agents[server_id] = bridge
@@ -2283,7 +2856,6 @@ Execution plan steps:
 
         self.registry.handle_disconnect(agent_id)
         self._agent_peers.pop(agent_id, None)
-        self._identities.pop(peer_id, None)
 
         self.audit_log.log(
             action="agent.disconnected",
@@ -2383,10 +2955,33 @@ Execution plan steps:
             # before *every* dispatch, not once at the start. A multi-step
             # flow can outlive the approval that started it, and a plan can
             # name an agent the approval never covered.
+            capability_id = state.get("_capability_id", "")
+            required_scopes = runtime._declared_scopes(agent_id, capability_id)
+
+            # Two questions with different answers when nothing is set, and
+            # conflating them is how a guard ends up enforcing nothing:
+            #
+            #   Does the issued capability constrain this step?
+            #       An empty scope list is *no constraint*, not "all scopes" —
+            #       the capability simply is not expressing one.
+            #
+            #   Has this agent been granted what its capability needs?
+            #       Answered from bindings (RFC 0003), where empty means
+            #       nothing was granted.
+            #
+            # The second is checked below, against the binding rather than
+            # against the capability, precisely so the first can keep its
+            # permissive empty case safely.
             session_for_guard = runtime.sessions.get(session_id)
             capability = getattr(session_for_guard, "capability", None)
             if capability is not None:
-                violation = capability.check(principal=agent_id)
+                # Passing the scopes is the point: previously this was called
+                # with the principal alone, so the loop comparing scopes ran
+                # over an empty list and the capability's own constraint never
+                # applied to anything.
+                violation = capability.check(
+                    principal=agent_id, scopes=required_scopes
+                )
                 if violation is not None:
                     await runtime._emit_event(
                         session_id,
@@ -2400,6 +2995,47 @@ Execution plan steps:
                     raise PermissionError(
                         f"capability check failed for {agent_id}: {violation.reason}"
                     )
+
+            # --- Grant check -----------------------------------------
+            # What the agent said it needs, against what an administrator
+            # actually granted it. This catches an agent dispatched without
+            # the authority its own capability declares — which previously
+            # surfaced inside the agent, one layer from the cause, or not at
+            # all.
+            missing = runtime._ungranted_scopes(agent_id, capability_id, required_scopes)
+            if missing:
+                detail = (
+                    f"{agent_id}:{capability_id} requires "
+                    f"{', '.join(missing)}, which it has not been granted"
+                )
+                if runtime._scope_enforcement:
+                    await runtime._emit_event(
+                        session_id,
+                        "ibac",
+                        f"Execution refused for '{agent_id}': {detail}",
+                        phase="execution",
+                        agent_id=agent_id,
+                        step_index=step_index,
+                        detail={"missing_scopes": missing},
+                    )
+                    raise PermissionError(detail)
+
+                # Loud but not fatal, so a running deployment can see what
+                # enforcement would refuse before it starts refusing.
+                logger.warning(
+                    "%s — allowed because scope enforcement is off. Set "
+                    "AGBUS_SCOPE_ENFORCED=true once bindings are in place.",
+                    detail,
+                )
+                await runtime._emit_event(
+                    session_id,
+                    "ibac",
+                    f"'{agent_id}' is running without {', '.join(missing)}",
+                    phase="execution",
+                    agent_id=agent_id,
+                    step_index=step_index,
+                    detail={"missing_scopes": missing, "enforced": False},
+                )
 
             peer_id = runtime._agent_peers.get(agent_id)
             if not peer_id:
@@ -2426,10 +3062,16 @@ Execution plan steps:
                         "context": state.get("context", {}),
                         "prior_results": state.get("step_results", {}),
                     },
-                    # Carried from the capability rather than left empty, so
-                    # the agent is told what it was actually authorised for.
-                    "authorized_scopes": (
-                        capability.scopes if capability is not None else []
+                    # The last link in the chain. The capability already
+                    # carries the requester's ceiling; under enforcement this
+                    # narrows again to what *this* agent's capability was
+                    # bound to, so require_scope() inside the agent refuses
+                    # anything it was not granted rather than anything the
+                    # requester happened to claim.
+                    "authorized_scopes": runtime._grant_for(
+                        agent_id,
+                        capability_id,
+                        list(getattr(capability, "scopes", []) or []),
                     ),
                     "capability_id": (
                         capability.capability_id if capability is not None else ""

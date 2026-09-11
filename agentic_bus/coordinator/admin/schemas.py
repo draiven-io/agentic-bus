@@ -10,6 +10,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from agentic_bus.core.protocol.envelope import LIP_PROTOCOL_VERSION
+
 
 # ---------------------------------------------------------------------------
 # Capability DTOs
@@ -241,6 +243,9 @@ class CoordinatorSettingsDTO(BaseModel):
     oidc_audience: str
     auto_approve: bool
     database_url: str
+    #: The LIP version this coordinator speaks, so a client can tell without
+    #: inferring it from things not working.
+    protocol_version: str = LIP_PROTOCOL_VERSION
 
 
 # ---------------------------------------------------------------------------
