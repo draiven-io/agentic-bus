@@ -19,7 +19,9 @@ from this package; protocol changes are called out explicitly below.
   interoperate; until then "LIP-compliant" is an assertion nobody can check.
 
   Twelve requirements, graded MUST and SHOULD, each citing the section it
-  comes from. `--json` emits a machine-readable report.
+  comes from. `--json` emits a machine-readable report, in which `detail`
+  carries diagnostics for the requirements that did not pass and is empty
+  elsewhere.
 
   The reference SDK is tested against the suite, so `BaseAgent` failing the
   specification it publishes now breaks our own build. Each check is also
