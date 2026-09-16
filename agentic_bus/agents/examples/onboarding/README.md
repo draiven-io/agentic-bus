@@ -1,6 +1,6 @@
 # Onboarding: read the CRM, fetch a template, send the welcome mail
 
-One intent, three agents, one credential each, none of them holding a model.
+One intent, three agents, one credential each.
 
 ```
 "Preciso da lista de clientes que entraram ontem no CRM, e que seja
@@ -23,16 +23,32 @@ coordinator's field of view.
 
 ## What each one is
 
-| Agent | Scope | Holds | Model |
+| Agent | Scope | Holds | Needs intelligence |
 |---|---|---|---|
-| `crm-reader` | `crm:read` | the CRM credential | none |
-| `sharepoint-reader` | `doc:read` | the document credential | none |
-| `email-sender` | `email:send` | the mail credential — the egress point | none |
+| `crm-reader` | `crm:read` | the CRM credential | no |
+| `sharepoint-reader` | `doc:read` | the document credential | **yes** |
+| `email-sender` | `email:send` | the mail credential — the egress point | no |
 
-The agent that thinks is the requester's side. The agents that hold
-credentials do not reason about text: `_pick_tool`-style dispatch, structured
-arguments, no prompt to inject. Nothing in LIP enforces that — it is a
-deployment discipline, and it is the one that matters most.
+## "Agents with credentials hold no model" is too broad
+
+Finding the right template among folders is a real problem, and a keyword
+score is a poor answer to it. `SharePointAgent.choose` is the seam: override
+it with a model, or let a search-capable MCP server do the work upstream.
+Either is fine.
+
+Two things hold when you put a model there, and they are the actual rule:
+
+**It reasons over the requester's words and over metadata — never over
+content.** `search` returns titles, folders and sensitivity labels, and no
+bodies. A sentence injected into a payroll spreadsheet is not in `choose`'s
+input and cannot be. The body is read only *after* the choice, and goes into
+memory rather than back into a decision.
+
+**One scope bounds what a bad decision can cause.** Steer the choice onto the
+salary table and the worst outcome is that this agent reads it. It cannot
+send, cannot write, cannot reach the CRM. The containment is the scope, not
+the absence of a model — and an agent that also held `email:send` would turn
+a bad choice into an exfiltration.
 
 ## Running it
 
@@ -100,4 +116,12 @@ of.
 **Reading session memory.** The coordinator builds a per-agent
 `memory_snapshot` and puts it on the `execute`, but `_handle_execute` hands
 only `execution_plan` and `context` to `execute_task`, so it does not arrive.
-The sender reads `prior_results` instead.
+
+The example works around it honestly rather than pretending: each artifact
+carries its data as well as its summary, and the sender reads `prior_results`.
+When the snapshot reaches `execute_task`, `ClienteRef.rows` and
+`TemplateRef.corpo` go away and the artifacts go back to being summaries.
+
+The sender invents nothing in the meantime — with no recipients and no
+template it refuses, because an egress point that improvises is one nobody can
+reason about.

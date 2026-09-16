@@ -136,6 +136,25 @@ class TestTheSteps:
 
         assert payload.artifacts[0]["classificacao"] == "Publico"
 
+    async def test_the_search_finds_the_template_among_others(self):
+        """The library holds a refund policy and a salary table too. Finding
+        the right one is the part a keyword score answers badly and a model
+        answers well — which is why `choose` exists as a seam."""
+        payload = await _execute(
+            SharePointAgent(),
+            scopes=["doc:read"],
+            context={"modelo": {"descricao": "modelo de e-mail de boas-vindas"}},
+        )
+
+        assert payload.artifacts[0]["doc_id"] == "welcome-pt-br"
+
+    async def test_the_sender_refuses_rather_than_guessing(self):
+        """An egress point that improvises is one nobody can reason about."""
+        payload = await _execute(EmailAgent(), scopes=["email:send"])
+
+        assert payload.artifacts[0]["error"]
+        assert payload.artifacts[0]["destinatarios_recebidos"] == 0
+
     async def test_the_sender_writes_to_every_recipient(self):
         crm = await _execute(CRMAgent(), scopes=["crm:read"])
         doc = await _execute(SharePointAgent(), scopes=["doc:read"])
@@ -151,7 +170,14 @@ class TestTheSteps:
 
     async def test_the_sender_stages_nothing(self):
         """It is the egress point, not a producer of working data."""
-        payload = await _execute(EmailAgent(), scopes=["email:send"])
+        crm = await _execute(CRMAgent(), scopes=["crm:read"])
+        doc = await _execute(SharePointAgent(), scopes=["doc:read"])
+
+        payload = await _execute(
+            EmailAgent(),
+            scopes=["email:send"],
+            prior={"step_1": crm.artifacts[0], "step_2": doc.artifacts[0]},
+        )
 
         assert payload.memory_writes == {}
 
@@ -169,9 +195,15 @@ class TestTheArtifactsMatchWhatWasPromised:
     ):
         from agentic_bus.core.artifacts import validate_artifacts
 
+        prior = {}
+        if factory is EmailAgent:
+            crm = await _execute(CRMAgent(), scopes=["crm:read"])
+            doc = await _execute(SharePointAgent(), scopes=["doc:read"])
+            prior = {"step_1": crm.artifacts[0], "step_2": doc.artifacts[0]}
+
         agent = factory()
         schema = agent.capabilities()[0].output_schema
-        payload = await _execute(agent, scopes=[scope])
+        payload = await _execute(agent, scopes=[scope], prior=prior)
 
         report = validate_artifacts(
             payload.artifacts,
@@ -181,3 +213,42 @@ class TestTheArtifactsMatchWhatWasPromised:
         )
 
         assert not report.violations
+
+
+class TestTheChoiceIsMadeOverMetadata:
+    """The claim that replaced "agents with credentials hold no model".
+
+    A model here would be fine. What must not happen is document *content*
+    reaching whatever decides — and it cannot, because search returns none.
+    """
+
+    async def test_search_returns_no_bodies(self):
+        from agentic_bus.agents.examples.onboarding.agents import _FakeSharePoint
+
+        candidatos = await _FakeSharePoint().search("e-mail de boas-vindas")
+
+        assert candidatos
+        for candidate in candidatos:
+            assert "corpo" not in candidate
+
+    def test_choose_sees_only_titles_and_labels(self):
+        """So an injected sentence inside a payroll file is not in its input."""
+        agent = SharePointAgent()
+        candidatos = [
+            {"doc_id": "a", "titulo": "Modelo de boas-vindas", "classificacao": "Publico"},
+            {"doc_id": "b", "titulo": "Tabela salarial 2026", "classificacao": "Confidencial"},
+        ]
+
+        assert agent.choose("modelo de boas-vindas", candidatos)["doc_id"] == "a"
+
+    def test_a_bad_choice_is_bounded_by_the_scope(self):
+        """Even steered onto the salary table, this agent can only read it.
+
+        It holds `doc:read` and nothing else: it cannot send, cannot write,
+        cannot reach the CRM. The containment is the scope, not the absence
+        of a model — an agent that also held `email:send` would turn a bad
+        choice into an exfiltration.
+        """
+        declared = SharePointAgent().capabilities()[0].required_scopes
+
+        assert declared == ["doc:read"]
