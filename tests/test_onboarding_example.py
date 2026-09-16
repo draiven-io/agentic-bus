@@ -46,6 +46,7 @@ async def _execute(agent, *, scopes: list[str], context=None, memory=None):
             "execution_plan": {"context": context or {}},
             "authorized_scopes": scopes,
             "memory_snapshot": memory or {},
+            "agent_capability_id": agent.capabilities()[0].capability_id,
         },
     )
     await agent._handle_execute(envelope)
@@ -75,6 +76,15 @@ def _compose_for_sender(crm, doc) -> dict:
         },
         memory,
     )
+
+
+#: A well-formed context for the sender, for tests whose subject is not the
+#: input. Extra keys the other agents ignore.
+_VALID_SEND = {
+    "destinatarios": [{"nome": "A", "email": "a@x.example"}],
+    "assunto": "s",
+    "corpo": "c",
+}
 
 
 class TestOneCredentialEach:
@@ -116,7 +126,10 @@ class TestRefusal:
         [(CRMAgent, "doc:read"), (SharePointAgent, "email:send"), (EmailAgent, "crm:read")],
     )
     async def test_the_wrong_scope_is_refused(self, factory, granted):
-        payload = await _execute(factory(), scopes=[granted])
+        # Input is validated before execute_task runs, and the scope check
+        # lives inside it (at the point of use). So to test the scope check,
+        # the input has to be well-formed — otherwise `invalid_input` wins.
+        payload = await _execute(factory(), scopes=[granted], context=_VALID_SEND)
 
         assert payload.status == "denied"
 
@@ -134,7 +147,7 @@ class TestRefusal:
         assert agent.crm.is_built is False
 
     async def test_the_refused_scope_is_reported(self):
-        payload = await _execute(EmailAgent(), scopes=["crm:read"])
+        payload = await _execute(EmailAgent(), scopes=["crm:read"], context=_VALID_SEND)
 
         assert payload.metadata["denied_scopes"] == ["email:send"]
 
@@ -172,11 +185,18 @@ class TestTheSteps:
         assert payload.artifacts[0]["doc_id"] == "welcome-pt-br"
 
     async def test_the_sender_refuses_rather_than_guessing(self):
-        """An egress point that improvises is one nobody can reason about."""
+        """An egress point that improvises is one nobody can reason about.
+
+        The refusal is the declared type's now: `EnvioModelo` requires
+        recipients and a template, so an empty context is `invalid_input`
+        before the body ever runs — not a branch the author had to remember.
+        """
         payload = await _execute(EmailAgent(), scopes=["email:send"])
 
-        assert payload.artifacts[0]["error"]
-        assert payload.artifacts[0]["destinatarios_recebidos"] == 0
+        assert payload.status == "invalid_input"
+        assert payload.artifacts[0]["model"] == "EnvioModelo"
+        fields = {e["field"] for e in payload.artifacts[0]["errors"]}
+        assert {"destinatarios", "assunto", "corpo"} <= fields
 
     async def test_the_sender_writes_to_every_recipient(self):
         crm = await _execute(CRMAgent(), scopes=["crm:read"])
@@ -314,3 +334,13 @@ class TestTheSenderKnowsNoOtherAgent:
         assert "crm-reader" not in source
         assert "sharepoint-reader" not in source
         assert "recall(" not in source
+
+
+class TestInputsAreTyped:
+    def test_no_agent_reads_the_raw_context(self):
+        """The declared shape is the source of truth on both sides now."""
+        import inspect
+
+        from agentic_bus.agents.examples.onboarding import agents as mod
+
+        assert "context.get(" not in inspect.getsource(mod)

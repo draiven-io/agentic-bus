@@ -39,6 +39,7 @@ from agentic_bus.core.protocol.envelope import (
     RegisteredPayload,
     build_envelope,
 )
+from agentic_bus.agents.inputs import InvalidInput, inputs, reset_context, set_context
 from agentic_bus.agents.memory import (
     open_staging,
     reset_snapshot,
@@ -735,6 +736,28 @@ class BaseAgent(ABC):
                     cap.capability_id,
                 )
 
+    def _input_model_for(self, payload: dict[str, Any]):
+        """The ``input_model`` of the capability this execute is for.
+
+        The ``capability_id`` on the wire is the IBAC capability the
+        coordinator issued for the session, not one of this agent's own, so
+        it cannot be looked up here. The coordinator sends the agent's
+        capability as ``agent_capability_id``; an older coordinator sends
+        none, and then an agent publishing exactly one capability still has
+        an unambiguous answer. Several capabilities and no id means nothing
+        can be checked here — the author's own ``inputs()`` call still can.
+        """
+        capabilities = list(self.capabilities())
+        wanted = payload.get("agent_capability_id", "")
+        if wanted:
+            for cap in capabilities:
+                if cap.capability_id == wanted:
+                    return cap.input_model
+            return None
+        if len(capabilities) == 1:
+            return capabilities[0].input_model
+        return None
+
     async def _handle_execute(self, envelope: AgBusEnvelope) -> None:
         """Execute the authorised task and emit a complete message."""
         payload = envelope.payload
@@ -757,6 +780,8 @@ class BaseAgent(ABC):
         # namespaces the plan granted this step, and it has been arriving on
         # the `execute` all along with nothing to receive it.
         snapshot_token = set_snapshot(payload.get("memory_snapshot"))
+        # The context, for `inputs()` to read from inside the task.
+        context_token = set_context(context)
 
         await self.send_event(
             envelope.session_id,
@@ -765,6 +790,14 @@ class BaseAgent(ABC):
         )
 
         try:
+            # Validate against the shape this capability published, whether or
+            # not the author asks. When composition failed upstream the
+            # coordinator fell back to the requester's raw context, which
+            # nobody validated — on that path this is the only check.
+            input_model = self._input_model_for(payload)
+            if input_model is not None:
+                inputs(input_model, context)
+
             result = await self.execute_task(execution_plan, context)
             status = "success"
             await self.send_event(
@@ -772,6 +805,20 @@ class BaseAgent(ABC):
                 f"Agent '{self.agent_id}' task completed successfully",
                 category="agent",
                 detail={"status": "success"},
+            )
+        except InvalidInput as exc:
+            # The agent did not break: it was handed a shape it never agreed
+            # to receive. Reported apart from an error so the coordinator can
+            # tell the two apart, and with the fields that failed so the
+            # composition upstream can be corrected rather than guessed at.
+            logger.error("Agent %s refused its input: %s", self.agent_id, exc)
+            result = {"error": str(exc), "model": exc.model, "errors": exc.errors}
+            status = "invalid_input"
+            await self.send_event(
+                envelope.session_id,
+                f"Agent '{self.agent_id}' refused input that does not match {exc.model}",
+                category="agent",
+                detail={"status": "invalid_input", "model": exc.model},
             )
         except ScopeDenied as exc:
             # Distinct from a failure: the work was refused rather than
@@ -804,6 +851,7 @@ class BaseAgent(ABC):
             memory_writes = staged_writes()
             reset_staging(writes_token)
             reset_snapshot(snapshot_token)
+            reset_context(context_token)
             reset_grant(token)
 
         complete_env = build_envelope(

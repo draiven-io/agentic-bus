@@ -3187,6 +3187,9 @@ Execution plan steps:
                     "capability_id": (
                         capability.capability_id if capability is not None else ""
                     ),
+                    # The step's own capability, so the agent can find the
+                    # `input_model` it published for it.
+                    "agent_capability_id": capability_id,
                     "memory_snapshot": memory_snapshot,
                 },
                 inject_trace_context(),

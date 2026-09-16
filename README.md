@@ -358,6 +358,25 @@ async def execute_task(self, payload, context):
     return {"enviados": len(clientes)}
 ```
 
+A capability that publishes an `input_model` gets its context validated
+against it before `execute_task` runs, whether or not you ask — and `inputs()`
+hands you the instance rather than a dict to read by string:
+
+```python
+from agentic_bus import inputs
+
+async def execute_task(self, payload, context):
+    req = inputs(EnvioModelo)             # validated, typed; extras ignored
+    for d in req.destinatarios:
+        await mailer.send(to=d.email, subject=req.assunto, body=req.corpo)
+```
+
+A context that does not match is reported as `invalid_input`, apart from an
+error: the agent did not break, it was handed a shape it never agreed to
+receive. That matters on one path in particular — when the coordinator could
+not compose a step's parameters, it falls back to the requester's raw context,
+which nobody validated. There, this is the only check.
+
 Writes are staged during the execution and travel on the `complete`, so a task
 that fails part-way leaves nothing behind, and the policy check stays with the
 coordinator that owns the memory. What `recall()` sees is a snapshot the

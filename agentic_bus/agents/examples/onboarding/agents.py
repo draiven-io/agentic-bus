@@ -28,7 +28,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from agentic_bus import ScopedResource, remember
+from agentic_bus import ScopedResource, inputs, remember
 from agentic_bus.agents.base.agent import BaseAgent
 from agentic_bus.core.registry.capability_registry import AgentCapability
 
@@ -130,9 +130,10 @@ class _FakeMailer:
 class BuscaClientes(BaseModel):
     """What the CRM step needs to be told."""
 
-    cadastrado_desde: str = Field(
+    cadastrado_desde: str | None = Field(
+        default=None,
         description="Período de cadastro, como a intenção o expressou — "
-        "'ontem', 'esta semana', ou uma data ISO."
+        "'ontem', 'esta semana', ou uma data ISO. Ausente: ontem.",
     )
     segmento: str | None = Field(
         default=None, description="Segmento de cliente, quando a intenção citar um."
@@ -143,8 +144,9 @@ class BuscaModelo(BaseModel):
     """What the document step needs to be told."""
 
     descricao: str = Field(
+        default="modelo de e-mail de boas-vindas",
         description="O documento procurado, descrito em linguagem natural — "
-        "por exemplo 'modelo de e-mail de boas-vindas'."
+        "por exemplo 'modelo de e-mail de boas-vindas'.",
     )
 
 
@@ -235,11 +237,11 @@ class CRMAgent(BaseAgent):
     ) -> dict[str, Any]:
         crm = self.crm.get()
 
-        # Read straight off the shape this capability declared. The
-        # coordinator composed it from the intent and validated it against
-        # that shape before sending — there is no blob to go fishing in, and
-        # no prose here to parse.
-        desde = context.get("cadastrado_desde") or str(date.today() - timedelta(days=1))
+        # The shape this capability declared, as an instance. BaseAgent
+        # already validated the context against it before calling this —
+        # there is no blob to go fishing in, and no prose here to parse.
+        req = inputs(BuscaClientes)
+        desde = req.cadastrado_desde or str(date.today() - timedelta(days=1))
         linhas = await crm.buscar(cadastrado_desde=desde)
 
         key = f"{self.agent_id}.clientes"
@@ -295,7 +297,7 @@ class SharePointAgent(BaseAgent):
         # Two phases, and the split is the point. Search returns metadata —
         # title, folder, sensitivity — and never a body. Choosing which
         # document to open therefore never requires reading any of them.
-        pedido = context.get("descricao") or "e-mail de boas-vindas"
+        pedido = inputs(BuscaModelo).descricao
         candidatos = await sharepoint.search(pedido)
         if not candidatos:
             return {"error": "nenhum modelo encontrado", "consulta": pedido}
@@ -392,30 +394,22 @@ class EmailAgent(BaseAgent):
     ) -> dict[str, Any]:
         mailer = self.mailer.get()
 
-        # Read straight off the shape this agent declared. The coordinator
+        # The shape this agent declared, as an instance. The coordinator
         # composed it at dispatch from what the earlier steps produced —
         # mapping the CRM agent's rows onto `destinatarios` and the document
-        # agent's template onto `assunto`/`corpo` — and validated it against
-        # `EnvioModelo` before sending. This agent knows no other agent's
-        # name and no memory key. It invents nothing either: with no
-        # recipients or no template it refuses rather than guessing, because
-        # an egress point that improvises is one nobody can reason about.
-        rows = context.get("destinatarios") or []
-        corpo = context.get("corpo") or ""
-        titulo = context.get("assunto") or ""
+        # agent's template onto `assunto`/`corpo` — and BaseAgent validated
+        # the result against `EnvioModelo` before this ran. This agent knows
+        # no other agent's name and no memory key. It invents nothing either:
+        # a missing recipient list or template is refused as `invalid_input`
+        # before this line, because an egress point that improvises is one
+        # nobody can reason about.
+        req = inputs(EnvioModelo)
 
-        if not rows or not corpo:
-            return {
-                "error": "faltam destinatários ou modelo",
-                "destinatarios_recebidos": len(rows),
-                "modelo_recebido": bool(corpo),
-            }
-
-        for row in rows:
+        for d in req.destinatarios:
             await mailer.send(
-                to=row["email"],
-                subject=titulo,
-                body=corpo.format(nome=row.get("nome", "")),
+                to=d.email,
+                subject=req.assunto,
+                body=req.corpo.format(nome=d.nome),
             )
 
         return EnvioResumo(

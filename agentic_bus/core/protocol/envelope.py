@@ -369,6 +369,17 @@ class ExecutePayload(BaseModel):
             "holds anything not listed here."
         ),
     )
+    agent_capability_id: str = Field(
+        default="",
+        description=(
+            "The agent's own capability this step executes — the id it "
+            "published at register, e.g. `crm.buscar_clientes`. An agent "
+            "that publishes several capabilities uses this to know which "
+            "declared `input_model` the context must match. Distinct from "
+            "`capability_id`, which reference coordinators populate with the "
+            "session's IBAC capability."
+        ),
+    )
     capability_id: str = Field(
         default="",
         description=(

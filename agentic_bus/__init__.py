@@ -33,6 +33,7 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 
 from agentic_bus.agents.base.agent import BaseAgent, ReconnectPolicy, TokenProvider
+from agentic_bus.agents.inputs import InvalidInput, inputs
 from agentic_bus.agents.memory import recall, recalled, remember
 from agentic_bus.agents.scope_guard import (
     ScopeDenied,
@@ -81,6 +82,8 @@ __all__ = [
     "remember",
     "recall",
     "recalled",
+    "inputs",
+    "InvalidInput",
     # Version
     "__version__",
     "LIP_PROTOCOL_VERSION",
