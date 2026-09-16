@@ -311,6 +311,30 @@ declares what it *does* and an administrator decides what that requires
 rather than refusing one. Both record the attempt, so a coordinator can tell
 afterwards what an execution reached for.
 
+`require_scope()` has one weakness that is not about how it is written:
+somebody has to remember to call it, and forgetting yields code that runs
+unchecked. Worse, an execution that reported no scope use is indistinguishable
+from one that legitimately needed none — the omission is invisible. Bind the
+scope to the credential instead, and there is nothing to forget:
+
+```python
+from agentic_bus import ScopedResource
+
+class RefundAgent(BaseAgent):
+    def __init__(self):
+        super().__init__(agent_id="refunds")
+        self.ledger = ScopedResource("payments:refund", lambda: Ledger(...))
+
+    async def execute_task(self, payload, context):
+        ledger = self.ledger.get()        # refuses here, or hands over the client
+        return {"refunded": await ledger.refund(payload["order_id"])}
+```
+
+The factory does not run until a check passes, so a scope never granted is a
+connection never opened. Reaching past this to build the client directly is
+still possible — the point is that it now takes deliberate effort rather than
+an oversight, and deliberate effort shows up in review.
+
 A step passes its result to the next one through the session's shared memory,
 which lives on the coordinator and carries a per-agent access policy derived
 from the composition plan:

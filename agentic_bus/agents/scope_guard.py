@@ -27,10 +27,14 @@ from __future__ import annotations
 import contextvars
 import logging
 from dataclasses import dataclass, field
+from typing import Callable, Generic, TypeVar
 
 from agentic_bus.core.scopes import covered_by_any, normalise
 
 logger = logging.getLogger(__name__)
+
+#: The client a :class:`ScopedResource` hands out.
+T = TypeVar("T")
 
 
 class ScopeDenied(PermissionError):
@@ -152,3 +156,74 @@ def scope_is_held(scope: str) -> bool:
     if scope and normalise(scope) not in grant.used:
         grant.used.append(normalise(scope))
     return grant.permits(scope)
+
+
+class ScopedResource(Generic[T]):
+    """A credential that only materialises for an execution holding its scope.
+
+    :func:`require_scope` has one weakness that has nothing to do with how it
+    is written: somebody has to remember to call it. Forgetting yields code
+    that runs unchecked, and a coordinator reconciling usage cannot tell that
+    apart from an execution that legitimately needed nothing — an empty report
+    looks exactly like innocence.
+
+    This inverts the failure. The client is not reachable except through
+    :meth:`get`, which checks first, so forgetting the check no longer
+    produces unguarded access: it produces code with nothing to call.
+
+    Bypassing is still possible — nothing stops someone reaching past this and
+    constructing the client directly. That is the point, and the whole of the
+    improvement: the wrong path now costs deliberate effort instead of an
+    oversight, and deliberate effort is visible in review. An in-process check
+    can never be made mandatory; it can be made hard to omit by accident.
+
+    The factory does not run until a check passes, so **a scope never granted
+    is a connection never opened**. After the first success the value is kept
+    and returned on later calls — but the check runs every time, so a grant
+    that stops covering the scope stops handing out the client, cached or not.
+
+    Used from an agent::
+
+        def __init__(self) -> None:
+            super().__init__(agent_id="crm-reader")
+            self.crm = ScopedResource("crm:read", lambda: CRMClient(...))
+
+        async def execute_task(self, payload, context):
+            crm = self.crm.get()        # raises ScopeDenied if not held
+            return await crm.query(...)
+
+    Outside an execution there is no grant and nothing is checked, matching
+    :func:`require_scope` — a script or a test that never registered is not a
+    caller an attacker reached through the bus.
+    """
+
+    __slots__ = ("_scope", "_factory", "_value", "_built")
+
+    def __init__(self, scope: str, factory: Callable[[], T]) -> None:
+        self._scope = scope
+        self._factory = factory
+        self._value: T | None = None
+        self._built = False
+
+    @property
+    def scope(self) -> str:
+        """The scope this resource is gated on. Read-only on purpose."""
+        return self._scope
+
+    def get(self) -> T:
+        """The client, once this execution is shown to hold the scope.
+
+        Raises :class:`ScopeDenied` otherwise, which is a ``PermissionError``
+        and which :meth:`~agentic_bus.agents.base.agent.BaseAgent.execute_task`
+        already reports as a refusal rather than a failure.
+        """
+        require_scope(self._scope)
+        if not self._built:
+            self._value = self._factory()
+            self._built = True
+        return self._value  # type: ignore[return-value]
+
+    @property
+    def is_built(self) -> bool:
+        """Whether the factory has run. False until a check first passes."""
+        return self._built

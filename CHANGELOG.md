@@ -94,10 +94,14 @@ until both sides are current.
   interoperate; until then "LIP-compliant" is an assertion nobody can check.
 
   Twelve requirements, graded MUST and SHOULD, each citing the section it
-  comes from. `--json` emits a machine-readable report. The reference SDK is
-  tested against the suite, and each check is also exercised against an agent
-  that violates exactly that requirement — a conformance suite everything
-  passes certifies nothing.
+  comes from. `--json` emits a machine-readable report, in which `detail`
+  carries diagnostics for the requirements that did not pass and is empty
+  elsewhere.
+
+  The reference SDK is tested against the suite, so `BaseAgent` failing the
+  specification it publishes now breaks our own build. Each check is also
+  exercised against an agent that violates exactly that requirement — a
+  conformance suite everything passes certifies nothing.
 
 - `LocalBus.malformed` records frames that could not be parsed as an envelope.
   They never reach `messages`, so a malformed sender previously looked

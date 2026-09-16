@@ -48,6 +48,7 @@ PUBLIC_NAMES = [
     "require_scope",
     "scope_is_held",
     "ScopeDenied",
+    "ScopedResource",
     "remember",
     "__version__",
 ]

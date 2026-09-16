@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://liquidinterfaces.org/schemas/0.3.0/execute-payload.json",
   "x-lip-version": "0.3.0",
-  "description": "Payload for ``message_type='execute'``.",
+  "description": "Payload for ``message_type='execute'``.\n\nThe coordinator authorising one step, and telling the agent what that\nstep was authorised for.",
   "properties": {
     "execution_plan": {
       "additionalProperties": true,
@@ -10,11 +10,24 @@
       "type": "object"
     },
     "authorized_scopes": {
+      "description": "What this step may do, after every narrowing: the requester's own authority, what the interaction claimed, and what this agent's capability was bound to. An agent MUST NOT assume it holds anything not listed here.",
       "items": {
         "type": "string"
       },
       "title": "Authorized Scopes",
       "type": "array"
+    },
+    "capability_id": {
+      "default": "",
+      "description": "Which of the agent's capabilities is being executed. Echoed back on the completion so the coordinator can check the artifact against the offer that promised its shape \u2014 one agent can hold several accepted capabilities in a session.",
+      "title": "Capability Id",
+      "type": "string"
+    },
+    "memory_snapshot": {
+      "additionalProperties": true,
+      "description": "Session memory this agent is permitted to read.",
+      "title": "Memory Snapshot",
+      "type": "object"
     }
   },
   "title": "LIP execute payload",

@@ -176,6 +176,49 @@ class TestReportShape:
         assert parsed["protocol_version"]
         assert len(parsed["results"]) == len(REQUIREMENTS)
 
+    async def test_passing_results_carry_no_detail_text(self):
+        """`detail` explains a failure; on a PASS it reads as one.
+
+        The terminal output only prints detail for non-passing checks, so a
+        stray explanation is invisible there and shows up only in the JSON
+        that other implementations' CI parses.
+        """
+        report = await _report_for(WellBehavedAgent(agent_id="good-agent"))
+        import json as _json
+
+        parsed = _json.loads(report_to_json(report))
+        passing = [r for r in parsed["results"] if r["status"] == "PASS"]
+        assert passing, "expected a conformant run to have passing results"
+        for result in passing:
+            assert not result["detail"], (
+                f"{result['id']} passed but carries detail: {result['detail']}"
+            )
+
+    async def test_failure_details_name_message_types_by_wire_value(self):
+        """The report is read by implementations that are not in Python."""
+        import websockets
+
+        async with LocalBus() as bus:
+            # A client that talks before it registers, which is what
+            # LIP-REG-001 exists to catch.
+            async with websockets.connect(bus.uri) as socket:
+                early = build_envelope(
+                    MessageType.EVENT,
+                    SenderInfo(kind=SenderKind.AGENT, id="talkative"),
+                    "s1",
+                    {"category": "info", "summary": "hello"},
+                )
+                await socket.send(early.model_dump_json())
+                await asyncio.sleep(0.2)
+
+                report = await run_agent_conformance(bus=bus, timeout=0.5)
+
+        by_id = {r.requirement.id: r for r in report.results}
+        detail = by_id["LIP-REG-001"].detail
+        assert not by_id["LIP-REG-001"].passed
+        assert "'event'" in detail, detail
+        assert "MessageType." not in report_to_json(report)
+
     async def test_the_rendered_report_names_failures(self):
         async with LocalBus() as bus:
             report = await run_agent_conformance(bus=bus, timeout=0.5)

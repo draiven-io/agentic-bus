@@ -192,6 +192,50 @@ class TestProtocolVersion:
         )
 
 
+class TestPayloadsMatchTheWire:
+    """A typed payload that omits what the coordinator sends is a lie.
+
+    The specification says the generated schemas cannot drift from what goes
+    over the wire, because they are produced from these models. That holds
+    only while the models describe every field the runtime actually sends —
+    and the runtime builds some payloads as plain dicts, so nothing enforces
+    it but this.
+
+    Found by writing a worked example and validating its JSON against the
+    models: `capability_id` had been on the wire and absent from the schema
+    since artifact validation landed.
+    """
+
+    def test_execute_declares_every_field_the_runtime_sends(self):
+        from agentic_bus.core.protocol.envelope import ExecutePayload
+
+        # The keys runtime._make_ws_executor puts in an execute payload.
+        sent = {
+            "execution_plan",
+            "authorized_scopes",
+            "capability_id",
+            "memory_snapshot",
+        }
+        declared = set(ExecutePayload.model_fields)
+
+        missing = sent - declared
+        assert missing == set(), (
+            f"the coordinator sends {sorted(missing)} and ExecutePayload does "
+            "not declare it, so the published schema does not either"
+        )
+
+    def test_complete_carries_metadata_for_the_reconciliation_fields(self):
+        """used_scopes and capability_id ride in metadata, which is untyped.
+
+        Deliberate — metadata is an open map — but worth pinning that the
+        field exists, since artifact validation and scope reconciliation both
+        read through it.
+        """
+        from agentic_bus.core.protocol.envelope import CompletePayload
+
+        assert "metadata" in CompletePayload.model_fields
+
+
 class TestSchemaExport:
     """The published JSON Schemas are generated from these models.
 
