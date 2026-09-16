@@ -52,6 +52,8 @@ PUBLIC_NAMES = [
     "remember",
     "recall",
     "recalled",
+    "inputs",
+    "InvalidInput",
     "__version__",
 ]
 

@@ -10,6 +10,7 @@ Implements:
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 from typing import Any
@@ -56,6 +57,42 @@ Return JSON:
 Rank candidates by descending suitability_score.
 Only mark as acceptable those whose capabilities genuinely advance the intent.
 """
+
+
+_ORDER_PROMPT = """You are ordering the steps of an execution plan.
+
+The intent was decomposed into sub-intents, some of which depend on others:
+{sub_intents}
+
+Rationale for the decomposition: {rationale}
+
+These are the steps that were offered and accepted (index, agent, capability,
+what it does):
+{steps}
+
+Match each step to the sub-intent it fulfils, then order the steps so that no
+step runs before the steps it depends on. A step that consumes what another
+produces comes after it.
+
+Return ONLY a JSON object of the form {{"order": [<index>, <index>, ...]}}
+listing every index exactly once. No prose, no markdown fence."""
+
+
+def _parse_json_object(raw: Any) -> dict[str, Any]:
+    """Read the object out of a model's answer, fence and all."""
+    if isinstance(raw, dict):
+        return raw
+    text = str(raw).strip()
+    if text.startswith("```"):
+        text = text.split("```")[1] if "```" in text[3:] else text[3:]
+        text = text.removeprefix("json").strip()
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        text = text[start : end + 1]
+    parsed = json.loads(text)
+    if not isinstance(parsed, dict):
+        raise ValueError(f"expected an object, got {type(parsed).__name__}")
+    return parsed
 
 
 class CandidateScore(object):
@@ -274,6 +311,111 @@ class NegotiationEngine:
             for o in accepted
         ]
         return {"steps": steps, "viable": True}
+
+    async def order_steps(
+        self,
+        steps: list[dict[str, Any]],
+        decomposition: dict[str, Any] | None,
+        *,
+        llm: Any = None,
+    ) -> list[dict[str, Any]]:
+        """Put *steps* in an order that respects the intent's decomposition.
+
+        ``compose_offers`` lists steps in the order their offers arrived,
+        which is network timing. The intent processor has already spent a
+        model call producing ``sub_intents`` with ``dependencies``; until
+        now that result was written to the session archive and never read
+        back. This is where it is read back.
+
+        The step *set* is authoritative and the ordering is advisory: the
+        model may only permute what it was given. An answer that drops,
+        repeats or invents a step is discarded and the original order kept,
+        with a warning — a wrong order is a bug, a missing step is a
+        different plan.
+
+        Never raises. A step list with fewer than two entries, a missing
+        decomposition, or an unusable model all return *steps* unchanged.
+        """
+        if len(steps) < 2:
+            return steps
+        subs = (decomposition or {}).get("sub_intents") or []
+        if not subs:
+            return steps
+
+        if llm is None:
+            from agentic_bus.core.llm import get_llm
+
+            try:
+                llm = get_llm()
+            except Exception as exc:
+                # No model configured. Ordering is advisory, so a deployment
+                # without one keeps the offer order it always had — this must
+                # never take plan composition down. `get_llm()` raises rather
+                # than returning None when nothing is set up.
+                logger.info(
+                    "No LLM available to order steps (%s); keeping offer order",
+                    type(exc).__name__,
+                )
+                return steps
+
+        prompt = _ORDER_PROMPT.format(
+            rationale=(decomposition or {}).get("rationale", ""),
+            sub_intents=json.dumps(
+                [
+                    {
+                        "id": s.get("id"),
+                        "description": s.get("description"),
+                        "dependencies": s.get("dependencies") or [],
+                    }
+                    for s in subs
+                ],
+                indent=2,
+                ensure_ascii=False,
+            ),
+            steps=json.dumps(
+                [
+                    {
+                        "index": i,
+                        "agent_id": st.get("agent_id"),
+                        "capability_id": st.get("capability_id"),
+                        "description": st.get("description", ""),
+                    }
+                    for i, st in enumerate(steps)
+                ],
+                indent=2,
+                ensure_ascii=False,
+            ),
+        )
+
+        try:
+            response = await llm.ainvoke(prompt)
+            raw = getattr(response, "content", response)
+            answer = _parse_json_object(raw)
+            order = answer.get("order")
+        except Exception as exc:
+            logger.warning("Could not order steps (%s); keeping offer order", exc)
+            return steps
+
+        n = len(steps)
+        if (
+            not isinstance(order, list)
+            or len(order) != n
+            or sorted(order) != list(range(n))
+        ):
+            logger.warning(
+                "Step ordering answered with %r for %d step(s); keeping offer order",
+                order,
+                n,
+            )
+            return steps
+
+        ordered = [steps[i] for i in order]
+        logger.info(
+            "Ordered %d step(s) by decomposition: %s",
+            n,
+            " → ".join(f"{s.get('agent_id')}:{s.get('capability_id')}" for s in ordered),
+        )
+        return ordered
 
     def needs_fallback(
         self,

@@ -89,13 +89,23 @@ the check, and the factory does not run until the check passes — a scope never
 granted is a connection never opened.
 
 **Working data travels through session memory; the artifact reports.** The CRM
-agent stages the rows with `remember()` and returns a summary; the sender picks
-them up with `recall()`. The summary is what gets validated against the
-`output_schema` its offer promised — it carries no rows of its own, because it
-does not have to.
+agent stages the rows with `remember()` and returns a summary. The summary is
+what gets validated against the `output_schema` its offer promised — it carries
+no rows of its own, because it does not have to.
 
-What `recall()` sees is filtered by the plan: each step may read the namespaces
-of the steps before it, and nothing else.
+**The sender knows no other agent.** It declares `EnvioModelo` — recipients, a
+subject, a body — and reads exactly those fields off its context. It never
+names the CRM agent, the document agent, or a memory key. At dispatch the
+coordinator composes that shape from what the earlier steps produced: the model
+is shown the *shape* of what is in memory (`crm-reader.clientes: list[4] of
+{id, nome, email, criado_em}`), never the data, and answers with references
+that the coordinator resolves in code. That mapping between two agents'
+ontologies is computed for this interaction and dissolves with it — which is
+what "liquid interface" means once it stops being a metaphor.
+
+**Steps run in dependency order.** The intent processor's decomposition names
+which sub-intents depend on which; the plan is ordered by it, so the sender
+runs after both readers instead of in whatever order their offers arrived.
 
 **The template is classified `Publico`.** Sensitivity, not destination. The
 recipients *are* external — they are customers — so an invariant reading only

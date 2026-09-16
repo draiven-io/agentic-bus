@@ -962,6 +962,15 @@ class CoordinatorRuntime:
         Execution is blocked until the requester explicitly approves.
         """
         plan = self.negotiation.compose_offers(session.offers)
+
+        # The intent processor already spent a model call working out which
+        # sub-intents depend on which. Until here that answer was archived and
+        # never read; `compose_offers` listed steps in the order their offers
+        # arrived, which is network timing. Order them by what depends on what.
+        plan["steps"] = await self.negotiation.order_steps(
+            plan.get("steps", []),
+            session.composition_plan.get("decomposition"),
+        )
         session.composition_plan.update(plan)
 
         if not plan.get("viable"):
@@ -986,12 +995,6 @@ class CoordinatorRuntime:
                     await peer.send_envelope(reject_env)
             await self._dissolve_session(session.session_id)
             return
-
-        # Fill each step's declared parameters from the intent, so the agent
-        # is handed structured input instead of prose to parse. Done here
-        # rather than in the agent because the coordinator is the only party
-        # with the intent, every capability's shape, and no credential.
-        await self._compose_step_inputs(session, plan)
 
         # Build merged output schema
         merged_output_schema = self._build_merged_output_schema(plan)
@@ -1177,73 +1180,91 @@ Execution plan steps:
     # Output schema merging
     # -----------------------------------------------------------------------
 
-    def _step_inputs_for(
+    def _plan_step_for(
         self, session: Any, agent_id: str, capability_id: str
-    ) -> dict[str, Any]:
-        """The parameters composed for this step, or nothing.
+    ) -> dict[str, Any] | None:
+        """The plan step this dispatch is executing, or None.
 
         Matched on agent *and* capability: one agent can hold several accepted
         capabilities in a session, and matching on the agent alone would hand
         a step the parameters composed for a different one.
         """
         if session is None:
-            return {}
+            return None
         for step in (getattr(session, "composition_plan", {}) or {}).get("steps", []):
             if step.get("agent_id") != agent_id:
                 continue
             if capability_id and step.get("capability_id") != capability_id:
                 continue
-            return dict(step.get("inputs") or {})
-        return {}
+            return step
+        return None
 
-    async def _compose_step_inputs(self, session: Any, plan: dict[str, Any]) -> None:
-        """Compose every step's parameters, and say so when one could not be.
+    async def _compose_inputs_for_dispatch(
+        self,
+        session: Any,
+        step: dict[str, Any] | None,
+        *,
+        prior_results: dict[str, Any],
+        memory: dict[str, Any],
+    ) -> dict[str, Any]:
+        """This step's parameters, composed now that earlier steps have run.
 
-        A step whose parameters do not match the shape its own agent published
-        is not executed with what was produced: the parameters are dropped and
-        the step falls back to the requester's context, which is the behaviour
-        every deployment had before this existed. Sending a half-filled
-        request would be worse than sending none — the agent would act on a
-        shape nobody validated.
+        Composing at dispatch rather than at plan time is what lets a step be
+        parameterised from what the steps before it produced — and that is
+        where two agents that never met get joined. The producer published
+        the shape of what it made, the consumer published the shape of what
+        it needs, and neither named the other; the mapping between them is
+        computed here, for this interaction, and dissolves with it.
+
+        The model is shown the *shapes* of what is in memory, never the
+        values, and answers with references that are resolved in code. A
+        result that fails validation is not sent: the step falls back to the
+        requester's context, which is the behaviour every deployment had
+        before this existed. Sending a half-filled request would be worse
+        than sending none — the agent would act on a shape nobody validated.
         """
+        if not step or not step.get("input_schema"):
+            return {}
+
         from agentic_bus.core.step_inputs import compose_step_inputs
 
-        for step in plan.get("steps", []):
-            if not step.get("input_schema"):
-                continue
+        composed = await compose_step_inputs(
+            intent_text=getattr(getattr(session, "intent", None), "intent_text", "") or "",
+            step=step,
+            prior_results=prior_results,
+            memory=memory,
+        )
 
-            composed = await compose_step_inputs(
-                intent_text=getattr(session.intent, "intent_text", "") or "",
-                step=step,
+        if composed.ok and not composed.unchecked:
+            # Kept on the plan for the archive: what each step was told is
+            # part of what happened.
+            step["inputs"] = composed.inputs
+            logger.info(
+                "Composed parameters for %s:%s — %s",
+                step.get("agent_id"),
+                step.get("capability_id"),
+                ", ".join(composed.inputs) or "(none)",
             )
+            return composed.inputs
 
-            if composed.ok and not composed.unchecked:
-                step["inputs"] = composed.inputs
-                logger.info(
-                    "Composed parameters for %s:%s — %s",
-                    step.get("agent_id"),
-                    step.get("capability_id"),
-                    ", ".join(composed.inputs) or "(none)",
-                )
-                continue
-
-            if composed.violations:
-                logger.warning(
-                    "Parameters for %s:%s were not composed: %s",
-                    step.get("agent_id"),
-                    step.get("capability_id"),
-                    composed.summary(),
-                )
-                await self._emit_event(
-                    session.session_id,
-                    "warning",
-                    (
-                        f"Could not compose parameters for "
-                        f"{step.get('agent_id')}: {composed.summary()}"
-                    ),
-                    phase="negotiation",
-                    agent_id=step.get("agent_id", ""),
-                )
+        if composed.violations:
+            logger.warning(
+                "Parameters for %s:%s were not composed: %s",
+                step.get("agent_id"),
+                step.get("capability_id"),
+                composed.summary(),
+            )
+            await self._emit_event(
+                getattr(session, "session_id", ""),
+                "warning",
+                (
+                    f"Could not compose parameters for "
+                    f"{step.get('agent_id')}: {composed.summary()}"
+                ),
+                phase="execution",
+                agent_id=step.get("agent_id", ""),
+            )
+        return {}
 
     @staticmethod
     def _build_merged_output_schema(plan: dict[str, Any]) -> dict[str, Any]:
@@ -3125,6 +3146,14 @@ Execution plan steps:
             if session:
                 memory_snapshot = session.memory.snapshot_for_agent(agent_id)
 
+            # --- Compose this step's parameters, now that earlier steps ran ---
+            step_inputs = await runtime._compose_inputs_for_dispatch(
+                session,
+                runtime._plan_step_for(session, agent_id, capability_id),
+                prior_results=dict(state.get("step_results") or {}),
+                memory=memory_snapshot,
+            )
+
             # Send execute message to agent
             execute_env = build_envelope(
                 MessageType.EXECUTE,
@@ -3140,9 +3169,7 @@ Execution plan steps:
                         # published and validated against it.
                         "context": {
                             **(state.get("context") or {}),
-                            **runtime._step_inputs_for(
-                                session, agent_id, capability_id
-                            ),
+                            **step_inputs,
                         },
                         "prior_results": state.get("step_results", {}),
                     },
@@ -3160,6 +3187,9 @@ Execution plan steps:
                     "capability_id": (
                         capability.capability_id if capability is not None else ""
                     ),
+                    # The step's own capability, so the agent can find the
+                    # `input_model` it published for it.
+                    "agent_capability_id": capability_id,
                     "memory_snapshot": memory_snapshot,
                 },
                 inject_trace_context(),

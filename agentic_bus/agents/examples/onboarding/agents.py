@@ -28,7 +28,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from agentic_bus import ScopedResource, recall, remember
+from agentic_bus import ScopedResource, inputs, remember
 from agentic_bus.agents.base.agent import BaseAgent
 from agentic_bus.core.registry.capability_registry import AgentCapability
 
@@ -130,9 +130,10 @@ class _FakeMailer:
 class BuscaClientes(BaseModel):
     """What the CRM step needs to be told."""
 
-    cadastrado_desde: str = Field(
+    cadastrado_desde: str | None = Field(
+        default=None,
         description="Período de cadastro, como a intenção o expressou — "
-        "'ontem', 'esta semana', ou uma data ISO."
+        "'ontem', 'esta semana', ou uma data ISO. Ausente: ontem.",
     )
     segmento: str | None = Field(
         default=None, description="Segmento de cliente, quando a intenção citar um."
@@ -143,8 +144,33 @@ class BuscaModelo(BaseModel):
     """What the document step needs to be told."""
 
     descricao: str = Field(
+        default="modelo de e-mail de boas-vindas",
         description="O documento procurado, descrito em linguagem natural — "
-        "por exemplo 'modelo de e-mail de boas-vindas'."
+        "por exemplo 'modelo de e-mail de boas-vindas'.",
+    )
+
+
+class Destinatario(BaseModel):
+    nome: str = Field(description="Como se dirigir à pessoa")
+    email: str = Field(description="Endereço de destino")
+
+
+class EnvioModelo(BaseModel):
+    """What the sender needs to be told.
+
+    Nothing here names the CRM, the document store, or any memory key. The
+    sender declares the shape it consumes; the coordinator maps whatever the
+    earlier steps produced onto it. That mapping is the liquid interface: it
+    is computed for this interaction, from the producers' published output
+    shapes and this consumer's published input shape, and it does not outlive
+    the session. The producer and the consumer never learn each other's
+    names, which is the property the protocol exists for.
+    """
+
+    destinatarios: list[Destinatario] = Field(description="Para quem enviar")
+    assunto: str = Field(description="Linha de assunto")
+    corpo: str = Field(
+        description="Corpo do e-mail; pode conter {nome} para personalização"
     )
 
 
@@ -211,11 +237,11 @@ class CRMAgent(BaseAgent):
     ) -> dict[str, Any]:
         crm = self.crm.get()
 
-        # Read straight off the shape this capability declared. The
-        # coordinator composed it from the intent and validated it against
-        # that shape before sending — there is no blob to go fishing in, and
-        # no prose here to parse.
-        desde = context.get("cadastrado_desde") or str(date.today() - timedelta(days=1))
+        # The shape this capability declared, as an instance. BaseAgent
+        # already validated the context against it before calling this —
+        # there is no blob to go fishing in, and no prose here to parse.
+        req = inputs(BuscaClientes)
+        desde = req.cadastrado_desde or str(date.today() - timedelta(days=1))
         linhas = await crm.buscar(cadastrado_desde=desde)
 
         key = f"{self.agent_id}.clientes"
@@ -271,7 +297,7 @@ class SharePointAgent(BaseAgent):
         # Two phases, and the split is the point. Search returns metadata —
         # title, folder, sensitivity — and never a body. Choosing which
         # document to open therefore never requires reading any of them.
-        pedido = context.get("descricao") or "e-mail de boas-vindas"
+        pedido = inputs(BuscaModelo).descricao
         candidatos = await sharepoint.search(pedido)
         if not candidatos:
             return {"error": "nenhum modelo encontrado", "consulta": pedido}
@@ -325,9 +351,11 @@ class SharePointAgent(BaseAgent):
 class EmailAgent(BaseAgent):
     """Sends mail. Holds ``email:send`` and nothing else — the egress point.
 
-    It reads neither the CRM nor SharePoint. Everything it acts on arrives
-    from the steps before it, which is what keeps the combination visible to
-    the coordinator instead of hidden inside one agent.
+    It reads neither the CRM nor SharePoint, and it does not know their
+    names. Everything it acts on arrives in the shape *it* declared, composed
+    by the coordinator from what earlier steps produced — which is what keeps
+    the combination visible to the coordinator instead of hidden inside one
+    agent, and what keeps this agent ignorant of the others' ontology.
     """
 
     def __init__(self, coordinator_uri: str = "ws://localhost:8765") -> None:
@@ -352,6 +380,7 @@ class EmailAgent(BaseAgent):
                 ),
                 required_scopes=["email:send"],
                 supported_data_domains=["communication"],
+                input_model=EnvioModelo,
                 operational_constraints={"max_recipients": 5_000},
                 expected_artifacts=["envio_resumo"],
                 estimated_cost=0.02,
@@ -365,30 +394,22 @@ class EmailAgent(BaseAgent):
     ) -> dict[str, Any]:
         mailer = self.mailer.get()
 
-        # What the previous steps left in shared memory. The plan granted this
-        # step read access to their namespaces, so the snapshot holds exactly
-        # what it was authorised to see — and this agent invents nothing: with
-        # no recipients and no template it refuses rather than guessing,
-        # because an egress point that improvises is one nobody can reason
-        # about.
-        rows = recall("crm-reader.clientes", default=[])
-        modelo = recall("sharepoint-reader.modelo", default={})
+        # The shape this agent declared, as an instance. The coordinator
+        # composed it at dispatch from what the earlier steps produced —
+        # mapping the CRM agent's rows onto `destinatarios` and the document
+        # agent's template onto `assunto`/`corpo` — and BaseAgent validated
+        # the result against `EnvioModelo` before this ran. This agent knows
+        # no other agent's name and no memory key. It invents nothing either:
+        # a missing recipient list or template is refused as `invalid_input`
+        # before this line, because an egress point that improvises is one
+        # nobody can reason about.
+        req = inputs(EnvioModelo)
 
-        corpo = modelo.get("corpo") or ""
-        titulo = modelo.get("titulo") or ""
-
-        if not rows or not corpo:
-            return {
-                "error": "faltam destinatários ou modelo",
-                "destinatarios_recebidos": len(rows),
-                "modelo_recebido": bool(corpo),
-            }
-
-        for row in rows:
+        for d in req.destinatarios:
             await mailer.send(
-                to=row["email"],
-                subject=titulo,
-                body=corpo.format(nome=row.get("nome", "")),
+                to=d.email,
+                subject=req.assunto,
+                body=req.corpo.format(nome=d.nome),
             )
 
         return EnvioResumo(
