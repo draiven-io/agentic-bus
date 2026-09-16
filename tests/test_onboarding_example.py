@@ -70,9 +70,9 @@ def _compose_for_sender(crm, doc) -> dict:
     doc_key = doc.artifacts[0]["memory_key"]
     return resolve_refs(
         {
-            "destinatarios": {"$from": crm_key, "$fields": {"nome": "nome", "email": "email"}},
-            "assunto": {"$from": doc_key, "$path": "titulo"},
-            "corpo": {"$from": doc_key, "$path": "corpo"},
+            "recipients": {"$from": crm_key, "$fields": {"name": "name", "email": "email"}},
+            "subject": {"$from": doc_key, "$path": "title"},
+            "body": {"$from": doc_key, "$path": "body"},
         },
         memory,
     )
@@ -81,9 +81,9 @@ def _compose_for_sender(crm, doc) -> dict:
 #: A well-formed context for the sender, for tests whose subject is not the
 #: input. Extra keys the other agents ignore.
 _VALID_SEND = {
-    "destinatarios": [{"nome": "A", "email": "a@x.example"}],
-    "assunto": "s",
-    "corpo": "c",
+    "recipients": [{"name": "A", "email": "a@x.example"}],
+    "subject": "s",
+    "body": "c",
 }
 
 
@@ -159,7 +159,7 @@ class TestTheSteps:
         assert payload.status == "success"
         # The rows travel through memory; the artifact is the summary, and
         # carries no rows of its own now that the consumer can read them.
-        rows = payload.memory_writes["crm-reader.clientes"]
+        rows = payload.memory_writes["crm-reader.customers"]
         assert len(rows) == payload.artifacts[0]["row_count"]
         assert "rows" not in payload.artifacts[0]
         assert "email" in payload.artifacts[0]["columns"]
@@ -170,7 +170,7 @@ class TestTheSteps:
         tenant does not fire on this plan."""
         payload = await _execute(SharePointAgent(), scopes=["doc:read"])
 
-        assert payload.artifacts[0]["classificacao"] == "Publico"
+        assert payload.artifacts[0]["classification"] == "Public"
 
     async def test_the_search_finds_the_template_among_others(self):
         """The library holds a refund policy and a salary table too. Finding
@@ -179,24 +179,24 @@ class TestTheSteps:
         payload = await _execute(
             SharePointAgent(),
             scopes=["doc:read"],
-            context={"modelo": {"descricao": "modelo de e-mail de boas-vindas"}},
+            context={"description": "welcome email template"},
         )
 
-        assert payload.artifacts[0]["doc_id"] == "welcome-pt-br"
+        assert payload.artifacts[0]["doc_id"] == "welcome-email"
 
     async def test_the_sender_refuses_rather_than_guessing(self):
         """An egress point that improvises is one nobody can reason about.
 
-        The refusal is the declared type's now: `EnvioModelo` requires
+        The refusal is the declared type's now: `SendTemplate` requires
         recipients and a template, so an empty context is `invalid_input`
         before the body ever runs — not a branch the author had to remember.
         """
         payload = await _execute(EmailAgent(), scopes=["email:send"])
 
         assert payload.status == "invalid_input"
-        assert payload.artifacts[0]["model"] == "EnvioModelo"
+        assert payload.artifacts[0]["model"] == "SendTemplate"
         fields = {e["field"] for e in payload.artifacts[0]["errors"]}
-        assert {"destinatarios", "assunto", "corpo"} <= fields
+        assert {"recipients", "subject", "body"} <= fields
 
     async def test_the_sender_writes_to_every_recipient(self):
         crm = await _execute(CRMAgent(), scopes=["crm:read"])
@@ -212,7 +212,7 @@ class TestTheSteps:
         )
 
         assert payload.status == "success"
-        assert payload.artifacts[0]["enviados"] == crm.artifacts[0]["row_count"]
+        assert payload.artifacts[0]["sent"] == crm.artifacts[0]["row_count"]
 
     async def test_the_sender_stages_nothing(self):
         """It is the egress point, not a producer of working data."""
@@ -274,21 +274,21 @@ class TestTheChoiceIsMadeOverMetadata:
     async def test_search_returns_no_bodies(self):
         from agentic_bus.agents.examples.onboarding.agents import _FakeSharePoint
 
-        candidatos = await _FakeSharePoint().search("e-mail de boas-vindas")
+        candidates = await _FakeSharePoint().search("welcome email")
 
-        assert candidatos
-        for candidate in candidatos:
-            assert "corpo" not in candidate
+        assert candidates
+        for candidate in candidates:
+            assert "body" not in candidate
 
     def test_choose_sees_only_titles_and_labels(self):
         """So an injected sentence inside a payroll file is not in its input."""
         agent = SharePointAgent()
-        candidatos = [
-            {"doc_id": "a", "titulo": "Modelo de boas-vindas", "classificacao": "Publico"},
-            {"doc_id": "b", "titulo": "Tabela salarial 2026", "classificacao": "Confidencial"},
+        candidates = [
+            {"doc_id": "a", "title": "Welcome email template", "classification": "Public"},
+            {"doc_id": "b", "title": "Salary table 2026", "classification": "Confidential"},
         ]
 
-        assert agent.choose("modelo de boas-vindas", candidatos)["doc_id"] == "a"
+        assert agent.choose("welcome email template", candidates)["doc_id"] == "a"
 
     def test_a_bad_choice_is_bounded_by_the_scope(self):
         """Even steered onto the salary table, this agent can only read it.
@@ -306,7 +306,7 @@ class TestTheChoiceIsMadeOverMetadata:
 class TestTheSenderKnowsNoOtherAgent:
     """The reason deferred composition exists.
 
-    Before, the sender did `recall("crm-reader.clientes")` — the producer's
+    Before, the sender did `recall("crm-reader.customers")` — the producer's
     id, the producer's key, the producer's row layout. Three pieces of another
     agent's ontology, hard-coded in the consumer. That is the coupling the
     protocol claims to dissolve, rebuilt one layer down.
@@ -315,7 +315,7 @@ class TestTheSenderKnowsNoOtherAgent:
     def test_the_sender_declares_its_own_input_shape(self):
         schema = EmailAgent().capabilities()[0].input_schema
 
-        assert set(schema["required"]) == {"destinatarios", "assunto", "corpo"}
+        assert set(schema["required"]) == {"recipients", "subject", "body"}
 
     def test_its_declared_shape_names_no_producer(self):
         import json

@@ -22,9 +22,9 @@ to receive. :func:`inputs` then hands the author the validated instance::
     from agentic_bus import inputs
 
     async def execute_task(self, payload, context):
-        req = inputs(EnvioModelo)
-        for d in req.destinatarios:
-            await mailer.send(to=d.email, subject=req.assunto, ...)
+        req = inputs(SendTemplate)
+        for r in req.recipients:
+            await mailer.send(to=r.email, subject=req.subject, ...)
 
 Extra fields are ignored, as Pydantic does by default. That is the right
 default here: the context the coordinator sends still carries whatever the

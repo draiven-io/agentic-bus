@@ -59,8 +59,8 @@ def remember(key: str, value: Any) -> None:
         from agentic_bus import remember
 
         async def execute_task(self, payload, context):
-            rows = await self.crm.get().buscar(...)
-            remember(f"{self.agent_id}.clientes", {"rows": len(rows)})
+            rows = await self.crm.get().find(...)
+            remember(f"{self.agent_id}.customers", {"rows": len(rows)})
             return {"count": len(rows)}
 
     Outside an execution there is nothing to stage and this does nothing,
@@ -121,8 +121,8 @@ def recall(key: str, default: Any = None) -> Any:
         from agentic_bus import recall
 
         async def execute_task(self, payload, context):
-            clientes = recall("crm-reader.clientes", default=[])
-            return {"enviados": len(clientes)}
+            customers = recall("crm-reader.customers", default=[])
+            return {"sent": len(customers)}
 
     What arrives is already filtered. The plan grants each step read access to
     the namespaces of the steps before it, so this returns what *this* agent

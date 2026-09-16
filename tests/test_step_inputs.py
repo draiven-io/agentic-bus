@@ -2,7 +2,7 @@
 
 A plan said *who* runs and never *what they run with*. The requester's context
 travelled to every step unchanged, so whoever wrote the intent had to know
-that step two would be a document agent expecting ``descricao`` — a contract,
+that step two would be a document agent expecting ``description`` — a contract,
 written in a JSON blob rather than an OpenAPI document, but a contract.
 
 These cover the half that was missing: a capability publishes the shape of its
@@ -25,12 +25,12 @@ from agentic_bus.core.step_inputs import (
 )
 
 
-class Busca(BaseModel):
-    descricao: str = Field(description="O que procurar")
-    limite: int | None = Field(default=None, description="Máximo de resultados")
+class Search(BaseModel):
+    description: str = Field(description="What to look for")
+    limit: int | None = Field(default=None, description="Maximum number of results")
 
 
-SCHEMA = Busca.model_json_schema()
+SCHEMA = Search.model_json_schema()
 
 
 class _Model:
@@ -50,8 +50,8 @@ class _Model:
 def _step(**over):
     return {
         "agent_id": "doc-reader",
-        "capability_id": "doc.buscar",
-        "description": "Busca documentos",
+        "capability_id": "doc.find",
+        "description": "Finds documents",
         "input_schema": SCHEMA,
         **over,
     }
@@ -61,9 +61,9 @@ class TestTheCapabilityPublishesItsInputShape:
     """The symmetry that was missing: output was declared, input was not."""
 
     def test_the_schema_is_derived_from_the_model(self):
-        capability = AgentCapability(capability_id="doc.buscar", input_model=Busca)
+        capability = AgentCapability(capability_id="doc.find", input_model=Search)
 
-        assert "descricao" in capability.input_schema["properties"]
+        assert "description" in capability.input_schema["properties"]
 
     def test_declaring_neither_leaves_it_empty(self):
         """Not every agent can describe its input, and demanding one would
@@ -74,7 +74,7 @@ class TestTheCapabilityPublishesItsInputShape:
         explicit = {"type": "object", "properties": {"q": {"type": "string"}}}
 
         capability = AgentCapability(
-            capability_id="x", input_model=Busca, input_schema=explicit
+            capability_id="x", input_model=Search, input_schema=explicit
         )
 
         assert capability.input_schema == explicit
@@ -88,19 +88,19 @@ class TestTheCapabilityPublishesItsInputShape:
 
 class TestValidation:
     def test_a_matching_object_passes(self):
-        result = validate_inputs({"descricao": "modelo de boas-vindas"}, SCHEMA)
+        result = validate_inputs({"description": "welcome template"}, SCHEMA)
 
         assert result.ok
         assert not result.unchecked
 
     def test_a_missing_required_field_is_a_violation(self):
-        result = validate_inputs({"limite": 10}, SCHEMA)
+        result = validate_inputs({"limit": 10}, SCHEMA)
 
         assert not result.ok
-        assert "descricao" in result.summary()
+        assert "description" in result.summary()
 
     def test_a_wrong_type_is_a_violation(self):
-        result = validate_inputs({"descricao": "x", "limite": "muitos"}, SCHEMA)
+        result = validate_inputs({"description": "x", "limit": "many"}, SCHEMA)
 
         assert not result.ok
 
@@ -121,46 +121,46 @@ class TestValidation:
 
 class TestComposition:
     async def test_it_fills_the_declared_shape_from_the_intent(self):
-        model = _Model('{"descricao": "modelo de e-mail de boas-vindas"}')
+        model = _Model('{"description": "welcome email template"}')
 
         composed = await compose_step_inputs(
-            intent_text="Envie o e-mail de boas-vindas para os clientes de ontem",
+            intent_text="Send the welcome email to yesterday's customers",
             step=_step(),
             llm=model,
         )
 
         assert composed.ok
-        assert composed.inputs == {"descricao": "modelo de e-mail de boas-vindas"}
+        assert composed.inputs == {"description": "welcome email template"}
 
     async def test_the_intent_and_the_schema_reach_the_model(self):
-        model = _Model('{"descricao": "x"}')
+        model = _Model('{"description": "x"}')
 
         await compose_step_inputs(
-            intent_text="uma intenção bem específica", step=_step(), llm=model
+            intent_text="a very specific intent", step=_step(), llm=model
         )
 
         prompt = model.prompts[0]
-        assert "uma intenção bem específica" in prompt
-        assert "descricao" in prompt
-        assert "doc.buscar" in prompt
+        assert "a very specific intent" in prompt
+        assert "description" in prompt
+        assert "doc.find" in prompt
 
     async def test_a_fenced_answer_is_read(self):
-        model = _Model('```json\n{"descricao": "x"}\n```')
+        model = _Model('```json\n{"description": "x"}\n```')
 
         composed = await compose_step_inputs(
             intent_text="i", step=_step(), llm=model
         )
 
-        assert composed.inputs == {"descricao": "x"}
+        assert composed.inputs == {"description": "x"}
 
     async def test_prose_around_the_object_is_tolerated(self):
-        model = _Model('Claro! Aqui está:\n{"descricao": "x"}\nEspero ter ajudado.')
+        model = _Model('Sure! Here it is:\n{"description": "x"}\nHope that helps.')
 
         composed = await compose_step_inputs(
             intent_text="i", step=_step(), llm=model
         )
 
-        assert composed.inputs == {"descricao": "x"}
+        assert composed.inputs == {"description": "x"}
 
     async def test_a_step_publishing_no_shape_is_unchecked(self):
         composed = await compose_step_inputs(
@@ -176,14 +176,14 @@ class TestWhatIsComposedIsChecked:
     an agent, and "compose it" is not the same promise as "compose it right"."""
 
     async def test_an_answer_the_schema_refuses_is_a_violation(self):
-        model = _Model('{"limite": 10}')  # no `descricao`
+        model = _Model('{"limit": 10}')  # no `description`
 
         composed = await compose_step_inputs(
             intent_text="i", step=_step(), llm=model
         )
 
         assert not composed.ok
-        assert "descricao" in composed.summary()
+        assert "description" in composed.summary()
 
     async def test_an_answer_that_is_not_an_object_is_a_violation(self):
         composed = await compose_step_inputs(
@@ -195,7 +195,7 @@ class TestWhatIsComposedIsChecked:
 
     async def test_unparseable_output_is_a_violation_not_an_exception(self):
         composed = await compose_step_inputs(
-            intent_text="i", step=_step(), llm=_Model("desculpe, não consegui")
+            intent_text="i", step=_step(), llm=_Model("sorry, I could not")
         )
 
         assert not composed.ok
@@ -242,7 +242,7 @@ class TestTheCoordinatorComposesAtDispatch:
             (),
             {
                 "session_id": "s1",
-                "intent": type("I", (), {"intent_text": "envie boas-vindas"})(),
+                "intent": type("I", (), {"intent_text": "send the welcome email"})(),
                 "composition_plan": {"steps": steps},
             },
         )()
@@ -280,7 +280,7 @@ class TestTheCoordinatorComposesAtDispatch:
         import agentic_bus.core.step_inputs as si
 
         async def fake(**kwargs):
-            return si.ComposedInputs(inputs={"descricao": "x"})
+            return si.ComposedInputs(inputs={"description": "x"})
 
         monkeypatch.setattr(si, "compose_step_inputs", fake)
         step = {"agent_id": "a", "capability_id": "c", "input_schema": SCHEMA}
@@ -289,8 +289,8 @@ class TestTheCoordinatorComposesAtDispatch:
             self._session([step]), step, prior_results={}, memory={}
         )
 
-        assert inputs == {"descricao": "x"}
-        assert step["inputs"] == {"descricao": "x"}
+        assert inputs == {"description": "x"}
+        assert step["inputs"] == {"description": "x"}
 
     async def test_a_violation_yields_nothing_rather_than_a_half_filled_request(
         self, monkeypatch
@@ -298,7 +298,7 @@ class TestTheCoordinatorComposesAtDispatch:
         import agentic_bus.core.step_inputs as si
 
         async def fake(**kwargs):
-            return si.ComposedInputs(inputs={"limite": 1}, violations=["descricao missing"])
+            return si.ComposedInputs(inputs={"limit": 1}, violations=["description missing"])
 
         monkeypatch.setattr(si, "compose_step_inputs", fake)
         step = {"agent_id": "a", "capability_id": "c", "input_schema": SCHEMA}
@@ -326,7 +326,7 @@ class TestTheCoordinatorComposesAtDispatch:
 
         async def fake(**kwargs):
             seen.update(kwargs)
-            return si.ComposedInputs(inputs={"descricao": "x"})
+            return si.ComposedInputs(inputs={"description": "x"})
 
         monkeypatch.setattr(si, "compose_step_inputs", fake)
         step = {"agent_id": "a", "capability_id": "c", "input_schema": SCHEMA}
@@ -335,12 +335,12 @@ class TestTheCoordinatorComposesAtDispatch:
             self._session([step]),
             step,
             prior_results={"crm": {"row_count": 4}},
-            memory={"crm.clientes": [{"email": "a@x"}]},
+            memory={"crm.customers": [{"email": "a@x"}]},
         )
 
         assert seen["prior_results"] == {"crm": {"row_count": 4}}
-        assert seen["memory"] == {"crm.clientes": [{"email": "a@x"}]}
-        assert seen["intent_text"] == "envie boas-vindas"
+        assert seen["memory"] == {"crm.customers": [{"email": "a@x"}]}
+        assert seen["intent_text"] == "send the welcome email"
 
 
 class TestReferencesAndShapes:
@@ -354,11 +354,11 @@ class TestReferencesAndShapes:
     def test_a_shape_carries_structure_and_never_a_value(self):
         from agentic_bus.core.step_inputs import describe_shape
 
-        rows = [{"id": 1, "nome": "Marta", "email": "marta@acme.example"}]
+        rows = [{"id": 1, "name": "Marta", "email": "marta@acme.example"}]
 
         shape = describe_shape(rows)
 
-        assert shape == "list[1] of {id, nome, email}"
+        assert shape == "list[1] of {id, name, email}"
         assert "Marta" not in shape and "acme" not in shape
 
     def test_a_string_shape_is_only_its_length(self):
@@ -384,12 +384,12 @@ class TestReferencesAndShapes:
     def test_a_fields_reference_projects_and_renames_each_row(self):
         from agentic_bus.core.step_inputs import resolve_refs
 
-        rows = [{"id": 1, "nome": "A", "email": "a@x", "criado_em": "ontem"}]
+        rows = [{"id": 1, "name": "A", "email": "a@x", "created_at": "yesterday"}]
         out = resolve_refs(
-            {"$from": "k", "$fields": {"name": "nome", "email": "email"}}, {"k": rows}
+            {"$from": "k", "$fields": {"full_name": "name", "email": "email"}}, {"k": rows}
         )
 
-        assert out == [{"name": "A", "email": "a@x"}]
+        assert out == [{"full_name": "A", "email": "a@x"}]
 
     def test_references_resolve_inside_nested_objects_and_lists(self):
         from agentic_bus.core.step_inputs import resolve_refs
@@ -407,46 +407,46 @@ class TestReferencesAndShapes:
         import pytest
 
         with pytest.raises(KeyError):
-            resolve_refs({"$from": "rh.salarios"}, {"crm.clientes": []})
+            resolve_refs({"$from": "hr.salaries"}, {"crm.customers": []})
 
     async def test_composition_resolves_references_before_validating(self):
         """What the schema checks is what the agent will receive."""
         model = _Model(
-            '{"descricao": {"$from": "sp.modelo", "$path": "titulo"}}'
+            '{"description": {"$from": "sp.template", "$path": "title"}}'
         )
 
         composed = await compose_step_inputs(
             intent_text="i",
             step=_step(),
-            memory={"sp.modelo": {"titulo": "Bem-vindo"}},
+            memory={"sp.template": {"title": "Welcome"}},
             llm=model,
         )
 
         assert composed.ok
-        assert composed.inputs == {"descricao": "Bem-vindo"}
+        assert composed.inputs == {"description": "Welcome"}
 
     async def test_a_reference_outside_this_step_s_memory_is_a_violation(self):
-        model = _Model('{"descricao": {"$from": "rh.salarios"}}')
+        model = _Model('{"description": {"$from": "hr.salaries"}}')
 
         composed = await compose_step_inputs(
-            intent_text="i", step=_step(), memory={"sp.modelo": {}}, llm=model
+            intent_text="i", step=_step(), memory={"sp.template": {}}, llm=model
         )
 
         assert not composed.ok
         assert "cannot read" in composed.summary()
 
     async def test_the_prompt_shows_memory_shapes_and_not_values(self):
-        model = _Model('{"descricao": "x"}')
+        model = _Model('{"description": "x"}')
 
         await compose_step_inputs(
             intent_text="i",
             step=_step(),
-            memory={"crm.clientes": [{"nome": "Marta", "email": "marta@acme.example"}]},
+            memory={"crm.customers": [{"name": "Marta", "email": "marta@acme.example"}]},
             llm=model,
         )
 
         prompt = model.prompts[0]
-        assert "crm.clientes: list[1] of {nome, email}" in prompt
+        assert "crm.customers: list[1] of {name, email}" in prompt
         assert "Marta" not in prompt
         assert "acme" not in prompt
 

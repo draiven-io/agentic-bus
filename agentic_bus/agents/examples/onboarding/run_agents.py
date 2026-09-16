@@ -45,11 +45,11 @@ async def main() -> None:
         logger.info("started %s", agent.agent_id)
 
     print()
-    print("  três agentes no ar, uma credencial cada, nenhum com modelo:")
+    print("  three agents up, one credential each:")
     for agent in agents:
         print(f"    {agent.agent_id:<20} {agent.capabilities()[0].required_scopes}")
     print()
-    print("  Ctrl+C para parar.")
+    print("  Ctrl+C to stop.")
     print()
 
     try:

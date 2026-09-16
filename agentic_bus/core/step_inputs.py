@@ -290,7 +290,7 @@ _SHAPE_KEYS = 12
 def describe_shape(value: Any, *, depth: int = 0) -> str:
     """A short, data-free description of *value*'s structure.
 
-    ``[{"id": 1, "nome": "A"}, ...]`` becomes ``list[2] of {id, nome}``. No
+    ``[{"id": 1, "name": "A"}, ...]`` becomes ``list[2] of {id, name}``. No
     value is ever included: a key name is structure, a cell is data.
     """
     if isinstance(value, dict):
