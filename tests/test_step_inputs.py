@@ -15,7 +15,6 @@ behaviour is not the same as sending it anyway.
 
 from __future__ import annotations
 
-import pytest
 from pydantic import BaseModel, Field
 
 from agentic_bus.core.registry.capability_registry import AgentCapability
