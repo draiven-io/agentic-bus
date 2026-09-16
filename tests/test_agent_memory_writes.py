@@ -18,8 +18,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from agentic_bus.agents.memory import (
     open_staging,
     recall,
@@ -275,7 +273,7 @@ class TestReading:
             reset_snapshot(snapshot)
 
     async def test_concurrent_executions_do_not_share_a_snapshot(self):
-        seen: dict[str, Any] = {}
+        seen: dict = {}
 
         async def execution(name: str) -> None:
             token = set_snapshot({"who": name})
