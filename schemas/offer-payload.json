@@ -56,6 +56,12 @@
       "title": "Required Scopes",
       "type": "array"
     },
+    "input_schema": {
+      "additionalProperties": true,
+      "description": "JSON Schema of the parameters this capability needs. The coordinator composes them for each step from the intent, so an agent receives structured input rather than prose to parse.",
+      "title": "Input Schema",
+      "type": "object"
+    },
     "output_schema": {
       "additionalProperties": true,
       "description": "JSON Schema (from ``Model.model_json_schema()``) describing the structured output the agent will produce.  Propagated to the requester via the accept message so it can deserialise results.",

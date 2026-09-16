@@ -987,6 +987,12 @@ class CoordinatorRuntime:
             await self._dissolve_session(session.session_id)
             return
 
+        # Fill each step's declared parameters from the intent, so the agent
+        # is handed structured input instead of prose to parse. Done here
+        # rather than in the agent because the coordinator is the only party
+        # with the intent, every capability's shape, and no credential.
+        await self._compose_step_inputs(session, plan)
+
         # Build merged output schema
         merged_output_schema = self._build_merged_output_schema(plan)
 
@@ -1170,6 +1176,74 @@ Execution plan steps:
     # -----------------------------------------------------------------------
     # Output schema merging
     # -----------------------------------------------------------------------
+
+    def _step_inputs_for(
+        self, session: Any, agent_id: str, capability_id: str
+    ) -> dict[str, Any]:
+        """The parameters composed for this step, or nothing.
+
+        Matched on agent *and* capability: one agent can hold several accepted
+        capabilities in a session, and matching on the agent alone would hand
+        a step the parameters composed for a different one.
+        """
+        if session is None:
+            return {}
+        for step in (getattr(session, "composition_plan", {}) or {}).get("steps", []):
+            if step.get("agent_id") != agent_id:
+                continue
+            if capability_id and step.get("capability_id") != capability_id:
+                continue
+            return dict(step.get("inputs") or {})
+        return {}
+
+    async def _compose_step_inputs(self, session: Any, plan: dict[str, Any]) -> None:
+        """Compose every step's parameters, and say so when one could not be.
+
+        A step whose parameters do not match the shape its own agent published
+        is not executed with what was produced: the parameters are dropped and
+        the step falls back to the requester's context, which is the behaviour
+        every deployment had before this existed. Sending a half-filled
+        request would be worse than sending none — the agent would act on a
+        shape nobody validated.
+        """
+        from agentic_bus.core.step_inputs import compose_step_inputs
+
+        for step in plan.get("steps", []):
+            if not step.get("input_schema"):
+                continue
+
+            composed = await compose_step_inputs(
+                intent_text=getattr(session.intent, "intent_text", "") or "",
+                step=step,
+            )
+
+            if composed.ok and not composed.unchecked:
+                step["inputs"] = composed.inputs
+                logger.info(
+                    "Composed parameters for %s:%s — %s",
+                    step.get("agent_id"),
+                    step.get("capability_id"),
+                    ", ".join(composed.inputs) or "(none)",
+                )
+                continue
+
+            if composed.violations:
+                logger.warning(
+                    "Parameters for %s:%s were not composed: %s",
+                    step.get("agent_id"),
+                    step.get("capability_id"),
+                    composed.summary(),
+                )
+                await self._emit_event(
+                    session.session_id,
+                    "warning",
+                    (
+                        f"Could not compose parameters for "
+                        f"{step.get('agent_id')}: {composed.summary()}"
+                    ),
+                    phase="negotiation",
+                    agent_id=step.get("agent_id", ""),
+                )
 
     @staticmethod
     def _build_merged_output_schema(plan: dict[str, Any]) -> dict[str, Any]:
@@ -3059,7 +3133,17 @@ Execution plan steps:
                 {
                     "execution_plan": {
                         "intent_text": state.get("intent_text", ""),
-                        "context": state.get("context", {}),
+                        # The requester's context, with this step's composed
+                        # parameters over it. The requester keeps its channel;
+                        # what the coordinator derived for *this* step wins,
+                        # because it was composed against the shape this agent
+                        # published and validated against it.
+                        "context": {
+                            **(state.get("context") or {}),
+                            **runtime._step_inputs_for(
+                                session, agent_id, capability_id
+                            ),
+                        },
                         "prior_results": state.get("step_results", {}),
                     },
                     # The last link in the chain. The capability already

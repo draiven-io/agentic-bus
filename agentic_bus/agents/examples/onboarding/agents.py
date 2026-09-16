@@ -127,6 +127,27 @@ class _FakeMailer:
 # ---------------------------------------------------------------------------
 
 
+class BuscaClientes(BaseModel):
+    """What the CRM step needs to be told."""
+
+    cadastrado_desde: str = Field(
+        description="Período de cadastro, como a intenção o expressou — "
+        "'ontem', 'esta semana', ou uma data ISO."
+    )
+    segmento: str | None = Field(
+        default=None, description="Segmento de cliente, quando a intenção citar um."
+    )
+
+
+class BuscaModelo(BaseModel):
+    """What the document step needs to be told."""
+
+    descricao: str = Field(
+        description="O documento procurado, descrito em linguagem natural — "
+        "por exemplo 'modelo de e-mail de boas-vindas'."
+    )
+
+
 class ClienteRef(BaseModel):
     memory_key: str = Field(description="Where the rows were staged")
     row_count: int
@@ -183,6 +204,7 @@ class CRMAgent(BaseAgent):
                 ),
                 required_scopes=["crm:read"],
                 supported_data_domains=["crm", "customer"],
+                input_model=BuscaClientes,
                 operational_constraints={"max_rows": 50_000},
                 expected_artifacts=["cliente_ref"],
                 estimated_cost=0.01,
@@ -196,8 +218,11 @@ class CRMAgent(BaseAgent):
     ) -> dict[str, Any]:
         crm = self.crm.get()
 
-        filtros = context.get("filtros") or {}
-        desde = filtros.get("cadastrado_desde") or str(date.today() - timedelta(days=1))
+        # Read straight off the shape this capability declared. The
+        # coordinator composed it from the intent and validated it against
+        # that shape before sending — there is no blob to go fishing in, and
+        # no prose here to parse.
+        desde = context.get("cadastrado_desde") or str(date.today() - timedelta(days=1))
         linhas = await crm.buscar(cadastrado_desde=desde)
 
         key = f"{self.agent_id}.clientes"
@@ -238,6 +263,7 @@ class SharePointAgent(BaseAgent):
                 ),
                 required_scopes=["doc:read"],
                 supported_data_domains=["document", "communication"],
+                input_model=BuscaModelo,
                 expected_artifacts=["template_ref"],
                 estimated_cost=0.005,
                 estimated_latency=0.5,
@@ -253,7 +279,7 @@ class SharePointAgent(BaseAgent):
         # Two phases, and the split is the point. Search returns metadata —
         # title, folder, sensitivity — and never a body. Choosing which
         # document to open therefore never requires reading any of them.
-        pedido = (context.get("modelo") or {}).get("descricao", "e-mail de boas-vindas")
+        pedido = context.get("descricao") or "e-mail de boas-vindas"
         candidatos = await sharepoint.search(pedido)
         if not candidatos:
             return {"error": "nenhum modelo encontrado", "consulta": pedido}

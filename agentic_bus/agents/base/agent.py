@@ -276,6 +276,7 @@ class BaseAgent(ABC):
             estimated_cost=capability.estimated_cost,
             estimated_latency=capability.estimated_latency,
             required_scopes=capability.required_scopes,
+            input_schema=capability.input_schema,
             output_schema=capability.output_schema,
         )
 
