@@ -3,8 +3,8 @@
 One intent, three agents, one credential each.
 
 ```
-"Preciso da lista de clientes que entraram ontem no CRM, e que seja
- enviado o e-mail de boas-vindas para eles."
+"I need the list of customers who signed up in the CRM yesterday, and
+ the welcome email sent to them."
 ```
 
 ## Why three agents and not two
@@ -77,7 +77,7 @@ python -m agentic_bus.agents.examples.onboarding.demo
 - **the bindings** — which names a capability actually holds. *This* is the
   authority; an agent's declaration never is. Check it with
   `agbus scope granted crm-reader`, and note that
-  `scopes.granted("email-sender", "crm.buscar_clientes")` returns nothing.
+  `scopes.granted("email-sender", "crm.find_customers")` returns nothing.
 - **the policies** — what is forbidden, named as combinations rather than
   enumerated as a matrix.
 
@@ -93,12 +93,12 @@ agent stages the rows with `remember()` and returns a summary. The summary is
 what gets validated against the `output_schema` its offer promised — it carries
 no rows of its own, because it does not have to.
 
-**The sender knows no other agent.** It declares `EnvioModelo` — recipients, a
+**The sender knows no other agent.** It declares `SendTemplate` — recipients, a
 subject, a body — and reads exactly those fields off its context. It never
 names the CRM agent, the document agent, or a memory key. At dispatch the
 coordinator composes that shape from what the earlier steps produced: the model
-is shown the *shape* of what is in memory (`crm-reader.clientes: list[4] of
-{id, nome, email, criado_em}`), never the data, and answers with references
+is shown the *shape* of what is in memory (`crm-reader.customers: list[4] of
+{id, name, email, created_at}`), never the data, and answers with references
 that the coordinator resolves in code. That mapping between two agents'
 ontologies is computed for this interaction and dissolves with it — which is
 what "liquid interface" means once it stops being a metaphor.
@@ -107,7 +107,7 @@ what "liquid interface" means once it stops being a metaphor.
 which sub-intents depend on which; the plan is ordered by it, so the sender
 runs after both readers instead of in whatever order their offers arrived.
 
-**The template is classified `Publico`.** Sensitivity, not destination. The
+**The template is classified `Public`.** Sensitivity, not destination. The
 recipients *are* external — they are customers — so an invariant reading only
 "is the destination outside the tenant" would refuse the entire legitimate use
 case. It does not fire here because the classification is not restricted, and
@@ -117,7 +117,7 @@ right reason is harder to build than the mechanism refusing it.
 ## What this example does not show
 
 **Fact resolution.** `execution_authorization` is where the coordinator would
-resolve `documento.classificacao` and whether a recipient is external, and
+resolve `document.classification` and whether a recipient is external, and
 judge the two together. The invariant that reads those fields exists in the
 engine, but nothing in the runtime populates them, so it never fires. There is
 no fact-resolver agent yet.
