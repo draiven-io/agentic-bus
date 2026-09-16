@@ -39,6 +39,11 @@ from agentic_bus.core.protocol.envelope import (
     RegisteredPayload,
     build_envelope,
 )
+from agentic_bus.agents.memory import (
+    open_staging,
+    reset_staging,
+    staged_writes,
+)
 from agentic_bus.agents.scope_guard import (
     ScopeDenied,
     ScopeGrant,
@@ -742,6 +747,9 @@ class BaseAgent(ABC):
             granted=list(payload.get("authorized_scopes", []) or []),
         )
         token = set_grant(grant)
+        # Writes are collected for the whole execution and travel on the
+        # `complete`, so a task that fails part-way leaves nothing behind.
+        writes_token = open_staging()
 
         await self.send_event(
             envelope.session_id,
@@ -782,6 +790,12 @@ class BaseAgent(ABC):
                 detail={"error": str(exc)},
             )
         finally:
+            # Read the batch before closing the context, or it is gone.
+            # Drained even on the failure and refusal paths: what an execution
+            # staged before it stopped is still what it meant to write, and
+            # the coordinator's policy decides whether any of it lands.
+            memory_writes = staged_writes()
+            reset_staging(writes_token)
             reset_grant(token)
 
         complete_env = build_envelope(
@@ -791,6 +805,7 @@ class BaseAgent(ABC):
             CompletePayload(
                 status=status,
                 artifacts=[result],
+                memory_writes=memory_writes,
                 metadata={
                     "agent_id": self.agent_id,
                     # Echoed so the coordinator can find the offer that

@@ -311,6 +311,27 @@ declares what it *does* and an administrator decides what that requires
 rather than refusing one. Both record the attempt, so a coordinator can tell
 afterwards what an execution reached for.
 
+A step passes its result to the next one through the session's shared memory,
+which lives on the coordinator and carries a per-agent access policy derived
+from the composition plan:
+
+```python
+from agentic_bus import remember
+
+async def execute_task(self, payload, context):
+    rows = await self.crm.get().buscar(...)
+    remember(f"{self.agent_id}.clientes", {"store_key": key, "rows": len(rows)})
+    return {"count": len(rows)}
+```
+
+Writes are staged during the execution and travel on the `complete`, so a task
+that fails part-way leaves nothing behind, and the policy check stays with the
+coordinator that owns the memory. `shared.*` is readable by any agent the plan
+authorised; `<agent_id>.*` is that agent's own, and the plan grants the next
+step read access to the previous step's namespace. A key outside the policy is
+refused and audited rather than dropped. The whole store is destroyed at
+dissolution.
+
 It connects to a coordinator (`AGBUS_COORDINATOR_URI`, default
 `ws://localhost:8765`), registers its capabilities, and from then on
 participates in discovery, negotiation, IBAC governance and execution. You

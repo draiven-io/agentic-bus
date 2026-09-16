@@ -21,6 +21,12 @@
       "additionalProperties": true,
       "title": "Metadata",
       "type": "object"
+    },
+    "memory_writes": {
+      "additionalProperties": true,
+      "description": "Writes this execution staged for the session's shared memory, applied by the coordinator through the agent's write policy. A key outside that policy is refused and audited, not dropped. The coordinator has read this field since session memory existed; it was never declared here, so an implementer reading the schema could not know to send it.",
+      "title": "Memory Writes",
+      "type": "object"
     }
   },
   "title": "LIP complete payload",

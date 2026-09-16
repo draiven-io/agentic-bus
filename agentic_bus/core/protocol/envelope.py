@@ -357,6 +357,17 @@ class CompletePayload(BaseModel):
     status: str = "success"
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    memory_writes: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Writes this execution staged for the session's shared memory, "
+            "applied by the coordinator through the agent's write policy. A "
+            "key outside that policy is refused and audited, not dropped. "
+            "The coordinator has read this field since session memory "
+            "existed; it was never declared here, so an implementer reading "
+            "the schema could not know to send it."
+        ),
+    )
 
 
 class DissolvePayload(BaseModel):
