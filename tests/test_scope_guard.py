@@ -29,6 +29,7 @@ from agentic_bus.agents.scope_guard import (
     require_scope,
     reset_grant,
     scope_is_held,
+    ScopedResource,
     set_grant,
 )
 
@@ -149,3 +150,127 @@ class TestScopeIsHeld:
             reset_grant(token)
 
         assert "payments:write" in grant.used
+
+
+class TestAScopedResource:
+    """Binding the scope to the credential rather than to a remembered call.
+
+    The weakness these cover is not that ``require_scope`` is wrong — it is
+    that omitting it produces working, unguarded code, and an empty usage
+    report is indistinguishable from an execution that needed nothing. Here
+    omitting the check leaves nothing to call instead.
+    """
+
+    def _resource(self, scope="crm:read"):
+        calls = []
+
+        def factory():
+            calls.append(1)
+            return {"client": "crm"}
+
+        return ScopedResource(scope, factory), calls
+
+    def test_a_held_scope_hands_out_the_client(self):
+        resource, _ = self._resource()
+        token = set_grant(ScopeGrant(granted=["crm:read"]))
+        try:
+            assert resource.get() == {"client": "crm"}
+        finally:
+            reset_grant(token)
+
+    def test_a_scope_not_held_refuses_the_client(self):
+        """The whole point: no client, not an unchecked one."""
+        resource, _ = self._resource()
+        token = set_grant(ScopeGrant(granted=["crm:write"]))
+        try:
+            with pytest.raises(ScopeDenied):
+                resource.get()
+        finally:
+            reset_grant(token)
+
+    def test_a_scope_never_granted_is_a_connection_never_opened(self):
+        """The factory must not run on the refused path.
+
+        Constructing the client is what opens the socket and presents the
+        credential; doing that before the check would leak the very thing the
+        check exists to gate.
+        """
+        resource, calls = self._resource()
+        token = set_grant(ScopeGrant(granted=[]))
+        try:
+            with pytest.raises(ScopeDenied):
+                resource.get()
+        finally:
+            reset_grant(token)
+
+        assert calls == []
+        assert resource.is_built is False
+
+    def test_the_refusal_is_recorded_as_use(self):
+        """So reconciliation sees the attempt, not just the absence of one."""
+        resource, _ = self._resource()
+        grant = ScopeGrant(granted=["crm:write"])
+        token = set_grant(grant)
+        try:
+            with pytest.raises(ScopeDenied):
+                resource.get()
+        finally:
+            reset_grant(token)
+
+        assert grant.used == ["crm:read"]
+        assert grant.denied == ["crm:read"]
+
+    def test_the_factory_runs_once_across_calls(self):
+        resource, calls = self._resource()
+        token = set_grant(ScopeGrant(granted=["crm:read"]))
+        try:
+            first, second = resource.get(), resource.get()
+        finally:
+            reset_grant(token)
+
+        assert first is second
+        assert calls == [1]
+
+    def test_a_cached_client_is_still_refused_once_the_grant_stops_covering(self):
+        """Caching the value must not cache the decision.
+
+        An execution that held the scope earlier does not entitle a later one
+        that does not — the client is per-agent, the authority is per-execution.
+        """
+        resource, _ = self._resource()
+
+        token = set_grant(ScopeGrant(granted=["crm:read"]))
+        try:
+            resource.get()
+        finally:
+            reset_grant(token)
+
+        token = set_grant(ScopeGrant(granted=["unrelated:scope"]))
+        try:
+            with pytest.raises(ScopeDenied):
+                resource.get()
+        finally:
+            reset_grant(token)
+
+    def test_a_wildcard_grant_covers_it(self):
+        resource, _ = self._resource("crm:read")
+        token = set_grant(ScopeGrant(granted=["crm:*"]))
+        try:
+            assert resource.get() == {"client": "crm"}
+        finally:
+            reset_grant(token)
+
+    def test_outside_an_execution_it_hands_the_client_over(self):
+        """Consistent with require_scope: a process with no grant is not one
+        an attacker reached through the bus."""
+        resource, _ = self._resource()
+
+        assert current_grant() is None
+        assert resource.get() == {"client": "crm"}
+
+    def test_the_scope_is_readable_and_not_settable(self):
+        resource, _ = self._resource("payments:refund")
+
+        assert resource.scope == "payments:refund"
+        with pytest.raises(AttributeError):
+            resource.scope = "payments:*"  # type: ignore[misc]

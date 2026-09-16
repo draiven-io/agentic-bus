@@ -37,6 +37,7 @@ from agentic_bus.agents.scope_guard import (
     ScopeDenied,
     require_scope,
     scope_is_held,
+    ScopedResource,
 )
 from agentic_bus.agents.requester import (
     IntentClient,
@@ -74,6 +75,7 @@ except PackageNotFoundError:  # running from a source checkout
 __all__ = [
     "scope_is_held",
     "require_scope",
+    "ScopedResource",
     "ScopeDenied",
     # Version
     "__version__",
