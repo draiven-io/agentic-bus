@@ -50,6 +50,8 @@ PUBLIC_NAMES = [
     "ScopeDenied",
     "ScopedResource",
     "remember",
+    "recall",
+    "recalled",
     "__version__",
 ]
 

@@ -96,3 +96,71 @@ def open_staging() -> contextvars.Token:
 
 def reset_staging(token: contextvars.Token) -> None:
     _staged.reset(token)
+
+
+#: What this execution may read, as the coordinator filtered it.
+#:
+#: Separate from the staging buffer on purpose: what an execution wrote is not
+#: what it can read. The coordinator applies staged writes through the agent's
+#: write policy when the execution completes, and a key the policy refuses is
+#: never in anyone's snapshot. Folding the two together here would let an
+#: agent read back a write that was about to be denied.
+_snapshot: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "agentic_bus_memory_snapshot", default=None
+)
+
+
+def recall(key: str, default: Any = None) -> Any:
+    """Read *key* from the session's shared memory.
+
+    The counterpart of :func:`remember`, and the half that was missing: the
+    coordinator has always built a per-agent snapshot and put it on the
+    ``execute``, and ``BaseAgent`` never handed it to ``execute_task``, so a
+    step could write to the shared store and no step could read it::
+
+        from agentic_bus import recall
+
+        async def execute_task(self, payload, context):
+            clientes = recall("crm-reader.clientes", default=[])
+            return {"enviados": len(clientes)}
+
+    What arrives is already filtered. The plan grants each step read access to
+    the namespaces of the steps before it, so this returns what *this* agent
+    was authorised to see and nothing else — asking for a key outside that is
+    a miss, not a refusal, because the key was never delivered.
+
+    It is a snapshot taken when the execution was dispatched, not a live view.
+    Writes staged during this execution are not in it: they are applied by the
+    coordinator afterwards, through a policy that may refuse them, and reading
+    back an unapplied write would report as stored something that is not.
+
+    Outside an execution there is nothing to read and *default* comes back,
+    matching :func:`remember` and
+    :func:`~agentic_bus.agents.scope_guard.require_scope`.
+    """
+    snapshot = _snapshot.get()
+    if snapshot is None:
+        logger.debug("recall(%r) outside an execution — nothing to read", key)
+        return default
+    return snapshot.get(key, default)
+
+
+def recalled() -> dict[str, Any]:
+    """Everything this execution may read, as a copy.
+
+    For an agent that wants to see what it was given rather than ask for one
+    key — a consumer that does not know which step produced what, say.
+    """
+    return dict(_snapshot.get() or {})
+
+
+def set_snapshot(snapshot: dict[str, Any] | None) -> contextvars.Token:
+    """Install what this task may read. Close with :func:`reset_snapshot`.
+
+    Called by ``BaseAgent`` around ``execute_task``; agents do not call it.
+    """
+    return _snapshot.set(dict(snapshot or {}))
+
+
+def reset_snapshot(token: contextvars.Token) -> None:
+    _snapshot.reset(token)

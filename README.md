@@ -348,9 +348,24 @@ async def execute_task(self, payload, context):
     return {"count": len(rows)}
 ```
 
+The next step reads it back with `recall()`:
+
+```python
+from agentic_bus import recall
+
+async def execute_task(self, payload, context):
+    clientes = recall("crm-reader.clientes", default=[])
+    return {"enviados": len(clientes)}
+```
+
 Writes are staged during the execution and travel on the `complete`, so a task
 that fails part-way leaves nothing behind, and the policy check stays with the
-coordinator that owns the memory. `shared.*` is readable by any agent the plan
+coordinator that owns the memory. What `recall()` sees is a snapshot the
+coordinator filtered to the namespaces this step was granted — a key outside
+them is a miss, not a refusal, because it was never delivered. Writes staged
+by the running execution are deliberately not in it: they are applied
+afterwards through a policy that may refuse them, and reading one back would
+report as stored something that is not. `shared.*` is readable by any agent the plan
 authorised; `<agent_id>.*` is that agent's own, and the plan grants the next
 step read access to the previous step's namespace. A key outside the policy is
 refused and audited rather than dropped. The whole store is destroyed at

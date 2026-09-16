@@ -18,12 +18,14 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from agentic_bus.agents.memory import (
     open_staging,
+    recall,
+    recalled,
     remember,
+    reset_snapshot,
     reset_staging,
+    set_snapshot,
     staged_writes,
 )
 from agentic_bus.core.protocol.envelope import CompletePayload
@@ -217,3 +219,159 @@ class TestTheAgentSendsThem:
 
         assert first.memory_writes == {"shared.first": 1}
         assert second.memory_writes == {}
+
+
+class TestReading:
+    """The counterpart. The coordinator built a per-agent snapshot and put it
+    on the `execute` since session memory existed; nothing received it, so a
+    step could write to the shared store and no step could read it."""
+
+    def test_a_key_in_the_snapshot_comes_back(self):
+        token = set_snapshot({"crm.clientes": [{"id": 1}]})
+        try:
+            assert recall("crm.clientes") == [{"id": 1}]
+        finally:
+            reset_snapshot(token)
+
+    def test_a_key_outside_it_is_a_miss_not_a_refusal(self):
+        """The snapshot is already filtered to what the plan granted, so a key
+        that was never delivered is simply absent."""
+        token = set_snapshot({"crm.clientes": []})
+        try:
+            assert recall("rh.salarios", default="nada") == "nada"
+        finally:
+            reset_snapshot(token)
+
+    def test_outside_an_execution_the_default_comes_back(self):
+        assert recall("anything", default=42) == 42
+
+    def test_recalled_hands_back_a_copy(self):
+        token = set_snapshot({"a": 1})
+        try:
+            recalled()["b"] = 2
+            assert "b" not in recalled()
+        finally:
+            reset_snapshot(token)
+
+    def test_what_this_execution_staged_is_not_readable_back(self):
+        """Staging is not storing.
+
+        The coordinator applies staged writes through the agent's write policy
+        after the execution, and a key the policy refuses never reaches anyone's
+        snapshot. Reading one back here would report as stored something that
+        may be about to be denied.
+        """
+        snapshot = set_snapshot({})
+        staging = open_staging()
+        try:
+            remember("mine.key", "value")
+
+            assert recall("mine.key") is None
+            assert staged_writes() == {"mine.key": "value"}
+        finally:
+            reset_staging(staging)
+            reset_snapshot(snapshot)
+
+    async def test_concurrent_executions_do_not_share_a_snapshot(self):
+        seen: dict = {}
+
+        async def execution(name: str) -> None:
+            token = set_snapshot({"who": name})
+            try:
+                await asyncio.sleep(0)
+                seen[name] = recall("who")
+            finally:
+                reset_snapshot(token)
+
+        await asyncio.gather(execution("a"), execution("b"))
+
+        assert seen == {"a": "a", "b": "b"}
+
+
+class TestTheAgentReceivesIt:
+    async def test_the_snapshot_on_the_execute_reaches_execute_task(self):
+        from agentic_bus.agents.base.agent import BaseAgent
+        from agentic_bus.core.protocol.envelope import (
+            MessageType,
+            SenderInfo,
+            SenderKind,
+            build_envelope,
+        )
+
+        seen = {}
+
+        class Agent(BaseAgent):
+            def capabilities(self):
+                return []
+
+            async def execute_task(self, payload, context):
+                seen["clientes"] = recall("crm.clientes")
+                return {"ok": True}
+
+        class Peer:
+            peer_id = "p1"
+
+            async def send_envelope(self, env):
+                pass
+
+        agent = Agent(agent_id="reader")
+        agent._peer = Peer()
+
+        await agent._handle_execute(
+            build_envelope(
+                MessageType.EXECUTE,
+                SenderInfo(kind=SenderKind.COORDINATOR, id="coordinator"),
+                "s1",
+                {
+                    "execution_plan": {"context": {}},
+                    "authorized_scopes": [],
+                    "memory_snapshot": {"crm.clientes": [{"id": 7}]},
+                },
+            )
+        )
+
+        assert seen["clientes"] == [{"id": 7}]
+
+    async def test_one_execution_does_not_leak_into_the_next(self):
+        from agentic_bus.agents.base.agent import BaseAgent
+        from agentic_bus.core.protocol.envelope import (
+            MessageType,
+            SenderInfo,
+            SenderKind,
+            build_envelope,
+        )
+
+        seen: list = []
+
+        class Agent(BaseAgent):
+            def capabilities(self):
+                return []
+
+            async def execute_task(self, payload, context):
+                seen.append(recall("k"))
+                return {}
+
+        class Peer:
+            peer_id = "p1"
+
+            async def send_envelope(self, env):
+                pass
+
+        agent = Agent(agent_id="reader")
+        agent._peer = Peer()
+
+        for snapshot in ({"k": "first"}, {}):
+            await agent._handle_execute(
+                build_envelope(
+                    MessageType.EXECUTE,
+                    SenderInfo(kind=SenderKind.COORDINATOR, id="coordinator"),
+                    "s1",
+                    {
+                        "execution_plan": {"context": {}},
+                        "authorized_scopes": [],
+                        "memory_snapshot": snapshot,
+                    },
+                )
+            )
+
+        assert seen == ["first", None]
