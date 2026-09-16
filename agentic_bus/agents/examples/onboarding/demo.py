@@ -39,16 +39,17 @@ async def main() -> None:
     print(f"  intent: {INTENT}")
     print()
 
+    # No context. The requester states what it wants and nothing about how
+    # any step is parameterised — it does not know that step two will be a
+    # document agent, nor what that agent calls its fields.
+    #
+    # Each capability publishes an `input_schema`; the coordinator composes
+    # the parameters for every step from the intent and validates them against
+    # that schema before dispatching. Passing a context here still works and
+    # still reaches the agents, but needing to is the contract coming back.
     result = await submit_intent(
         INTENT,
         requester_id="onboarding-demo",
-        # Structured arguments the agents read. Never the intent prose: taking
-        # the model out of an agent buys nothing if attacker-influenced text
-        # still travels into the tool call.
-        context={
-            "filtros": {"cadastrado_desde": "ontem"},
-            "modelo": {"doc_id": "welcome-pt-br"},
-        },
         coordinator_uri=uri,
         timeout=90.0,
     )

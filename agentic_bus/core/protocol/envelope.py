@@ -274,6 +274,14 @@ class OfferPayload(BaseModel):
     estimated_cost: float | None = None
     estimated_latency: float | None = None
     required_scopes: list[str] = Field(default_factory=list)
+    input_schema: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "JSON Schema of the parameters this capability needs. The "
+            "coordinator composes them for each step from the intent, so an "
+            "agent receives structured input rather than prose to parse."
+        ),
+    )
     output_schema: dict[str, Any] = Field(
         default_factory=dict,
         description=(

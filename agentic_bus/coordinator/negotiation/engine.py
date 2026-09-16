@@ -262,6 +262,13 @@ class NegotiationEngine:
                 "capability_id": o.offer.capability_id,
                 "description": o.offer.capability_description,
                 "constraints": o.offer.constraints,
+                # What the step needs to be told, so the coordinator can
+                # compose it from the intent instead of the requester having
+                # to guess the shape. Empty when the agent published none.
+                "input_schema": getattr(o.offer, "input_schema", {}) or {},
+                # Filled by `compose_step_inputs` once the plan is composed;
+                # carried on the `execute` and merged into the agent's context.
+                "inputs": {},
                 "output_schema": o.offer.output_schema,
             }
             for o in accepted

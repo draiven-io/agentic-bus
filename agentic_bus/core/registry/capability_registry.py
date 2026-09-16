@@ -50,6 +50,27 @@ class AgentCapability(BaseModel):
         default=0.0,
         description="Estimated latency in seconds.",
     )
+    input_model: type[BaseModel] | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Pydantic model class describing what this capability needs to be "
+            "told. When provided, ``input_schema`` is derived automatically."
+        ),
+    )
+    input_schema: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "JSON Schema describing the parameters this capability needs. The "
+            "counterpart of ``output_schema``, and the half that was missing: "
+            "an agent that declares only what it produces leaves whoever "
+            "invokes it guessing the shape of the request, which puts the "
+            "contract back — in a JSON blob instead of an OpenAPI document, "
+            "but back. Declaring it lets the coordinator compose the "
+            "parameters from the intent, so the agent is handed structured "
+            "input instead of prose to parse."
+        ),
+    )
     output_model: type[BaseModel] | None = Field(
         default=None,
         exclude=True,
@@ -67,10 +88,12 @@ class AgentCapability(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _derive_output_schema(self) -> "AgentCapability":
-        """Auto-populate ``output_schema`` from ``output_model`` if given."""
+    def _derive_schemas(self) -> "AgentCapability":
+        """Auto-populate the schemas from the models if given."""
         if self.output_model is not None and not self.output_schema:
             self.output_schema = self.output_model.model_json_schema()
+        if self.input_model is not None and not self.input_schema:
+            self.input_schema = self.input_model.model_json_schema()
         return self
 
 
