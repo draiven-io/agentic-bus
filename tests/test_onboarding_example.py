@@ -54,6 +54,29 @@ async def _execute(agent, *, scopes: list[str], context=None, memory=None):
     return CompletePayload(**completes[-1].payload)
 
 
+def _compose_for_sender(crm, doc) -> dict:
+    """What the coordinator composes for the sender at dispatch.
+
+    Built the way the coordinator builds it: the model returns references
+    into the producers' memory, and `resolve_refs` substitutes the data.
+    Neither the references nor this helper name a field the sender did not
+    declare.
+    """
+    from agentic_bus.core.step_inputs import resolve_refs
+
+    memory = {**crm.memory_writes, **doc.memory_writes}
+    crm_key = crm.artifacts[0]["memory_key"]
+    doc_key = doc.artifacts[0]["memory_key"]
+    return resolve_refs(
+        {
+            "destinatarios": {"$from": crm_key, "$fields": {"nome": "nome", "email": "email"}},
+            "assunto": {"$from": doc_key, "$path": "titulo"},
+            "corpo": {"$from": doc_key, "$path": "corpo"},
+        },
+        memory,
+    )
+
+
 class TestOneCredentialEach:
     """The property the example is built to demonstrate."""
 
@@ -159,12 +182,13 @@ class TestTheSteps:
         crm = await _execute(CRMAgent(), scopes=["crm:read"])
         doc = await _execute(SharePointAgent(), scopes=["doc:read"])
 
-        # Exactly what the coordinator would deliver: the namespaces the plan
-        # granted this step, carrying what the steps before it staged.
+        # Exactly what the coordinator composes at dispatch: the sender's own
+        # declared shape, filled from what the earlier steps produced. The
+        # sender never sees a memory key or another agent's name.
         payload = await _execute(
             EmailAgent(),
             scopes=["email:send"],
-            memory={**crm.memory_writes, **doc.memory_writes},
+            context=_compose_for_sender(crm, doc),
         )
 
         assert payload.status == "success"
@@ -175,12 +199,13 @@ class TestTheSteps:
         crm = await _execute(CRMAgent(), scopes=["crm:read"])
         doc = await _execute(SharePointAgent(), scopes=["doc:read"])
 
-        # Exactly what the coordinator would deliver: the namespaces the plan
-        # granted this step, carrying what the steps before it staged.
+        # Exactly what the coordinator composes at dispatch: the sender's own
+        # declared shape, filled from what the earlier steps produced. The
+        # sender never sees a memory key or another agent's name.
         payload = await _execute(
             EmailAgent(),
             scopes=["email:send"],
-            memory={**crm.memory_writes, **doc.memory_writes},
+            context=_compose_for_sender(crm, doc),
         )
 
         assert payload.memory_writes == {}
@@ -199,15 +224,15 @@ class TestTheArtifactsMatchWhatWasPromised:
     ):
         from agentic_bus.core.artifacts import validate_artifacts
 
-        memory = {}
+        context = {}
         if factory is EmailAgent:
             crm = await _execute(CRMAgent(), scopes=["crm:read"])
             doc = await _execute(SharePointAgent(), scopes=["doc:read"])
-            memory = {**crm.memory_writes, **doc.memory_writes}
+            context = _compose_for_sender(crm, doc)
 
         agent = factory()
         schema = agent.capabilities()[0].output_schema
-        payload = await _execute(agent, scopes=[scope], memory=memory)
+        payload = await _execute(agent, scopes=[scope], context=context)
 
         report = validate_artifacts(
             payload.artifacts,
@@ -256,3 +281,36 @@ class TestTheChoiceIsMadeOverMetadata:
         declared = SharePointAgent().capabilities()[0].required_scopes
 
         assert declared == ["doc:read"]
+
+
+class TestTheSenderKnowsNoOtherAgent:
+    """The reason deferred composition exists.
+
+    Before, the sender did `recall("crm-reader.clientes")` — the producer's
+    id, the producer's key, the producer's row layout. Three pieces of another
+    agent's ontology, hard-coded in the consumer. That is the coupling the
+    protocol claims to dissolve, rebuilt one layer down.
+    """
+
+    def test_the_sender_declares_its_own_input_shape(self):
+        schema = EmailAgent().capabilities()[0].input_schema
+
+        assert set(schema["required"]) == {"destinatarios", "assunto", "corpo"}
+
+    def test_its_declared_shape_names_no_producer(self):
+        import json
+
+        text = json.dumps(EmailAgent().capabilities()[0].input_schema)
+
+        assert "crm-reader" not in text
+        assert "sharepoint-reader" not in text
+        assert "memory_key" not in text
+
+    def test_its_source_names_no_producer(self):
+        import inspect
+
+        source = inspect.getsource(EmailAgent)
+
+        assert "crm-reader" not in source
+        assert "sharepoint-reader" not in source
+        assert "recall(" not in source

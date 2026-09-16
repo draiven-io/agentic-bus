@@ -219,47 +219,236 @@ class TestWhatIsComposedIsChecked:
         assert composed.inputs == {}
 
 
-class TestTheCoordinatorDelivers:
+class TestTheCoordinatorComposesAtDispatch:
+    """Composition moved from plan time to dispatch time.
+
+    At plan time no step has run, so nothing produced by an earlier step can
+    reach a later one — and a consumer that cannot be parameterised from a
+    producer ends up reaching into the producer's memory by name. Composing
+    at dispatch, with prior artifacts and this step's memory snapshot in hand,
+    is what lets the mapping between two agents' ontologies be computed for
+    the interaction instead of hard-coded in the consumer.
+    """
+
+    def _runtime(self):
+        from agentic_bus.coordinator.runtime import CoordinatorRuntime
+        from agentic_bus.core.transport.local import LocalTransport
+
+        return CoordinatorRuntime(transport=LocalTransport())
+
+    def _session(self, steps):
+        return type(
+            "S",
+            (),
+            {
+                "session_id": "s1",
+                "intent": type("I", (), {"intent_text": "envie boas-vindas"})(),
+                "composition_plan": {"steps": steps},
+            },
+        )()
+
     def test_the_step_is_matched_on_agent_and_capability(self):
         """One agent can hold several accepted capabilities in a session, and
         matching on the agent alone would hand a step the parameters composed
         for a different one."""
-        from agentic_bus.coordinator.runtime import CoordinatorRuntime
-        from agentic_bus.core.transport.local import LocalTransport
+        session = self._session(
+            [
+                {"agent_id": "a", "capability_id": "cap.one"},
+                {"agent_id": "a", "capability_id": "cap.two"},
+            ]
+        )
 
-        runtime = CoordinatorRuntime(transport=LocalTransport())
-        session = type(
-            "S",
-            (),
-            {
-                "composition_plan": {
-                    "steps": [
-                        {
-                            "agent_id": "a",
-                            "capability_id": "cap.one",
-                            "inputs": {"descricao": "primeiro"},
-                        },
-                        {
-                            "agent_id": "a",
-                            "capability_id": "cap.two",
-                            "inputs": {"descricao": "segundo"},
-                        },
-                    ]
-                }
-            },
-        )()
+        step = self._runtime()._plan_step_for(session, "a", "cap.two")
 
-        assert runtime._step_inputs_for(session, "a", "cap.two") == {
-            "descricao": "segundo"
-        }
+        assert step["capability_id"] == "cap.two"
 
-    def test_an_unknown_step_contributes_nothing(self):
-        from agentic_bus.coordinator.runtime import CoordinatorRuntime
-        from agentic_bus.core.transport.local import LocalTransport
+    def test_an_unknown_step_is_none(self):
+        assert self._runtime()._plan_step_for(None, "a", "cap") is None
 
-        runtime = CoordinatorRuntime(transport=LocalTransport())
+    async def test_a_step_without_a_schema_composes_nothing_and_calls_no_model(self):
+        step = {"agent_id": "a", "capability_id": "c", "input_schema": {}}
 
-        assert runtime._step_inputs_for(None, "a", "cap") == {}
+        inputs = await self._runtime()._compose_inputs_for_dispatch(
+            self._session([step]), step, prior_results={}, memory={}
+        )
+
+        assert inputs == {}
+
+    async def test_composed_inputs_are_kept_on_the_plan_step(self, monkeypatch):
+        """What each step was told is part of what happened, so it goes to
+        the archive with the rest of the plan."""
+        import agentic_bus.core.step_inputs as si
+
+        async def fake(**kwargs):
+            return si.ComposedInputs(inputs={"descricao": "x"})
+
+        monkeypatch.setattr(si, "compose_step_inputs", fake)
+        step = {"agent_id": "a", "capability_id": "c", "input_schema": SCHEMA}
+
+        inputs = await self._runtime()._compose_inputs_for_dispatch(
+            self._session([step]), step, prior_results={}, memory={}
+        )
+
+        assert inputs == {"descricao": "x"}
+        assert step["inputs"] == {"descricao": "x"}
+
+    async def test_a_violation_yields_nothing_rather_than_a_half_filled_request(
+        self, monkeypatch
+    ):
+        import agentic_bus.core.step_inputs as si
+
+        async def fake(**kwargs):
+            return si.ComposedInputs(inputs={"limite": 1}, violations=["descricao missing"])
+
+        monkeypatch.setattr(si, "compose_step_inputs", fake)
+        step = {"agent_id": "a", "capability_id": "c", "input_schema": SCHEMA}
+        runtime = self._runtime()
+        events = []
+
+        async def capture(*args, **kwargs):
+            events.append((args, kwargs))
+
+        monkeypatch.setattr(runtime, "_emit_event", capture)
+
+        inputs = await runtime._compose_inputs_for_dispatch(
+            self._session([step]), step, prior_results={}, memory={}
+        )
+
+        assert inputs == {}
+        assert "inputs" not in step
+        assert events and "Could not compose" in events[0][0][2]
+
+    async def test_prior_results_and_memory_reach_the_composer(self, monkeypatch):
+        """The whole point of composing at dispatch."""
+        import agentic_bus.core.step_inputs as si
+
+        seen = {}
+
+        async def fake(**kwargs):
+            seen.update(kwargs)
+            return si.ComposedInputs(inputs={"descricao": "x"})
+
+        monkeypatch.setattr(si, "compose_step_inputs", fake)
+        step = {"agent_id": "a", "capability_id": "c", "input_schema": SCHEMA}
+
+        await self._runtime()._compose_inputs_for_dispatch(
+            self._session([step]),
+            step,
+            prior_results={"crm": {"row_count": 4}},
+            memory={"crm.clientes": [{"email": "a@x"}]},
+        )
+
+        assert seen["prior_results"] == {"crm": {"row_count": 4}}
+        assert seen["memory"] == {"crm.clientes": [{"email": "a@x"}]}
+        assert seen["intent_text"] == "envie boas-vindas"
+
+
+class TestReferencesAndShapes:
+    """The model sees shapes and answers with references; code resolves them.
+
+    This is what keeps forty thousand rows out of a prompt while still letting
+    a later step be parameterised from them — the same split that keeps a
+    dataset out of an agent's model context.
+    """
+
+    def test_a_shape_carries_structure_and_never_a_value(self):
+        from agentic_bus.core.step_inputs import describe_shape
+
+        rows = [{"id": 1, "nome": "Marta", "email": "marta@acme.example"}]
+
+        shape = describe_shape(rows)
+
+        assert shape == "list[1] of {id, nome, email}"
+        assert "Marta" not in shape and "acme" not in shape
+
+    def test_a_string_shape_is_only_its_length(self):
+        from agentic_bus.core.step_inputs import describe_shape
+
+        assert describe_shape("segredo") == "string[7]"
+
+    def test_a_sparse_first_row_does_not_hide_later_fields(self):
+        from agentic_bus.core.step_inputs import describe_shape
+
+        assert describe_shape([{"a": 1}, {"a": 1, "b": 2}]) == "list[2] of {a, b}"
+
+    def test_a_whole_value_reference_resolves(self):
+        from agentic_bus.core.step_inputs import resolve_refs
+
+        assert resolve_refs({"$from": "k"}, {"k": [1, 2]}) == [1, 2]
+
+    def test_a_path_reference_resolves(self):
+        from agentic_bus.core.step_inputs import resolve_refs
+
+        assert resolve_refs({"$from": "k", "$path": "a.b"}, {"k": {"a": {"b": 7}}}) == 7
+
+    def test_a_fields_reference_projects_and_renames_each_row(self):
+        from agentic_bus.core.step_inputs import resolve_refs
+
+        rows = [{"id": 1, "nome": "A", "email": "a@x", "criado_em": "ontem"}]
+        out = resolve_refs(
+            {"$from": "k", "$fields": {"name": "nome", "email": "email"}}, {"k": rows}
+        )
+
+        assert out == [{"name": "A", "email": "a@x"}]
+
+    def test_references_resolve_inside_nested_objects_and_lists(self):
+        from agentic_bus.core.step_inputs import resolve_refs
+
+        out = resolve_refs(
+            {"outer": [{"$from": "k", "$path": "x"}], "lit": 1}, {"k": {"x": "v"}}
+        )
+
+        assert out == {"outer": ["v"], "lit": 1}
+
+    def test_a_reference_to_memory_this_step_cannot_read_raises(self):
+        """The model named something the plan never granted this step."""
+        from agentic_bus.core.step_inputs import resolve_refs
+
+        import pytest
+
+        with pytest.raises(KeyError):
+            resolve_refs({"$from": "rh.salarios"}, {"crm.clientes": []})
+
+    async def test_composition_resolves_references_before_validating(self):
+        """What the schema checks is what the agent will receive."""
+        model = _Model(
+            '{"descricao": {"$from": "sp.modelo", "$path": "titulo"}}'
+        )
+
+        composed = await compose_step_inputs(
+            intent_text="i",
+            step=_step(),
+            memory={"sp.modelo": {"titulo": "Bem-vindo"}},
+            llm=model,
+        )
+
+        assert composed.ok
+        assert composed.inputs == {"descricao": "Bem-vindo"}
+
+    async def test_a_reference_outside_this_step_s_memory_is_a_violation(self):
+        model = _Model('{"descricao": {"$from": "rh.salarios"}}')
+
+        composed = await compose_step_inputs(
+            intent_text="i", step=_step(), memory={"sp.modelo": {}}, llm=model
+        )
+
+        assert not composed.ok
+        assert "cannot read" in composed.summary()
+
+    async def test_the_prompt_shows_memory_shapes_and_not_values(self):
+        model = _Model('{"descricao": "x"}')
+
+        await compose_step_inputs(
+            intent_text="i",
+            step=_step(),
+            memory={"crm.clientes": [{"nome": "Marta", "email": "marta@acme.example"}]},
+            llm=model,
+        )
+
+        prompt = model.prompts[0]
+        assert "crm.clientes: list[1] of {nome, email}" in prompt
+        assert "Marta" not in prompt
+        assert "acme" not in prompt
 
 
 class TestTheReport:
