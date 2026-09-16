@@ -30,64 +30,64 @@ from agentic_bus.core.protocol.envelope import (
 from agentic_bus.core.registry.capability_registry import AgentCapability
 
 
-class Envio(BaseModel):
-    destinatarios: list[str]
-    assunto: str
-    corpo: str = Field(default="")
+class SendMail(BaseModel):
+    recipients: list[str]
+    subject: str
+    body: str = Field(default="")
 
 
-class Opcional(BaseModel):
-    filtro: str | None = None
+class Filters(BaseModel):
+    query: str | None = None
 
 
 class TestTheAccessor:
     def test_it_builds_the_declared_model_from_the_context(self):
-        token = set_context({"destinatarios": ["a@x"], "assunto": "Oi"})
+        token = set_context({"recipients": ["a@x"], "subject": "Hi"})
         try:
-            req = inputs(Envio)
+            req = inputs(SendMail)
         finally:
             reset_context(token)
 
-        assert req.destinatarios == ["a@x"]
-        assert req.corpo == ""
+        assert req.recipients == ["a@x"]
+        assert req.body == ""
 
     def test_extra_fields_are_ignored(self):
         """The context still carries whatever the requester put in it; the
         model picks its own fields out of it."""
-        token = set_context({"destinatarios": [], "assunto": "x", "purpose": "onboarding"})
+        token = set_context({"recipients": [], "subject": "x", "purpose": "onboarding"})
         try:
-            assert inputs(Envio).assunto == "x"
+            assert inputs(SendMail).subject == "x"
         finally:
             reset_context(token)
 
     def test_an_explicit_context_wins_over_the_installed_one(self):
-        token = set_context({"destinatarios": [], "assunto": "installed"})
+        token = set_context({"recipients": [], "subject": "installed"})
         try:
-            assert inputs(Envio, {"destinatarios": [], "assunto": "explicit"}).assunto == "explicit"
+            assert inputs(SendMail, {"recipients": [], "subject": "explicit"}).subject == "explicit"
         finally:
             reset_context(token)
 
     def test_a_missing_required_field_raises_invalid_input(self):
-        token = set_context({"assunto": "x"})
+        token = set_context({"subject": "x"})
         try:
             with pytest.raises(InvalidInput) as info:
-                inputs(Envio)
+                inputs(SendMail)
         finally:
             reset_context(token)
 
-        assert info.value.model == "Envio"
-        assert any(e["field"] == "destinatarios" for e in info.value.errors)
+        assert info.value.model == "SendMail"
+        assert any(e["field"] == "recipients" for e in info.value.errors)
 
     def test_invalid_input_is_a_value_error(self):
         with pytest.raises(ValueError):
-            inputs(Envio, {})
+            inputs(SendMail, {})
 
     def test_outside_an_execution_an_all_default_model_builds(self):
-        assert inputs(Opcional).filtro is None
+        assert inputs(Filters).query is None
 
     def test_outside_an_execution_a_required_field_is_truthfully_missing(self):
         with pytest.raises(InvalidInput):
-            inputs(Envio)
+            inputs(SendMail)
 
 
 # ---------------------------------------------------------------------------
@@ -147,16 +147,16 @@ class TestValidationAtTheBoundary:
         seen = {}
 
         async def work(context):
-            seen["req"] = inputs(Envio)
+            seen["req"] = inputs(SendMail)
             return {"ok": True}
 
         payload = await _execute(
-            _agent(input_model=Envio, work=work),
-            {"destinatarios": ["a@x"], "assunto": "Oi"},
+            _agent(input_model=SendMail, work=work),
+            {"recipients": ["a@x"], "subject": "Hi"},
         )
 
         assert payload.status == "success"
-        assert seen["req"].destinatarios == ["a@x"]
+        assert seen["req"].recipients == ["a@x"]
 
     async def test_a_mismatching_context_is_refused_before_execute_task_runs(self):
         """Whether or not the author ever calls inputs()."""
@@ -167,25 +167,25 @@ class TestValidationAtTheBoundary:
             return {"ok": True}
 
         payload = await _execute(
-            _agent(input_model=Envio, work=work), {"assunto": "sem destinatários"}
+            _agent(input_model=SendMail, work=work), {"subject": "no recipients"}
         )
 
         assert payload.status == "invalid_input"
         assert ran == []
-        assert payload.artifacts[0]["model"] == "Envio"
-        assert any(e["field"] == "destinatarios" for e in payload.artifacts[0]["errors"])
+        assert payload.artifacts[0]["model"] == "SendMail"
+        assert any(e["field"] == "recipients" for e in payload.artifacts[0]["errors"])
 
     async def test_invalid_input_raised_inside_execute_task_is_the_same_refusal(self):
         class Other(BaseModel):
-            precisa: int
+            needed: int
 
         async def work(context):
             inputs(Other)  # a stricter shape than the capability published
             return {"ok": True}
 
         payload = await _execute(
-            _agent(input_model=Envio, work=work),
-            {"destinatarios": [], "assunto": "x"},
+            _agent(input_model=SendMail, work=work),
+            {"recipients": [], "subject": "x"},
         )
 
         assert payload.status == "invalid_input"
@@ -213,7 +213,7 @@ class TestValidationAtTheBoundary:
             return {}
 
         agent = _agent(
-            input_model=Envio, work=work, capability_id="cap.strict",
+            input_model=SendMail, work=work, capability_id="cap.strict",
             extra_capabilities=("cap.loose",),
         )
 
@@ -229,7 +229,7 @@ class TestValidationAtTheBoundary:
         async def work(context):
             return {}
 
-        agent = _agent(input_model=Envio, work=work)
+        agent = _agent(input_model=SendMail, work=work)
         envelope = build_envelope(
             MessageType.EXECUTE,
             SenderInfo(kind=SenderKind.COORDINATOR, id="coordinator"),
@@ -245,11 +245,11 @@ class TestValidationAtTheBoundary:
         seen = []
 
         async def work(context):
-            seen.append(inputs(Opcional).filtro)
+            seen.append(inputs(Filters).query)
             return {}
 
-        agent = _agent(input_model=Opcional, work=work)
-        await _execute(agent, {"filtro": "primeiro"})
+        agent = _agent(input_model=Filters, work=work)
+        await _execute(agent, {"query": "primeiro"})
         await _execute(agent, {})
 
         assert seen == ["primeiro", None]

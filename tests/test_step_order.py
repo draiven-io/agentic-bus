@@ -30,17 +30,33 @@ class _Model:
 
 
 STEPS = [
-    {"agent_id": "email-sender", "capability_id": "email.enviar", "description": "envia"},
-    {"agent_id": "crm-reader", "capability_id": "crm.buscar", "description": "lê o CRM"},
-    {"agent_id": "sharepoint-reader", "capability_id": "doc.buscar", "description": "busca modelo"},
+    {
+        "agent_id": "email-sender",
+        "capability_id": "email.send",
+        "description": "sends the mail",
+    },
+    {
+        "agent_id": "crm-reader",
+        "capability_id": "crm.find",
+        "description": "reads the CRM",
+    },
+    {
+        "agent_id": "sharepoint-reader",
+        "capability_id": "doc.find",
+        "description": "finds the template",
+    },
 ]
 
 DECOMPOSITION = {
-    "rationale": "ler, buscar modelo, enviar",
+    "rationale": "read the CRM, find the template, send",
     "sub_intents": [
-        {"id": "ler", "description": "lista de clientes", "dependencies": []},
-        {"id": "modelo", "description": "modelo de e-mail", "dependencies": []},
-        {"id": "enviar", "description": "enviar e-mails", "dependencies": ["ler", "modelo"]},
+        {"id": "read-crm", "description": "customer list", "dependencies": []},
+        {"id": "find-template", "description": "email template", "dependencies": []},
+        {
+            "id": "send-mail",
+            "description": "send the emails",
+            "dependencies": ["read-crm", "find-template"],
+        },
     ],
 }
 
@@ -70,8 +86,8 @@ class TestOrdering:
 
         prompt = model.prompts[0]
         assert '"dependencies"' in prompt
-        assert "enviar" in prompt
-        assert "email.enviar" in prompt
+        assert "send-mail" in prompt
+        assert "email.send" in prompt
 
     async def test_a_fenced_answer_is_read(self):
         model = _Model('```json\n{"order": [2, 1, 0]}\n```')
@@ -112,7 +128,7 @@ class TestItNeverRaises:
         assert await _engine().order_steps(STEPS, DECOMPOSITION, llm=model) == STEPS
 
     async def test_prose_instead_of_json_keeps_the_original_order(self):
-        model = _Model("desculpe, não sei ordenar")
+        model = _Model("sorry, I cannot order these")
 
         assert await _engine().order_steps(STEPS, DECOMPOSITION, llm=model) == STEPS
 

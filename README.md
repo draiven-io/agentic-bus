@@ -343,8 +343,8 @@ from the composition plan:
 from agentic_bus import remember
 
 async def execute_task(self, payload, context):
-    rows = await self.crm.get().buscar(...)
-    remember(f"{self.agent_id}.clientes", {"store_key": key, "rows": len(rows)})
+    rows = await self.crm.get().find(...)
+    remember(f"{self.agent_id}.customers", {"store_key": key, "rows": len(rows)})
     return {"count": len(rows)}
 ```
 
@@ -354,8 +354,8 @@ The next step reads it back with `recall()`:
 from agentic_bus import recall
 
 async def execute_task(self, payload, context):
-    clientes = recall("crm-reader.clientes", default=[])
-    return {"enviados": len(clientes)}
+    customers = recall("crm-reader.customers", default=[])
+    return {"sent": len(customers)}
 ```
 
 A capability that publishes an `input_model` gets its context validated
@@ -366,9 +366,9 @@ hands you the instance rather than a dict to read by string:
 from agentic_bus import inputs
 
 async def execute_task(self, payload, context):
-    req = inputs(EnvioModelo)             # validated, typed; extras ignored
-    for d in req.destinatarios:
-        await mailer.send(to=d.email, subject=req.assunto, body=req.corpo)
+    req = inputs(SendTemplate)            # validated, typed; extras ignored
+    for r in req.recipients:
+        await mailer.send(to=r.email, subject=req.subject, body=req.body)
 ```
 
 A context that does not match is reported as `invalid_input`, apart from an

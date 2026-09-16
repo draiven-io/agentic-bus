@@ -42,10 +42,10 @@ from agentic_bus.core.registry.capability_registry import AgentCapability
 # ---------------------------------------------------------------------------
 
 _CUSTOMERS = [
-    {"id": 1, "nome": "Marta Ribeiro", "email": "marta@acme.example", "criado_em": "ontem"},
-    {"id": 2, "nome": "Caio Duarte", "email": "caio@globex.example", "criado_em": "ontem"},
-    {"id": 3, "nome": "Lia Antunes", "email": "lia@initech.example", "criado_em": "ontem"},
-    {"id": 4, "nome": "Rafael Souza", "email": "rafael@interno.local", "criado_em": "ontem"},
+    {"id": 1, "name": "Marta Ribeiro", "email": "marta@acme.example", "created_at": "yesterday"},
+    {"id": 2, "name": "Caio Duarte", "email": "caio@globex.example", "created_at": "yesterday"},
+    {"id": 3, "name": "Lia Antunes", "email": "lia@initech.example", "created_at": "yesterday"},
+    {"id": 4, "name": "Rafael Souza", "email": "rafael@internal.local", "created_at": "yesterday"},
 ]
 
 #: What a search comes back with. Metadata only — title, path, sensitivity.
@@ -53,43 +53,43 @@ _CUSTOMERS = [
 #: them, or the choice becomes a decision made over untrusted content.
 _LIBRARY = [
     {
-        "doc_id": "welcome-pt-br",
-        "titulo": "E-mail de boas-vindas — clientes novos (PT-BR)",
-        "pasta": "/Comunicacao/Modelos/Onboarding",
+        "doc_id": "welcome-email",
+        "title": "Welcome email — new customers",
+        "folder": "/Communications/Templates/Onboarding",
         # Sensitivity, not destination. A welcome template is written to be
         # read by customers, so it is public — which is exactly why the
         # invariant refusing restricted material leaving the tenant does not
         # fire on this plan.
-        "classificacao": "Publico",
+        "classification": "Public",
     },
     {
-        "doc_id": "welcome-en",
-        "titulo": "Welcome email — new customers (EN)",
-        "pasta": "/Comunicacao/Modelos/Onboarding",
-        "classificacao": "Publico",
+        "doc_id": "renewal-reminder",
+        "title": "Renewal reminder email — expiring subscriptions",
+        "folder": "/Communications/Templates/Retention",
+        "classification": "Public",
     },
     {
-        "doc_id": "politica-reembolso",
-        "titulo": "Política de reembolso e cancelamento",
-        "pasta": "/Juridico/Politicas",
-        "classificacao": "Uso Interno",
+        "doc_id": "refund-policy",
+        "title": "Refund and cancellation policy",
+        "folder": "/Legal/Policies",
+        "classification": "Internal",
     },
     {
-        "doc_id": "tabela-salarial",
-        "titulo": "Tabela salarial 2026",
-        "pasta": "/RH/Confidencial",
-        "classificacao": "Confidencial",
+        "doc_id": "salary-table",
+        "title": "Salary table 2026",
+        "folder": "/HR/Confidential",
+        "classification": "Confidential",
     },
 ]
 
 _BODIES = {
-    "welcome-pt-br": "Olá {nome}, que bom ter você aqui. Sua conta já está ativa.",
-    "welcome-en": "Hi {nome}, glad to have you. Your account is live.",
+    "welcome-email": "Hi {name}, glad to have you here. Your account is live.",
+    "renewal-reminder": "Hi {name}, your subscription renews in thirty days.",
 }
 
 
 class _FakeCRM:
-    async def buscar(self, *, cadastrado_desde: str | None = None) -> list[dict]:
+    async def find(self, *, signed_up_since: str | None = None) -> list[dict]:
         await asyncio.sleep(0.05)
         return list(_CUSTOMERS)
 
@@ -98,10 +98,8 @@ class _FakeSharePoint:
     async def search(self, query: str) -> list[dict]:
         """Candidates for *query*. Metadata only, never a body."""
         await asyncio.sleep(0.05)
-        termos = {t for t in query.lower().split() if len(t) > 3}
-        scored = [
-            (len(termos & set(d["titulo"].lower().split())), d) for d in _LIBRARY
-        ]
+        terms = {t for t in query.lower().split() if len(t) > 3}
+        scored = [(len(terms & set(d["title"].lower().split())), d) for d in _LIBRARY]
         return [dict(d) for score, d in sorted(scored, key=lambda s: -s[0]) if score]
 
     async def get_body(self, doc_id: str) -> str:
@@ -127,35 +125,35 @@ class _FakeMailer:
 # ---------------------------------------------------------------------------
 
 
-class BuscaClientes(BaseModel):
+class FindCustomers(BaseModel):
     """What the CRM step needs to be told."""
 
-    cadastrado_desde: str | None = Field(
+    signed_up_since: str | None = Field(
         default=None,
-        description="Período de cadastro, como a intenção o expressou — "
-        "'ontem', 'esta semana', ou uma data ISO. Ausente: ontem.",
+        description="Sign-up period, as the intent expressed it — 'yesterday', "
+        "'this week', or an ISO date. Absent: yesterday.",
     )
-    segmento: str | None = Field(
-        default=None, description="Segmento de cliente, quando a intenção citar um."
+    segment: str | None = Field(
+        default=None, description="Customer segment, when the intent names one."
     )
 
 
-class BuscaModelo(BaseModel):
+class FindTemplate(BaseModel):
     """What the document step needs to be told."""
 
-    descricao: str = Field(
-        default="modelo de e-mail de boas-vindas",
-        description="O documento procurado, descrito em linguagem natural — "
-        "por exemplo 'modelo de e-mail de boas-vindas'.",
+    description: str = Field(
+        default="welcome email template",
+        description="The document wanted, described in natural language — "
+        "for example 'welcome email template'.",
     )
 
 
-class Destinatario(BaseModel):
-    nome: str = Field(description="Como se dirigir à pessoa")
-    email: str = Field(description="Endereço de destino")
+class Recipient(BaseModel):
+    name: str = Field(description="How to address the person")
+    email: str = Field(description="Destination address")
 
 
-class EnvioModelo(BaseModel):
+class SendTemplate(BaseModel):
     """What the sender needs to be told.
 
     Nothing here names the CRM, the document store, or any memory key. The
@@ -167,14 +165,12 @@ class EnvioModelo(BaseModel):
     names, which is the property the protocol exists for.
     """
 
-    destinatarios: list[Destinatario] = Field(description="Para quem enviar")
-    assunto: str = Field(description="Linha de assunto")
-    corpo: str = Field(
-        description="Corpo do e-mail; pode conter {nome} para personalização"
-    )
+    recipients: list[Recipient] = Field(description="Who to send to")
+    subject: str = Field(description="Subject line")
+    body: str = Field(description="Email body; may contain {name} for personalisation")
 
 
-class ClienteRef(BaseModel):
+class CustomersRef(BaseModel):
     memory_key: str = Field(description="Where the rows were staged")
     row_count: int
     columns: list[str]
@@ -183,13 +179,13 @@ class ClienteRef(BaseModel):
 class TemplateRef(BaseModel):
     memory_key: str = Field(description="Where the template was staged")
     doc_id: str
-    titulo: str
-    classificacao: str = Field(description="Sensitivity, per the source system")
+    title: str
+    classification: str = Field(description="Sensitivity, per the source system")
 
 
-class EnvioResumo(BaseModel):
-    enviados: int
-    destinatarios: list[str] = Field(description="Addresses actually written to")
+class SendSummary(BaseModel):
+    sent: int
+    recipients: list[str] = Field(description="Addresses actually written to")
 
 
 # ---------------------------------------------------------------------------
@@ -204,8 +200,8 @@ class CRMAgent(BaseAgent):
             coordinator_uri=coordinator_uri,
             version="1.0.0",
             semantic_description=(
-                "Consulta a base de clientes do CRM: busca por período de "
-                "cadastro, por segmento e por status de assinatura."
+                "Queries the CRM customer base: by sign-up period, by segment "
+                "and by subscription status."
             ),
         )
         # The credential is reachable only through the scope check, and the
@@ -216,19 +212,19 @@ class CRMAgent(BaseAgent):
     def capabilities(self) -> list[AgentCapability]:
         return [
             AgentCapability(
-                capability_id="crm.buscar_clientes",
+                capability_id="crm.find_customers",
                 description=(
-                    "Busca clientes no CRM por período de cadastro. Deixa as "
-                    "linhas na memória da sessão e devolve um resumo."
+                    "Finds customers in the CRM by sign-up period. Leaves the "
+                    "rows in session memory and returns a summary."
                 ),
                 required_scopes=["crm:read"],
                 supported_data_domains=["crm", "customer"],
-                input_model=BuscaClientes,
+                input_model=FindCustomers,
                 operational_constraints={"max_rows": 50_000},
-                expected_artifacts=["cliente_ref"],
+                expected_artifacts=["customers_ref"],
                 estimated_cost=0.01,
                 estimated_latency=1.0,
-                output_model=ClienteRef,
+                output_model=CustomersRef,
             ),
         ]
 
@@ -240,17 +236,17 @@ class CRMAgent(BaseAgent):
         # The shape this capability declared, as an instance. BaseAgent
         # already validated the context against it before calling this —
         # there is no blob to go fishing in, and no prose here to parse.
-        req = inputs(BuscaClientes)
-        desde = req.cadastrado_desde or str(date.today() - timedelta(days=1))
-        linhas = await crm.buscar(cadastrado_desde=desde)
+        req = inputs(FindCustomers)
+        since = req.signed_up_since or str(date.today() - timedelta(days=1))
+        rows = await crm.find(signed_up_since=since)
 
-        key = f"{self.agent_id}.clientes"
-        remember(key, linhas)
+        key = f"{self.agent_id}.customers"
+        remember(key, rows)
 
-        return ClienteRef(
+        return CustomersRef(
             memory_key=key,
-            row_count=len(linhas),
-            columns=list(linhas[0].keys()) if linhas else [],
+            row_count=len(rows),
+            columns=list(rows[0].keys()) if rows else [],
         ).model_dump()
 
 
@@ -263,9 +259,9 @@ class SharePointAgent(BaseAgent):
             coordinator_uri=coordinator_uri,
             version="1.0.0",
             semantic_description=(
-                "Busca documentos no SharePoint: modelos de e-mail, políticas "
-                "internas e material de comunicação, com a classificação de "
-                "sensibilidade que o sistema de origem atribuiu."
+                "Finds documents in SharePoint: email templates, internal "
+                "policies and communication material, with the sensitivity "
+                "classification the source system assigned."
             ),
         )
         self.sharepoint = ScopedResource("doc:read", _FakeSharePoint)
@@ -273,15 +269,15 @@ class SharePointAgent(BaseAgent):
     def capabilities(self) -> list[AgentCapability]:
         return [
             AgentCapability(
-                capability_id="doc.buscar_modelo",
+                capability_id="doc.find_template",
                 description=(
-                    "Encontra um modelo de documento a partir de uma descrição "
-                    "em linguagem natural e o deixa na memória da sessão, com "
-                    "a classificação que o sistema de origem atribuiu."
+                    "Finds a document template from a natural-language "
+                    "description and leaves it in session memory, with the "
+                    "classification the source system assigned."
                 ),
                 required_scopes=["doc:read"],
                 supported_data_domains=["document", "communication"],
-                input_model=BuscaModelo,
+                input_model=FindTemplate,
                 expected_artifacts=["template_ref"],
                 estimated_cost=0.005,
                 estimated_latency=0.5,
@@ -297,30 +293,30 @@ class SharePointAgent(BaseAgent):
         # Two phases, and the split is the point. Search returns metadata —
         # title, folder, sensitivity — and never a body. Choosing which
         # document to open therefore never requires reading any of them.
-        pedido = inputs(BuscaModelo).descricao
-        candidatos = await sharepoint.search(pedido)
-        if not candidatos:
-            return {"error": "nenhum modelo encontrado", "consulta": pedido}
+        wanted = inputs(FindTemplate).description
+        candidates = await sharepoint.search(wanted)
+        if not candidates:
+            return {"error": "no template found", "query": wanted}
 
-        escolhido = self.choose(pedido, candidatos)
+        chosen = self.choose(wanted, candidates)
 
         # Only now is a body read, and it goes into memory rather than back
         # into a decision. Nothing downstream of here asks the agent to judge
         # what the document says.
-        corpo = await sharepoint.get_body(escolhido["doc_id"])
-        doc = {**escolhido, "corpo": corpo}
+        body = await sharepoint.get_body(chosen["doc_id"])
+        doc = {**chosen, "body": body}
 
-        key = f"{self.agent_id}.modelo"
+        key = f"{self.agent_id}.template"
         remember(key, doc)
 
         return TemplateRef(
             memory_key=key,
             doc_id=doc["doc_id"],
-            titulo=doc["titulo"],
-            classificacao=doc["classificacao"],
+            title=doc["title"],
+            classification=doc["classification"],
         ).model_dump()
 
-    def choose(self, pedido: str, candidatos: list[dict]) -> dict:
+    def choose(self, wanted: str, candidates: list[dict]) -> dict:
         """Pick one candidate. **This is where a model goes, if you need one.**
 
         Finding the right document among folders is a real problem and a
@@ -341,10 +337,10 @@ class SharePointAgent(BaseAgent):
         the absence of a model — and an agent that also held ``email:send``
         would turn a bad choice into an exfiltration.
         """
-        termos = {t for t in pedido.lower().split() if len(t) > 3}
+        terms = {t for t in wanted.lower().split() if len(t) > 3}
         return max(
-            candidatos,
-            key=lambda d: len(termos & set(d["titulo"].lower().split())),
+            candidates,
+            key=lambda d: len(terms & set(d["title"].lower().split())),
         )
 
 
@@ -364,8 +360,8 @@ class EmailAgent(BaseAgent):
             coordinator_uri=coordinator_uri,
             version="1.0.0",
             semantic_description=(
-                "Envia e-mail transacional a partir de um modelo e de uma "
-                "lista de destinatários produzidos por passos anteriores."
+                "Sends transactional email from a template and a recipient "
+                "list produced by earlier steps."
             ),
         )
         self.mailer = ScopedResource("email:send", _FakeMailer)
@@ -373,19 +369,19 @@ class EmailAgent(BaseAgent):
     def capabilities(self) -> list[AgentCapability]:
         return [
             AgentCapability(
-                capability_id="email.enviar_modelo",
+                capability_id="email.send_template",
                 description=(
-                    "Envia um modelo de e-mail para uma lista de destinatários, "
-                    "personalizando por destinatário."
+                    "Sends an email template to a list of recipients, "
+                    "personalised per recipient."
                 ),
                 required_scopes=["email:send"],
                 supported_data_domains=["communication"],
-                input_model=EnvioModelo,
+                input_model=SendTemplate,
                 operational_constraints={"max_recipients": 5_000},
-                expected_artifacts=["envio_resumo"],
+                expected_artifacts=["send_summary"],
                 estimated_cost=0.02,
                 estimated_latency=2.0,
-                output_model=EnvioResumo,
+                output_model=SendSummary,
             ),
         ]
 
@@ -396,23 +392,23 @@ class EmailAgent(BaseAgent):
 
         # The shape this agent declared, as an instance. The coordinator
         # composed it at dispatch from what the earlier steps produced —
-        # mapping the CRM agent's rows onto `destinatarios` and the document
-        # agent's template onto `assunto`/`corpo` — and BaseAgent validated
-        # the result against `EnvioModelo` before this ran. This agent knows
+        # mapping the CRM agent's rows onto `recipients` and the document
+        # agent's template onto `subject`/`body` — and BaseAgent validated
+        # the result against `SendTemplate` before this ran. This agent knows
         # no other agent's name and no memory key. It invents nothing either:
         # a missing recipient list or template is refused as `invalid_input`
         # before this line, because an egress point that improvises is one
         # nobody can reason about.
-        req = inputs(EnvioModelo)
+        req = inputs(SendTemplate)
 
-        for d in req.destinatarios:
+        for r in req.recipients:
             await mailer.send(
-                to=d.email,
-                subject=req.assunto,
-                body=req.corpo.format(nome=d.nome),
+                to=r.email,
+                subject=req.subject,
+                body=req.body.format(name=r.name),
             )
 
-        return EnvioResumo(
-            enviados=len(mailer.sent),
-            destinatarios=[m["to"] for m in mailer.sent],
+        return SendSummary(
+            sent=len(mailer.sent),
+            recipients=[m["to"] for m in mailer.sent],
         ).model_dump()
