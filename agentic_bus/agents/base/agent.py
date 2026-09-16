@@ -41,7 +41,9 @@ from agentic_bus.core.protocol.envelope import (
 )
 from agentic_bus.agents.memory import (
     open_staging,
+    reset_snapshot,
     reset_staging,
+    set_snapshot,
     staged_writes,
 )
 from agentic_bus.agents.scope_guard import (
@@ -751,6 +753,10 @@ class BaseAgent(ABC):
         # Writes are collected for the whole execution and travel on the
         # `complete`, so a task that fails part-way leaves nothing behind.
         writes_token = open_staging()
+        # What this execution may read. The coordinator filtered it to the
+        # namespaces the plan granted this step, and it has been arriving on
+        # the `execute` all along with nothing to receive it.
+        snapshot_token = set_snapshot(payload.get("memory_snapshot"))
 
         await self.send_event(
             envelope.session_id,
@@ -797,6 +803,7 @@ class BaseAgent(ABC):
             # the coordinator's policy decides whether any of it lands.
             memory_writes = staged_writes()
             reset_staging(writes_token)
+            reset_snapshot(snapshot_token)
             reset_grant(token)
 
         complete_env = build_envelope(

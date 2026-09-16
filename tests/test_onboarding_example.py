@@ -35,7 +35,7 @@ class _Peer:
         self.sent.append(envelope)
 
 
-async def _execute(agent, *, scopes: list[str], context=None, prior=None):
+async def _execute(agent, *, scopes: list[str], context=None, memory=None):
     peer = _Peer()
     agent._peer = peer
     envelope = build_envelope(
@@ -43,11 +43,9 @@ async def _execute(agent, *, scopes: list[str], context=None, prior=None):
         SenderInfo(kind=SenderKind.COORDINATOR, id="coordinator"),
         "session-1",
         {
-            "execution_plan": {
-                "context": context or {},
-                "prior_results": prior or {},
-            },
+            "execution_plan": {"context": context or {}},
             "authorized_scopes": scopes,
+            "memory_snapshot": memory or {},
         },
     )
     await agent._handle_execute(envelope)
@@ -123,9 +121,11 @@ class TestTheSteps:
         payload = await _execute(CRMAgent(), scopes=["crm:read"])
 
         assert payload.status == "success"
-        # The rows travel through memory; the artifact is the summary.
+        # The rows travel through memory; the artifact is the summary, and
+        # carries no rows of its own now that the consumer can read them.
         rows = payload.memory_writes["crm-reader.clientes"]
         assert len(rows) == payload.artifacts[0]["row_count"]
+        assert "rows" not in payload.artifacts[0]
         assert "email" in payload.artifacts[0]["columns"]
 
     async def test_the_document_carries_its_classification(self):
@@ -159,10 +159,12 @@ class TestTheSteps:
         crm = await _execute(CRMAgent(), scopes=["crm:read"])
         doc = await _execute(SharePointAgent(), scopes=["doc:read"])
 
+        # Exactly what the coordinator would deliver: the namespaces the plan
+        # granted this step, carrying what the steps before it staged.
         payload = await _execute(
             EmailAgent(),
             scopes=["email:send"],
-            prior={"step_1": crm.artifacts[0], "step_2": doc.artifacts[0]},
+            memory={**crm.memory_writes, **doc.memory_writes},
         )
 
         assert payload.status == "success"
@@ -173,10 +175,12 @@ class TestTheSteps:
         crm = await _execute(CRMAgent(), scopes=["crm:read"])
         doc = await _execute(SharePointAgent(), scopes=["doc:read"])
 
+        # Exactly what the coordinator would deliver: the namespaces the plan
+        # granted this step, carrying what the steps before it staged.
         payload = await _execute(
             EmailAgent(),
             scopes=["email:send"],
-            prior={"step_1": crm.artifacts[0], "step_2": doc.artifacts[0]},
+            memory={**crm.memory_writes, **doc.memory_writes},
         )
 
         assert payload.memory_writes == {}
@@ -195,15 +199,15 @@ class TestTheArtifactsMatchWhatWasPromised:
     ):
         from agentic_bus.core.artifacts import validate_artifacts
 
-        prior = {}
+        memory = {}
         if factory is EmailAgent:
             crm = await _execute(CRMAgent(), scopes=["crm:read"])
             doc = await _execute(SharePointAgent(), scopes=["doc:read"])
-            prior = {"step_1": crm.artifacts[0], "step_2": doc.artifacts[0]}
+            memory = {**crm.memory_writes, **doc.memory_writes}
 
         agent = factory()
         schema = agent.capabilities()[0].output_schema
-        payload = await _execute(agent, scopes=[scope], prior=prior)
+        payload = await _execute(agent, scopes=[scope], memory=memory)
 
         report = validate_artifacts(
             payload.artifacts,

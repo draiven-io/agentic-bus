@@ -28,7 +28,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from agentic_bus import ScopedResource, remember
+from agentic_bus import ScopedResource, recall, remember
 from agentic_bus.agents.base.agent import BaseAgent
 from agentic_bus.core.registry.capability_registry import AgentCapability
 
@@ -152,11 +152,6 @@ class ClienteRef(BaseModel):
     memory_key: str = Field(description="Where the rows were staged")
     row_count: int
     columns: list[str]
-    #: Carried here as well as staged in memory, because the consumer cannot
-    #: read memory yet: the coordinator builds a per-agent snapshot and
-    #: `_handle_execute` does not hand it to `execute_task`. When it does,
-    #: this field goes away and the artifact goes back to being a summary.
-    rows: list[dict] = Field(default_factory=list)
 
 
 class TemplateRef(BaseModel):
@@ -164,8 +159,6 @@ class TemplateRef(BaseModel):
     doc_id: str
     titulo: str
     classificacao: str = Field(description="Sensitivity, per the source system")
-    #: Same reason as ClienteRef.rows.
-    corpo: str = ""
 
 
 class EnvioResumo(BaseModel):
@@ -232,7 +225,6 @@ class CRMAgent(BaseAgent):
             memory_key=key,
             row_count=len(linhas),
             columns=list(linhas[0].keys()) if linhas else [],
-            rows=linhas,
         ).model_dump()
 
 
@@ -300,7 +292,6 @@ class SharePointAgent(BaseAgent):
             doc_id=doc["doc_id"],
             titulo=doc["titulo"],
             classificacao=doc["classificacao"],
-            corpo=corpo,
         ).model_dump()
 
     def choose(self, pedido: str, candidatos: list[dict]) -> dict:
@@ -374,17 +365,17 @@ class EmailAgent(BaseAgent):
     ) -> dict[str, Any]:
         mailer = self.mailer.get()
 
-        # What the previous steps produced. `prior_results` carries their
-        # artifacts, and this agent invents nothing: with no recipients and no
-        # template it refuses rather than guessing, because an egress point
-        # that improvises is an egress point nobody can reason about.
-        prior = payload.get("prior_results") or {}
-        clientes = _find(prior, "row_count")
-        modelo = _find(prior, "doc_id")
+        # What the previous steps left in shared memory. The plan granted this
+        # step read access to their namespaces, so the snapshot holds exactly
+        # what it was authorised to see — and this agent invents nothing: with
+        # no recipients and no template it refuses rather than guessing,
+        # because an egress point that improvises is one nobody can reason
+        # about.
+        rows = recall("crm-reader.clientes", default=[])
+        modelo = recall("sharepoint-reader.modelo", default={})
 
-        rows = (clientes or {}).get("rows") or []
-        corpo = (modelo or {}).get("corpo") or ""
-        titulo = (modelo or {}).get("titulo") or ""
+        corpo = modelo.get("corpo") or ""
+        titulo = modelo.get("titulo") or ""
 
         if not rows or not corpo:
             return {
@@ -404,15 +395,3 @@ class EmailAgent(BaseAgent):
             enviados=len(mailer.sent),
             destinatarios=[m["to"] for m in mailer.sent],
         ).model_dump()
-
-
-def _find(prior: dict, marker: str) -> dict | None:
-    """Pick out of ``prior_results`` the artifact carrying *marker*.
-
-    Steps are keyed by however the plan named them, so the consumer looks for
-    the shape it needs rather than for a key it has to guess.
-    """
-    for value in prior.values():
-        if isinstance(value, dict) and marker in value:
-            return value
-    return None

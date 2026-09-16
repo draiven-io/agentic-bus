@@ -89,9 +89,13 @@ the check, and the factory does not run until the check passes — a scope never
 granted is a connection never opened.
 
 **Working data travels through session memory; the artifact reports.** The CRM
-agent stages the rows with `remember()` and returns a summary. The summary is
-what gets validated against the `output_schema` its offer promised; the rows
-are what the next step consumes.
+agent stages the rows with `remember()` and returns a summary; the sender picks
+them up with `recall()`. The summary is what gets validated against the
+`output_schema` its offer promised — it carries no rows of its own, because it
+does not have to.
+
+What `recall()` sees is filtered by the plan: each step may read the namespaces
+of the steps before it, and nothing else.
 
 **The template is classified `Publico`.** Sensitivity, not destination. The
 recipients *are* external — they are customers — so an invariant reading only
@@ -113,15 +117,5 @@ the decision is all-or-nothing. Holding four addresses back while ninety-six
 go out needs evaluation *inside* a step, which the coordinator has no notion
 of.
 
-**Reading session memory.** The coordinator builds a per-agent
-`memory_snapshot` and puts it on the `execute`, but `_handle_execute` hands
-only `execution_plan` and `context` to `execute_task`, so it does not arrive.
-
-The example works around it honestly rather than pretending: each artifact
-carries its data as well as its summary, and the sender reads `prior_results`.
-When the snapshot reaches `execute_task`, `ClienteRef.rows` and
-`TemplateRef.corpo` go away and the artifacts go back to being summaries.
-
-The sender invents nothing in the meantime — with no recipients and no
-template it refuses, because an egress point that improvises is one nobody can
-reason about.
+The sender invents nothing: with no recipients and no template it refuses,
+because an egress point that improvises is one nobody can reason about.
