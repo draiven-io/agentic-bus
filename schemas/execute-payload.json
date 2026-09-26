@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://liquidinterfaces.org/schemas/0.3.0/execute-payload.json",
-  "x-lip-version": "0.3.0",
+  "$id": "https://liquidinterfaces.org/schemas/0.4.0/execute-payload.json",
+  "x-lip-version": "0.4.0",
   "description": "Payload for ``message_type='execute'``.\n\nThe coordinator authorising one step, and telling the agent what that\nstep was authorised for.",
   "properties": {
     "execution_plan": {

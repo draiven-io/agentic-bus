@@ -21,6 +21,7 @@ from langchain_core.output_parsers import JsonOutputParser
 
 from agentic_bus.core.llm import get_llm
 from agentic_bus.core.protocol.envelope import IntentPayload
+from agentic_bus.core.terms import describe_terms
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,12 @@ class IntentProcessor:
         self._prompt = ChatPromptTemplate.from_messages(
             [
                 ("system", _DECOMPOSE_SYSTEM),
-                ("human", "Intent: {intent_text}\nContext: {context}"),
+                (
+                    "human",
+                    "Intent: {intent_text}\nContext: {context}\n"
+                    "Terms the requester stated (a fixed term may not be "
+                    "altered by any sub-intent):\n{terms}",
+                ),
             ]
         )
         self._parser = JsonOutputParser()
@@ -75,6 +81,7 @@ class IntentProcessor:
             {
                 "intent_text": intent.intent_text,
                 "context": str(intent.context),
+                "terms": describe_terms(getattr(intent, "terms", None)),
             }
         )
         logger.info(

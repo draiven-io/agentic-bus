@@ -43,9 +43,35 @@ export interface AgBusEnvelope {
 // Typed payloads
 // ---------------------------------------------------------------------------
 
+/** A quantity the requester stated, and whether a plan may change it (RFC 0004). */
+export interface IntentTerm {
+  name: string;
+  value: unknown;
+  fixed?: boolean;
+}
+
+/** An offer constraint that names a term and does not equal it. */
+export interface TermDivergence {
+  name: string;
+  stated: unknown;
+  proposed: unknown;
+  fixed: boolean;
+  agent_id: string;
+  capability_id: string;
+}
+
+/** The structured error of LIP §11, carried on a `reject`. */
+export interface ErrorInfo {
+  category: string;
+  message: string;
+  suggestions: string[];
+  recoverable: boolean;
+}
+
 export interface IntentPayload {
   intent_text: string;
   context: Record<string, unknown>;
+  terms?: IntentTerm[];
   requested_outputs: string[];
   ibac_claims_requested: string[];
   assigned_agent_id?: string;
@@ -77,6 +103,7 @@ export interface RejectPayload {
   reason: string;
   renegotiation_hint: Record<string, unknown>;
   renegotiate: boolean;
+  error?: ErrorInfo | null;
 }
 
 export interface CompletePayload {

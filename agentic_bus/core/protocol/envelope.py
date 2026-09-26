@@ -39,7 +39,7 @@ from pydantic import BaseModel, Field
 #: backwards-compatible additions (a new optional field, a new message type a
 #: peer may ignore), and the major component for anything that would break an
 #: existing implementation.
-LIP_PROTOCOL_VERSION = "0.3.0"
+LIP_PROTOCOL_VERSION = "0.4.0"
 
 #: Version assumed for an envelope that arrives with no ``protocol_version``.
 #:
@@ -97,6 +97,60 @@ class TraceContext(BaseModel):
 
     trace_id: str = ""
     span_id: str = ""
+
+
+class IntentTerm(BaseModel):
+    """One quantity the requester stated, and whether a plan may change it.
+
+    RFC 0004. An intent used to carry its terms as prose in ``intent_text``
+    or as an unlabelled key in ``context``, so nothing could tell an agent
+    proposing a *means* from an agent proposing a *different objective*: an
+    offer of a 16% discount against an intent asking for 18% looked exactly
+    like negotiation. A term names the quantity in the requester's own
+    vocabulary, so an offer can answer in the same words and a coordinator
+    can compare the two without knowing what either means.
+
+    ``fixed`` defaults to ``False`` deliberately. A requester who has not
+    thought about fixity has not committed to anything, and reading silence
+    as a commitment would refuse plans that are fine — the same reasoning
+    that makes an empty credential ceiling mean *no limit expressed* rather
+    than *nothing permitted* (RFC 0003).
+    """
+
+    name: str = Field(
+        description=(
+            "What the term refers to, in the requester's vocabulary. No "
+            "catalogue applies: a term belongs to one intent and is "
+            "meaningful only within it."
+        ),
+    )
+    value: Any = Field(description="The stated value.")
+    fixed: bool = Field(
+        default=False,
+        description=(
+            "Whether an agent may propose a different value. A plan that "
+            "contradicts a fixed term is refused, with both values reported; "
+            "a contradicted non-fixed term proceeds and is surfaced in the "
+            "proposed plan for the requester to see."
+        ),
+    )
+
+
+class ErrorInfo(BaseModel):
+    """The structured error of LIP §11, as carried on a ``reject``.
+
+    Errors in this protocol are opportunities for negotiation rather than
+    failures, which is why the shape has *suggestions* and a
+    *recoverable* flag rather than a stack trace. ``category`` is one of the
+    §11 categories: ``clarification_needed``, ``constraint_violation``,
+    ``capability_mismatch``, ``policy_denial``, ``contract_expired`` or
+    ``schema_violation``.
+    """
+
+    category: str
+    message: str = ""
+    suggestions: list[str] = Field(default_factory=list)
+    recoverable: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -241,10 +295,28 @@ class RegisteredPayload(BaseModel):
 
 
 class IntentPayload(BaseModel):
-    """Payload for ``message_type='intent'``."""
+    """Payload for ``message_type='intent'``.
+
+    ``terms`` is where a commitment goes (RFC 0004). ``context`` is an open
+    bag whose keys mean whatever the requester and the agents have agreed
+    offline, so a number in it is a hint; a term is a quantity the requester
+    *stated*, which a coordinator compares every offer against, and which an
+    agent reading the relayed intent knows it is being asked about.
+    """
 
     intent_text: str
     context: dict[str, Any] = Field(default_factory=dict)
+    terms: list[IntentTerm] = Field(
+        default_factory=list,
+        description=(
+            "Quantities the requester stated — a discount, a deadline, a "
+            "budget — each with whether an agent may propose a different "
+            "value. A requester SHOULD state as a term any quantity a plan "
+            "could get wrong, rather than relying on it being read out of "
+            "intent_text; and SHOULD mark fixed only what is genuinely not "
+            "an agent's to change."
+        ),
+    )
     requested_outputs: list[str] = Field(default_factory=list)
     ibac_claims_requested: list[str] = Field(default_factory=list)
     assigned_agent_id: str = Field(
@@ -256,6 +328,22 @@ class IntentPayload(BaseModel):
             "renegotiation loop is triggered with the rejection reason."
         ),
     )
+
+    def term(self, name: str) -> IntentTerm | None:
+        """The term called *name*, or ``None`` when the requester stated none.
+
+        For an agent deciding what to offer: a term that is ``fixed`` is not
+        the agent's to adjust, whatever the number looks like.
+        """
+        for term in self.terms:
+            if term.name == name:
+                return term
+        return None
+
+    @property
+    def fixed_terms(self) -> dict[str, Any]:
+        """The terms an agent may not propose a different value for."""
+        return {t.name: t.value for t in self.terms if t.fixed}
 
 
 class OfferPayload(BaseModel):
@@ -269,7 +357,16 @@ class OfferPayload(BaseModel):
 
     capability_id: str
     capability_description: str = ""
-    constraints: dict[str, Any] = Field(default_factory=dict)
+    constraints: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "What this offer holds itself to. A key that names one of the "
+            "intent's terms is read as an answer to that term (RFC 0004): "
+            "the same name with a different value is a divergence, and a "
+            "divergence from a fixed term stops the plan. An agent that "
+            "cannot meet a fixed term SHOULD decline rather than adapt."
+        ),
+    )
     expected_artifacts: list[str] = Field(default_factory=list)
     estimated_cost: float | None = None
     estimated_latency: float | None = None
@@ -337,6 +434,11 @@ class RejectPayload(BaseModel):
     When sent by the requester: rejects the proposed plan.  If
     ``renegotiation_hint`` is provided, the coordinator SHOULD attempt
     a new discovery/negotiation cycle incorporating the feedback.
+    When sent by an agent during negotiation: declines to offer, naming
+    the capability in ``rejected_offers``. The coordinator records the
+    decline and negotiation proceeds without that agent — which is what
+    lets an agent that cannot meet a fixed term say so (RFC 0004) instead
+    of stalling the session or adapting the term.
     """
 
     rejected_offers: list[str] = Field(default_factory=list)
@@ -348,6 +450,18 @@ class RejectPayload(BaseModel):
             "When True, the requester is requesting renegotiation rather "
             "than outright termination.  The coordinator should attempt a "
             "new negotiation round incorporating renegotiation_hint."
+        ),
+    )
+    error: ErrorInfo | None = Field(
+        default=None,
+        description=(
+            "The structured reason (LIP §11), when the refusal has one a "
+            "peer can act on. A coordinator refusing a plan over a fixed "
+            "term sends category `constraint_violation`, names the term "
+            "with both values in the message, and suggests resubmitting "
+            "with the proposed value — the requester changes their own "
+            "terms; agents do not. An agent declining to offer sends its "
+            "reason here too. `reason` carries the same message as prose."
         ),
     )
 

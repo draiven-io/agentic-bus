@@ -85,6 +85,91 @@ class TestIntentPayload:
         assert p.context == {}
         assert p.requested_outputs == []
         assert p.ibac_claims_requested == []
+        assert p.terms == []
+
+
+class TestIntentTerms:
+    """RFC 0004: a term is where a commitment goes.
+
+    ``fixed`` defaults to False on purpose. A requester who has not thought
+    about fixity has not committed to anything, and reading silence as a
+    commitment would refuse plans that are fine.
+    """
+
+    def test_a_term_is_not_fixed_unless_it_says_so(self):
+        from agentic_bus.core.protocol.envelope import IntentTerm
+
+        assert IntentTerm(name="delivery_days", value=5).fixed is False
+
+    def test_terms_are_read_from_plain_dicts_on_the_wire(self):
+        p = IntentPayload(
+            intent_text="upsell with an 18% coupon",
+            terms=[
+                {"name": "discount", "value": 0.18, "fixed": True},
+                {"name": "delivery_days", "value": 5},
+            ],
+        )
+        assert p.term("discount").fixed is True
+        assert p.term("delivery_days").fixed is False
+        assert p.term("nothing") is None
+        assert p.fixed_terms == {"discount": 0.18}
+
+    def test_terms_survive_the_envelope(self):
+        env = build_envelope(
+            MessageType.INTENT,
+            SenderInfo(kind=SenderKind.REQUESTER, id="req-1"),
+            "s-1",
+            IntentPayload(
+                intent_text="x", terms=[{"name": "budget", "value": 40000, "fixed": True}]
+            ),
+        )
+        restored = IntentPayload.model_validate(
+            AgBusEnvelope.model_validate_json(env.model_dump_json()).payload
+        )
+        assert restored.fixed_terms == {"budget": 40000}
+
+    def test_a_term_needs_a_name_and_a_value(self):
+        import pydantic
+        import pytest
+        from agentic_bus.core.protocol.envelope import IntentTerm
+
+        with pytest.raises(pydantic.ValidationError):
+            IntentTerm(value=1)
+        with pytest.raises(pydantic.ValidationError):
+            IntentTerm(name="x")
+
+    def test_the_intent_schema_publishes_terms(self):
+        """An implementer reading the schema must be able to see the field."""
+        schema = build_schemas()["intent-payload.json"]
+        assert "terms" in schema["properties"]
+        term_schema = schema["$defs"]["IntentTerm"]
+        assert set(term_schema["required"]) == {"name", "value"}
+        assert term_schema["properties"]["fixed"]["default"] is False
+
+
+class TestRejectCarriesTheStructuredError:
+    """LIP §11's error response finally has a field to travel in."""
+
+    def test_error_is_optional(self):
+        from agentic_bus.core.protocol.envelope import RejectPayload
+
+        assert RejectPayload(reason="no").error is None
+
+    def test_error_round_trips(self):
+        from agentic_bus.core.protocol.envelope import ErrorInfo, RejectPayload
+
+        p = RejectPayload(
+            reason="sales:issue_coupon proposes discount 0.16; the intent fixes it at 0.18",
+            error=ErrorInfo(
+                category="constraint_violation",
+                message="sales:issue_coupon proposes discount 0.16; the intent fixes it at 0.18",
+                suggestions=["Resubmit with discount 0.16 if that is acceptable"],
+            ),
+        )
+        restored = RejectPayload.model_validate_json(p.model_dump_json())
+        assert restored.error.category == "constraint_violation"
+        assert restored.error.recoverable is True
+        assert restored.error.suggestions[0].startswith("Resubmit")
 
 
 class TestOfferPayload:
@@ -148,6 +233,12 @@ class TestProtocolVersion:
     it merely disagrees with, which makes evolving the protocol a breaking
     change by default.
     """
+
+    def test_the_current_version_is_the_one_intent_terms_landed_in(self):
+        """RFC 0004 raises the protocol to 0.4.0. The constant is what a
+        `registered` announces, so an agent can tell it is talking to a
+        coordinator that reads terms."""
+        assert LIP_PROTOCOL_VERSION == "0.4.0"
 
     def test_envelope_defaults_to_current_version(self):
         env = build_envelope(

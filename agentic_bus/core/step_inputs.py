@@ -22,6 +22,10 @@ What is composed is validated before it is sent. A parameter set that does not
 match the schema the agent published is a composition error, not something to
 discover mid-execution — the same reasoning that validates an artifact against
 the schema its offer promised, applied to the other direction.
+
+Where the intent states terms (RFC 0004), composition is shown them and a
+composed parameter that names a fixed term is held to the stated value:
+composition proposes; a fixed term is not a proposal.
 """
 
 from __future__ import annotations
@@ -38,6 +42,10 @@ _PROMPT = """You are composing the parameters for one step of an execution plan.
 
 THE REQUESTER'S INTENT:
 {intent_text}
+
+TERMS THE REQUESTER STATED (a fixed term is a commitment, not a suggestion —
+use its value exactly; a target may be met better but must not be ignored):
+{terms}
 
 THE STEP:
   agent: {agent_id}
@@ -82,6 +90,11 @@ class ComposedInputs:
     #: publishes no shape is not one whose parameters we failed to compose.
     unchecked: bool = False
     violations: list[str] = field(default_factory=list)
+    #: Parameters the composition proposed a different value for than a
+    #: fixed term states, corrected to the term (RFC 0004). Recorded rather
+    #: than silent because a model that keeps proposing 16% against a fixed
+    #: 18% is worth knowing about, even though the agent never sees the 16.
+    term_overrides: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -153,8 +166,16 @@ async def compose_step_inputs(
     prior_results: dict[str, Any] | None = None,
     memory: dict[str, Any] | None = None,
     llm: Any = None,
+    terms: list[Any] | None = None,
 ) -> ComposedInputs:
     """Fill one step's declared parameters from the intent and prior steps.
+
+    *terms* are the intent's stated terms (RFC 0004). The model is shown
+    them; and whatever it answers, a parameter that names a fixed term is
+    set to the term's value before validation. That correction is the
+    coordinator holding its own derivation to the one thing in the
+    interaction that is not derived — not the reconciliation it is forbidden
+    between an offer and a term, which are two parties' declarations.
 
     *memory* is what this step may read from the session's shared store, as
     the coordinator filtered it. **The model never sees its contents.** It is
@@ -210,8 +231,11 @@ async def compose_step_inputs(
 
     memory = memory or {}
     shapes = "\n".join(f"  {k}: {describe_shape(v)}" for k, v in memory.items())
+    from agentic_bus.core.terms import apply_fixed_terms, describe_terms
+
     prompt = _PROMPT.format(
         intent_text=intent_text,
+        terms=describe_terms(terms),
         agent_id=agent_id,
         capability_id=capability_id,
         description=step.get("description", ""),
@@ -254,9 +278,23 @@ async def compose_step_inputs(
             violations=[f"reference to memory this step cannot read: {exc}"],
         )
 
-    return validate_inputs(
+    # Composition proposes; a fixed term is not a proposal. Corrected before
+    # validation, so what the schema checks is what the agent will receive.
+    inputs, overridden = apply_fixed_terms(inputs, terms)
+    if overridden:
+        logger.info(
+            "Composition for %s:%s proposed a different value for a fixed "
+            "term and was held to the intent: %s",
+            agent_id,
+            capability_id,
+            "; ".join(str(d) for d in overridden),
+        )
+
+    result = validate_inputs(
         inputs, schema, agent_id=agent_id, capability_id=capability_id
     )
+    result.term_overrides = [d.name for d in overridden]
+    return result
 
 
 def _parse(raw: Any) -> Any:

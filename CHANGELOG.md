@@ -9,6 +9,108 @@ from this package; protocol changes are called out explicitly below.
 
 ## [Unreleased]
 
+**Protocol: LIP 0.4.0.** Additive — one optional field on `intent`, one on
+`reject` — and symmetric: an old peer on either side degrades to 0.3.0
+behaviour. A requester marking a term `fixed` against a 0.3.0 coordinator
+gets **no** protection from it, and the plan it approves is how it can tell:
+a 0.4.0 coordinator echoes the terms it held the plan to, and a plan carrying
+none came from a coordinator that never read them.
+
+### Added
+
+- **Intent terms** (RFC 0004). An intent could state a term — an 18%
+  discount, a five-day deadline, a budget of R$ 40,000 — and had nowhere to
+  put it: `IntentPayload` carried `intent_text` and an untyped `context`, so
+  a term was prose or an unlabelled key, and an agent offering 16% against
+  an intent asking for 18% looked exactly like negotiation. LIP negotiates
+  *how* an intent is fulfilled, not *what it is*, and there was no field in
+  which that distinction lived.
+
+  `terms` is that field: each names a quantity in the requester's own
+  vocabulary, its value, and whether an agent may propose a different one.
+  `fixed` defaults to false deliberately — a requester who has not thought
+  about fixity has not committed to anything, and reading silence as a
+  commitment would refuse plans that are fine.
+
+  The coordinator compares every offer's `constraints` against the terms,
+  **beside** negotiation acceptance rather than inside it: a fixed term is a
+  fact about the intent, not about the actor, so it belongs to none of the
+  five IBAC points, and no model reads the check. Equality on the same name
+  is the whole of the semantics — a coordinator cannot know that
+  `max_discount: 0.16` narrows `discount: 0.18`, only that a constraint
+  named `discount` differs from the term named `discount`, and guessing at
+  ordering would be a small language nobody checked. A contradicted fixed
+  term **refuses the plan**, whole: the requester receives a `reject`
+  naming the term with both values and suggesting a resubmission at the
+  proposed value, because the requester changes their own terms and agents
+  do not. Composing from the remaining offers instead would be
+  reconciliation in another form — a plan that quietly does not do what was
+  asked. A contradicted non-fixed term proceeds and appears on the proposed
+  plan as `term_divergences`, since under equality a coordinator cannot tell
+  that three days *beats* a target of five, only that it differs — so it
+  shows the difference and lets whoever holds the authority decide.
+
+  Deliberate about what this cannot do: both sides of the comparison are
+  declared. It catches an honest divergence and a misconfiguration. An
+  agent that changes a term *without saying so* passes it entirely and is
+  caught, if at all, at the artifact — where the coupon says `0.16` and that
+  is the deed rather than the claim.
+
+- **`reject` carries the structured error of LIP §11.** `RejectPayload.error`
+  holds `category`, `message`, `suggestions` and `recoverable`; the
+  specification has described that shape since 0.1.0 and no payload had a
+  field for it, so `constraint_violation` had been an error category nothing
+  could emit. `reason` carries the same message as prose, for old peers.
+
+- **Agents can decline.** `generate_offer()` may return `Decline(reason)`
+  (or `None`), and the SDK answers with a `reject` naming the capability.
+  An agent that cannot meet a fixed term SHOULD decline rather than adapt
+  it — an offer that cannot honour a commitment is more useful than a plan
+  that quietly does not. Before this an agent had no way to say no: staying
+  quiet left convergence waiting for an offer that would never come, and
+  sending `reject` fell through to the requester's path and **dissolved the
+  session**, which an agent does not own. A decline is now a rejected
+  negotiation record with the agent's reason; the plan is composed from the
+  rest, and a session where everyone declined is refused, not stalled. An
+  agent's `reject` outside negotiation is logged and ignored.
+
+- `IntentPayload.term(name)` and `IntentPayload.fixed_terms`, for an agent
+  reading the relayed intent — which now carries the terms, so an agent can
+  offer against what was stated rather than guess it from prose. An agent
+  MUST NOT assume a term is adjustable because it is a number.
+
+- **Composition is held to fixed terms** (RFC 0005 meets RFC 0004). A step
+  parameter the model composes under the same name as a fixed term is set
+  to the term's value before validation, and recorded in
+  `ComposedInputs.term_overrides`. Composition proposes; a fixed term is
+  not a proposal. Discovery, decomposition and plan explanation are shown
+  the terms too, with fixity spelt out — orientation for the models, never
+  the control.
+
+- `IntentClient.submit_intent(terms=...)`, `LocalBus.send_intent(terms=...)`
+  and `LocalBus.declines()`, so a requester can state terms and a test can
+  check what an agent did with one. A decline counts as an answer in the
+  harness, so a test of a declining agent returns as soon as it has spoken
+  instead of waiting out the timeout.
+
+- **`LIP-TRM-001`** joins the conformance suite (SHOULD, RFC 0004): the
+  probe fixes `budget` and an offer proposing a different value has proposed
+  a different objective, not a means. Exercised against an agent that does
+  exactly that, so the check is known to fail something.
+
+- The dashboard takes terms on the intent form, shows the terms a proposed
+  plan was held to, lists any divergence from a non-fixed one in the
+  approval banner, and renders a refusal's structured error.
+
+### Changed
+
+- The proposed plan (`offer` with `capability_id="__composed_plan__"`)
+  carries `composition_plan.terms` and, when any exist,
+  `composition_plan.term_divergences`; its description names the
+  divergences. Both reach the session archive with the plan.
+- `terms.contradicted` joins the audit actions, recorded against the agent
+  whose offer contradicted a fixed term.
+
 ## [0.3.0] — 2026-08-23
 
 **Protocol: LIP 0.3.0.** Additive, and unusually for this protocol the

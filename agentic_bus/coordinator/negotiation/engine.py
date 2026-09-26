@@ -21,6 +21,7 @@ from langchain_core.output_parsers import JsonOutputParser
 
 from agentic_bus.core.llm import get_llm
 from agentic_bus.core.protocol.envelope import IntentPayload
+from agentic_bus.core.terms import describe_terms
 from agentic_bus.core.registry.capability_registry import CapabilityRegistry
 from agentic_bus.core.session.manager import NegotiationRecord
 
@@ -146,7 +147,9 @@ class SemanticAdjudicator:
                 (
                     "human",
                     "Intention: {intent_text}\n"
-                    "Context: {context}\n\n"
+                    "Context: {context}\n"
+                    "Terms the requester stated (a fixed term may not be "
+                    "altered by any plan):\n{terms}\n\n"
                     "Available capabilities:\n{capabilities}",
                 ),
             ]
@@ -182,6 +185,11 @@ class SemanticAdjudicator:
             {
                 "intent_text": intent.intent_text,
                 "context": str(intent.context),
+                # RFC 0004: shown as data, so an agent whose constraints
+                # cannot meet a fixed term is less likely to be proposed —
+                # the deterministic check at acceptance is the control; this
+                # is only orientation.
+                "terms": describe_terms(getattr(intent, "terms", None)),
                 "capabilities": str(summaries),
             }
         )

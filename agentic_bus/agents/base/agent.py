@@ -34,9 +34,11 @@ from agentic_bus.core.protocol.envelope import (
     IntentPayload,
     OfferPayload,
     CompletePayload,
+    ErrorInfo,
     EventPayload,
     RegisterPayload,
     RegisteredPayload,
+    RejectPayload,
     build_envelope,
 )
 from agentic_bus.agents.inputs import InvalidInput, inputs, reset_context, set_context
@@ -67,6 +69,31 @@ TokenProvider = Callable[[], "str | Awaitable[str]"]
 
 #: Matches the ``user:password@`` portion of any URL inside arbitrary text.
 _URL_CREDENTIALS = re.compile(r"//[^/\s@]*:[^/\s@]*@")
+
+
+class Decline:
+    """Returned from :meth:`BaseAgent.generate_offer` to say: not this one.
+
+    An agent that cannot meet a term the intent marks ``fixed`` SHOULD
+    decline rather than adapt it (RFC 0004): an offer that cannot honour a
+    commitment is more useful than a plan that quietly does not. The SDK
+    turns this into a ``reject`` naming the capability, so the coordinator
+    records the decline and composes the plan from the other offers instead
+    of waiting for an offer that will never come. Returning ``None`` is the
+    same with a stock reason.
+
+    ``category`` is a LIP §11 error category; ``constraint_violation`` is
+    the one that fits a term the agent cannot meet.
+    """
+
+    __slots__ = ("reason", "category")
+
+    def __init__(self, reason: str = "declined to offer", *, category: str = "constraint_violation"):
+        self.reason = reason
+        self.category = category
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"Decline({self.reason!r})"
 
 
 # The coordinator URI is deliberately never logged. It may carry
@@ -263,13 +290,33 @@ class BaseAgent(ABC):
         self,
         intent: IntentPayload,
         capability: AgentCapability,
-    ) -> OfferPayload:
+    ) -> OfferPayload | Decline | None:
         """Build an ``OfferPayload`` from the capability descriptor.
 
         All cost, latency, artifact, and constraint information is already
         declared on ``AgentCapability``, so agents typically don't need to
         override this.  The method is intentionally *not* abstract — override
         only when custom negotiation logic is needed.
+
+        The intent carries the requester's ``terms`` (RFC 0004). An agent
+        MUST NOT assume a term is adjustable because it is a number: read
+        ``intent.term(name)`` or ``intent.fixed_terms`` before proposing a
+        different one. Three honest answers exist, and one dishonest one:
+
+        - offer, with ``constraints`` naming the term at the value you can
+          meet — a different value is a declared divergence, which the
+          coordinator refuses (fixed) or shows the requester (not fixed);
+        - return :class:`Decline` (or ``None``) — you do not offer, and the
+          coordinator composes without you;
+        - offer without naming the term, when it does not concern you.
+
+        Offering at the stated value and delivering another is the dishonest
+        one, and it is caught at the artifact, not here.
+
+        ``operational_constraints`` reach the offer as its ``constraints``,
+        so a capability declaring ``{"discount": 0.16}`` against an intent
+        fixing ``discount`` at ``0.18`` is refused by name and with both
+        values — which is the point of declaring it.
         """
         return OfferPayload(
             capability_id=capability.capability_id,
@@ -708,12 +755,22 @@ class BaseAgent(ABC):
             await asyncio.gather(*pending, return_exceptions=True)
 
     async def _handle_intent(self, envelope: AgBusEnvelope) -> None:
-        """Respond to an intent with offers for each matching capability."""
+        """Respond to an intent with offers for each matching capability.
+
+        A capability the agent declines (RFC 0004) is answered with a
+        ``reject`` naming it, not with silence: a coordinator waiting for
+        every solicited agent cannot tell an agent that chose not to offer
+        from one that is still thinking.
+        """
         intent = IntentPayload.model_validate(envelope.payload)
 
         for cap in self.capabilities():
             try:
                 offer = await self.generate_offer(intent, cap)
+
+                if offer is None or isinstance(offer, Decline):
+                    await self._send_decline(envelope.session_id, cap, offer)
+                    continue
 
                 offer_env = build_envelope(
                     MessageType.OFFER,
@@ -735,6 +792,34 @@ class BaseAgent(ABC):
                     self.agent_id,
                     cap.capability_id,
                 )
+
+    async def _send_decline(
+        self, session_id: str, capability: AgentCapability, decline: Decline | None
+    ) -> None:
+        decline = decline or Decline()
+        reject_env = build_envelope(
+            MessageType.REJECT,
+            SenderInfo(kind=SenderKind.AGENT, id=self.agent_id),
+            session_id,
+            RejectPayload(
+                rejected_offers=[capability.capability_id],
+                reason=decline.reason,
+                error=ErrorInfo(
+                    category=decline.category,
+                    message=decline.reason,
+                    recoverable=True,
+                ),
+            ),
+            inject_trace_context(),
+        )
+        if self._peer:
+            await self._peer.send_envelope(reject_env)
+            logger.info(
+                "Agent %s declined to offer %s: %s",
+                self.agent_id,
+                capability.capability_id,
+                decline.reason,
+            )
 
     def _input_model_for(self, payload: dict[str, Any]):
         """The ``input_model`` of the capability this execute is for.
