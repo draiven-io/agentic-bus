@@ -1,0 +1,47 @@
+<section id="agente" data-transition="fade" style="background:#FFFFFF; color:#191B33; font-family:'Inter', Arial, sans-serif; padding:128px; display:flex; flex-direction:column; gap:48px">
+  <p style="position:absolute; right:64px; top:40px; width:640px; font-size:320px; font-weight:900; line-height:1; letter-spacing:-12px; text-align:right; color:rgba(23,25,134,0.06)">13</p>
+  <div style="display:flex; flex-direction:column; gap:20px">
+    <div style="display:flex; align-items:center; gap:16px">
+      <div style="width:48px; height:3px; background:#FF3231"></div>
+      <p style="font-size:24px; font-weight:800; letter-spacing:4px; text-transform:uppercase; color:#FF3231">Na prática</p>
+    </div>
+    <h2 style="font-size:64px; font-weight:800; letter-spacing:-1.6px; line-height:1.08; color:#191B33; width:1400px">Um agente em dois métodos</h2>
+  </div>
+  <div style="flex:1; display:flex; gap:56px">
+    <div style="width:1000px; display:flex; flex-direction:column; justify-content:center; background:#0A0B2E; border-radius:18px; padding:40px 48px; font-family:monospace; font-size:26px; line-height:1.45; color:#C9CBEA">
+      <p style="white-space:nowrap"><span style="color:#FF8800">import</span> asyncio</p>
+      <p style="white-space:nowrap"><span style="color:#FF8800">from</span> agentic_bus <span style="color:#FF8800">import</span> AgentCapability, BaseAgent</p>
+      <p style="white-space:nowrap">&#160;</p>
+      <p style="white-space:nowrap"><span style="color:#FF8800">class</span> <span style="color:#FFFFFF">WeatherAgent</span>(BaseAgent):</p>
+      <p style="white-space:nowrap">&#160;&#160;&#160;&#160;<span style="color:#FF8800">def</span> <span style="color:#FFFFFF">capabilities</span>(self):</p>
+      <p style="white-space:nowrap">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;<span style="color:#FF8800">return</span> [AgentCapability(</p>
+      <p style="white-space:nowrap">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;capability_id=<span style="color:#FF6564">"forecast"</span>,</p>
+      <p style="white-space:nowrap">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;description=<span style="color:#FF6564">"Previsão do tempo por cidade"</span>,</p>
+      <p style="white-space:nowrap">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;)]</p>
+      <p style="white-space:nowrap">&#160;</p>
+      <p style="white-space:nowrap">&#160;&#160;&#160;&#160;<span style="color:#FF8800">async def</span> <span style="color:#FFFFFF">execute_task</span>(self, payload, context):</p>
+      <p style="white-space:nowrap">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;<span style="color:#FF8800">return</span> {<span style="color:#FF6564">"forecast"</span>: <span style="color:#FF6564">"ensolarado"</span>}</p>
+      <p style="white-space:nowrap">&#160;</p>
+      <p style="white-space:nowrap">agent = <span style="color:#FFFFFF">WeatherAgent</span>(agent_id=<span style="color:#FF6564">"weather-01"</span>)</p>
+      <p style="white-space:nowrap">asyncio.run(agent.run_forever())</p>
+    </div>
+    <div style="flex:1; display:flex; flex-direction:column; justify-content:center; gap:32px">
+      <div style="display:flex; align-items:center; gap:20px">
+        <div style="width:56px; height:56px; flex:none; border-radius:14px; background:#171986; display:flex; align-items:center; justify-content:center"><x-icon name="Check" style="color:#FFFFFF; width:36px; height:36px"></x-icon></div>
+        <p style="font-size:40px; font-weight:800; letter-spacing:-0.8px; color:#191B33">Sem endpoint</p>
+      </div>
+      <div style="display:flex; align-items:center; gap:20px">
+        <div style="width:56px; height:56px; flex:none; border-radius:14px; background:#171986; display:flex; align-items:center; justify-content:center"><x-icon name="Check" style="color:#FFFFFF; width:36px; height:36px"></x-icon></div>
+        <p style="font-size:40px; font-weight:800; letter-spacing:-0.8px; color:#191B33">Sem schema</p>
+      </div>
+      <div style="display:flex; align-items:center; gap:20px">
+        <div style="width:56px; height:56px; flex:none; border-radius:14px; background:#171986; display:flex; align-items:center; justify-content:center"><x-icon name="Check" style="color:#FFFFFF; width:36px; height:36px"></x-icon></div>
+        <p style="font-size:40px; font-weight:800; letter-spacing:-0.8px; color:#191B33">Sem rota</p>
+      </div>
+      <div style="display:flex">
+        <p style="font-family:monospace; font-size:26px; font-weight:700; white-space:nowrap; color:#171986; background:#EDEEFF; padding:10px 20px; border-radius:11px">pip install agentic-bus</p>
+      </div>
+    </div>
+  </div>
+  <aside>Isto é tudo o que um agente precisa: dois métodos. Não há endpoint, schema nem rota. O agente se registra, o coordenador descobre a capacidade e a chama quando uma intenção pedir. E o agente não conhece ninguém: só declara o formato que precisa receber. Na hora de despachar, o coordenador mostra ao modelo só o formato do que já está na memória, nunca os dados, e compõe a entrada. No mundo sólido, esse mapeamento seria um adaptador mantido para sempre; aqui ele é calculado para a interação e some com ela. Na demo, um agente assim vai entrar ao vivo.</aside>
+</section>

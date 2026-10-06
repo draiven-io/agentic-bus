@@ -1,0 +1,49 @@
+<section id="injecao" data-transition="fade" style="background:#FFFFFF; color:#191B33; font-family:'Inter', Arial, sans-serif; padding:128px; display:flex; flex-direction:column; gap:32px">
+  <p style="position:absolute; right:64px; top:40px; width:640px; font-size:320px; font-weight:900; line-height:1; letter-spacing:-12px; text-align:right; color:rgba(23,25,134,0.06)">17</p>
+  <div style="display:flex; flex-direction:column; gap:20px">
+    <div style="display:flex; align-items:center; gap:16px">
+      <div style="width:48px; height:3px; background:#FF3231"></div>
+      <p style="font-size:24px; font-weight:800; letter-spacing:4px; text-transform:uppercase; color:#FF3231">Governança</p>
+    </div>
+    <h2 style="font-size:64px; font-weight:800; letter-spacing:-1.6px; line-height:1.08; color:#191B33; width:1400px">Injeção de prompt</h2>
+  </div>
+  <p style="font-size:40px; font-weight:800; letter-spacing:-0.8px; line-height:1.25; color:#171986; width:1500px">O modelo escolhe o que chamar. Não escolhe se a chamada é verificada.</p>
+  <div style="flex:1"></div>
+  <div style="position:relative; width:1664px; height:360px">
+    <svg aria-label="Um texto injetado leva o modelo a pedir send_email; a verificação de escopo bloqueia antes da ferramenta" style="position:absolute; left:0px; top:0px" width="1664" height="360" viewBox="0 0 1664 360">
+      <defs>
+        <linearGradient id="jN" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3A3DD6"/><stop offset="1" stop-color="#171986"/></linearGradient>
+        <marker id="jI" orient="auto" markerWidth="5" markerHeight="5" refX="0.8" refY="2" overflow="visible"><path d="M-3.2 -1.7 L0.8 0 L-3.2 1.7" transform="translate(0 2)" fill="none" stroke="#8B8CC2" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></marker>
+        <marker id="jR" orient="auto" markerWidth="5" markerHeight="5" refX="0.8" refY="2" overflow="visible"><path d="M-3.2 -1.7 L0.8 0 L-3.2 1.7" transform="translate(0 2)" fill="none" stroke="#B02A27" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></marker>
+      </defs>
+      <rect x="60" y="50" width="200" height="220" rx="18" fill="#FFFFFF" stroke="#BEBFDD" stroke-width="4"/>
+      <line x1="90" y1="100" x2="230" y2="100" stroke="#E4E6F3" stroke-width="8" stroke-linecap="round"/>
+      <line x1="90" y1="136" x2="210" y2="136" stroke="#E4E6F3" stroke-width="8" stroke-linecap="round"/>
+      <line x1="90" y1="172" x2="226" y2="172" stroke="#E4E6F3" stroke-width="8" stroke-linecap="round"/>
+      <line x1="90" y1="208" x2="190" y2="208" stroke="#E4E6F3" stroke-width="8" stroke-linecap="round"/>
+      <line x1="90" y1="244" x2="214" y2="244" stroke="#FF3231" stroke-width="8" stroke-linecap="round"/>
+      <circle cx="252" cy="60" r="30" fill="#FF3231"/>
+      <rect x="248" y="42" width="8" height="24" rx="4" fill="#FFFFFF"/>
+      <circle cx="252" cy="76" r="4.5" fill="#FFFFFF"/>
+      <path d="M272 170 L436 170" fill="none" stroke="#8B8CC2" stroke-width="5" stroke-linecap="round" marker-end="url(#jI)"/>
+      <circle cx="540" cy="170" r="86" fill="url(#jN)"/>
+      <path d="M632 170 L856 170" fill="none" stroke="#B02A27" stroke-width="5" stroke-linecap="round" marker-end="url(#jR)"/>
+      <rect x="872" y="90" width="150" height="160" rx="24" fill="#0A0B2E"/>
+      <path d="M1030 170 L1270 170" fill="none" stroke="#BEBFDD" stroke-width="5" stroke-dasharray="12 10" stroke-linecap="round"/>
+      <circle cx="1150" cy="170" r="28" fill="#B02A27"/>
+      <path d="M1138 158 L1162 182 M1162 158 L1138 182" stroke="#FFFFFF" stroke-width="5" stroke-linecap="round"/>
+      <circle cx="1370" cy="170" r="80" fill="#EEEFF9" stroke="#BEBFDD" stroke-width="4"/>
+    </svg>
+    <x-icon name="Chat" style="position:absolute; left:508px; top:138px; width:64px; height:64px; color:#FFFFFF"></x-icon>
+    <x-icon name="Lock" style="position:absolute; left:915px; top:138px; width:64px; height:64px; color:#FF8800"></x-icon>
+    <x-icon name="PaperPlane" style="position:absolute; left:1338px; top:138px; width:64px; height:64px; color:#5A5E82"></x-icon>
+    <p style="position:absolute; left:636px; top:108px; width:216px; font-family:monospace; font-size:24px; font-weight:700; white-space:nowrap; text-align:center; color:#B02A27; background:#FBE7E6; padding:4px 0px; border-radius:999px">send_email(…)</p>
+    <p style="position:absolute; left:40px; top:292px; width:240px; font-size:26px; font-weight:700; text-align:center; color:#5A5E82">texto injetado</p>
+    <p style="position:absolute; left:420px; top:292px; width:240px; font-size:26px; font-weight:700; text-align:center; color:#5A5E82">o modelo</p>
+    <p style="position:absolute; left:817px; top:292px; width:260px; font-family:monospace; font-size:26px; font-weight:700; text-align:center; color:#171986">require_scope()</p>
+    <p style="position:absolute; left:1250px; top:292px; width:240px; font-size:26px; font-weight:700; text-align:center; color:#5A5E82">a ferramenta</p>
+  </div>
+  <div style="flex:1"></div>
+  <p style="font-size:28px; font-weight:700; line-height:1.35; color:#5A5E82; width:1500px">Um escopo por agente: ler e enviar no mesmo agente é exfiltração que ninguém vê.</p>
+  <aside>Um texto com instrução escondida pode convencer o modelo a chamar send_email. Mas a checagem de escopo não está sob controle do modelo: require_scope fica no caminho de invocação e recusa, e a tentativa fica registrada. A regra de design: se um agente precisa de dois escopos de dois sistemas, geralmente são dois agentes. Separados, a combinação ler e enviar fica no plano, onde a governança enxerga. Se perguntarem se é um LLM decidindo acesso: cada avaliação roda três camadas, fatos derivados da conexão, regras escritas por um administrador e um julgamento semântico, e vence a mais restritiva. O LLM só consegue apertar, transformar ALLOW em DENY, nunca o contrário. Se o modelo estiver fora do ar, a decisão vira DENY: avaliação que não aconteceu não é permissão.</aside>
+</section>

@@ -1,0 +1,32 @@
+{
+  "v": 4,
+  "createdOnFiles": { "v": 1, "at": "2026-09-24T00:45:00Z" },
+  "title": "Interfaces Líquidas — UFSCar",
+  "cover": "capa",
+  "order": [
+    "capa", "quem-sou", "draiven", "duas-perguntas",
+    "bauman", "catedrais",
+    "dissonancia", "divida", "llm",
+    "invariantes",
+    "atores", "sequencia", "agente",
+    "div-ibac", "proposito", "cinco-pontos", "injecao",
+    "demo",
+    "encaixe",
+    "aberto", "frase-final", "contato"
+  ],
+  "sections": {
+    "s1": { "description": "Abertura: quem está falando e a Draiven", "start": "capa" },
+    "s2": { "description": "Pano de fundo: Bauman e a modernidade líquida", "start": "bauman" },
+    "s3": { "description": "O problema: software sólido, agentes líquidos", "start": "dissonancia" },
+    "s4": { "description": "A ideia: interface como evento", "start": "invariantes" },
+    "s5": { "description": "Como funciona o protocolo", "start": "atores" },
+    "s6": { "description": "Governança com IBAC", "start": "div-ibac" },
+    "s7": { "description": "Demo ao vivo", "start": "demo" },
+    "s8": { "description": "Onde o LIP se encaixa, e quando não usar", "start": "encaixe" },
+    "s9": { "description": "Convite e fechamento", "start": "aberto" }
+  },
+  "faces": {
+    "inter": { "family": "Inter", "href": "https://fonts.googleapis.com/css2?family=Inter:wght@400..900&display=swap" }
+  },
+  "designSystems": []
+}
