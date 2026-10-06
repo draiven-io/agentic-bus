@@ -373,7 +373,7 @@ class ExecutePayload(BaseModel):
         default="",
         description=(
             "The agent's own capability this step executes — the id it "
-            "published at register, e.g. `crm.buscar_clientes`. An agent "
+            "published at register, e.g. `crm.find_customers`. An agent "
             "that publishes several capabilities uses this to know which "
             "declared `input_model` the context must match. Distinct from "
             "`capability_id`, which reference coordinators populate with the "

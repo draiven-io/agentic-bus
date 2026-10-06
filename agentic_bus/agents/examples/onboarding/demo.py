@@ -25,8 +25,8 @@ logging.basicConfig(
 )
 
 INTENT = (
-    "Preciso da lista de clientes que entraram ontem no CRM, e que seja "
-    "enviado o e-mail de boas-vindas para eles."
+    "I need the list of customers who signed up in the CRM yesterday, and "
+    "the welcome email sent to them."
 )
 
 
@@ -55,11 +55,11 @@ async def main() -> None:
     )
 
     if result.reject:
-        print(f"  recusado: {result.reject.reason}")
+        print(f"  rejected: {result.reject.reason}")
         print()
         return
 
-    print("  resultado:")
+    print("  result:")
     print(json.dumps(result.result, indent=2, ensure_ascii=False, default=str))
     print()
 

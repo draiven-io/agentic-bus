@@ -36,61 +36,61 @@ logger = logging.getLogger(__name__)
 
 
 SCOPES: list[tuple[str, str]] = [
-    ("crm:read", "Ler a base de clientes do CRM"),
-    ("doc:read", "Ler documentos e modelos no repositório"),
-    ("email:send", "Enviar e-mail em nome da organização"),
+    ("crm:read", "Read the CRM customer base"),
+    ("doc:read", "Read documents and templates in the repository"),
+    ("email:send", "Send email on behalf of the organisation"),
 ]
 
 #: capability -> scopes. The binding is the authority.
 BINDINGS: list[tuple[str, str, list[str]]] = [
-    ("crm-reader", "crm.buscar_clientes", ["crm:read"]),
-    ("sharepoint-reader", "doc.buscar_modelo", ["doc:read"]),
-    ("email-sender", "email.enviar_modelo", ["email:send"]),
+    ("crm-reader", "crm.find_customers", ["crm:read"]),
+    ("sharepoint-reader", "doc.find_template", ["doc:read"]),
+    ("email-sender", "email.send_template", ["email:send"]),
 ]
 
 
 RULES: list[dict] = [
     {
         "rule_id": "onboarding-deny-destructive",
-        "name": "Recusar intenções destrutivas",
+        "name": "Refuse destructive intents",
         "description": (
-            "Uma intenção que peça para apagar, purgar ou zerar registros é "
-            "recusada antes de qualquer agente ser consultado. Nada adiante "
-            "ganha a chance de interpretá-la com boa vontade."
+            "An intent that asks to delete, purge or wipe records is refused "
+            "before any agent is consulted. Nothing downstream gets the chance "
+            "to read it charitably."
         ),
         "priority": 10,
         "action": "deny",
         "evaluation_points": ["intent_admission"],
         "conditions": {
-            "intent_keywords": ["delete", "apagar", "purgar", "drop table", "zerar"],
+            "intent_keywords": ["delete", "purge", "wipe", "drop table", "truncate"],
         },
     },
     {
         "rule_id": "onboarding-bulk-export-needs-a-person",
-        "name": "Exportação em massa exige confirmação humana",
+        "name": "Bulk export requires human confirmation",
         "description": (
-            "Extrair a base de clientes para fora do fluxo de trabalho — CSV, "
-            "planilha, dump — exige que uma pessoa confirme. Enviar "
-            "comunicação a esses clientes não é exportação: o destinatário é "
-            "o titular do próprio dado, e tratar os dois casos como o mesmo "
-            "bloquearia o trabalho legítimo junto com o risco."
+            "Extracting the customer base out of the workflow — CSV, "
+            "spreadsheet, dump — requires a person to confirm. Sending "
+            "communication to those customers is not an export: the recipient "
+            "is the subject of the data, and treating the two cases as one "
+            "would block the legitimate work along with the risk."
         ),
         "priority": 20,
         "action": "deny",
         "evaluation_points": ["intent_admission"],
         "conditions": {
-            "intent_patterns": [r"(?i)\b(export\w*|csv|planilha|dump)\b"],
+            "intent_patterns": [r"(?i)\b(export\w*|csv|spreadsheet|dump)\b"],
             "require_human_approval": True,
         },
     },
     {
         "rule_id": "onboarding-cap-the-composition",
-        "name": "Limitar o tamanho da composição",
+        "name": "Cap the size of the composition",
         "description": (
-            "Um plano de onboarding envolve ler clientes, buscar um modelo e "
-            "enviar. Precisar de muito mais que isso quer dizer que a "
-            "intenção foi entendida de outro jeito — e a hora de notar é "
-            "antes de executar, não depois."
+            "An onboarding plan means reading customers, finding a template "
+            "and sending. Needing much more than that means the intent was "
+            "understood some other way — and the time to notice is before "
+            "executing, not after."
         ),
         "priority": 30,
         "action": "deny",
@@ -138,11 +138,11 @@ def main() -> None:
             skipped += 1
 
     print()
-    print(f"  catálogo : {added} escopo(s) adicionado(s), {len(SCOPES) - added} já presente(s)")
-    print(f"  bindings : {bound} concessão(ões) nova(s)")
-    print(f"  políticas: {created} criada(s), {skipped} já presente(s)")
+    print(f"  catalogue: {added} scope(s) added, {len(SCOPES) - added} already present")
+    print(f"  bindings : {bound} new grant(s)")
+    print(f"  policies : {created} created, {skipped} already present")
     print()
-    print("  Confira com:  agbus scope granted crm-reader")
+    print("  Check with:  agbus scope granted crm-reader")
     print()
 
 
