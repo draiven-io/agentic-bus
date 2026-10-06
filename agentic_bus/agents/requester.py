@@ -64,12 +64,17 @@ from agentic_bus.core.protocol.envelope import (
     SenderInfo,
     SenderKind,
     IntentPayload,
+    IntentTerm,
     OfferPayload,
     AcceptPayload,
     RejectPayload,
 )
 
 logger = logging.getLogger(__name__)
+
+#: A term as the caller may write it: the model, or a plain dict of the same
+#: shape (``{"name": "discount", "value": 0.18, "fixed": True}``).
+TermLike = IntentTerm | dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +187,7 @@ class IntentClient:
         intent_text: str,
         *,
         context: dict[str, Any] | None = None,
+        terms: list[TermLike] | None = None,
         requested_outputs: list[str] | None = None,
         ibac_claims: list[str] | None = None,
         assigned_agent_id: str = "",
@@ -208,6 +214,13 @@ class IntentClient:
         Args:
             intent_text: Natural language description of the intent
             context: Additional context data (domain-specific)
+            terms: Quantities the intent states, each with whether an agent
+                may propose a different value (RFC 0004) — e.g.
+                ``[{"name": "discount", "value": 0.18, "fixed": True}]``.
+                A plan contradicting a fixed term is refused with a
+                ``constraint_violation`` naming the term and both values;
+                a divergence from a non-fixed term appears in the proposed
+                plan as ``composition_plan["term_divergences"]``.
             requested_outputs: List of expected output artifacts
             ibac_claims: IBAC claims requested for this intent
             assigned_agent_id: Optional agent ID to validate the answer.
@@ -245,6 +258,7 @@ class IntentClient:
                         requested_outputs,
                         ibac_claims,
                         assigned_agent_id=assigned_agent_id,
+                        terms=terms,
                     )
 
                     # Process responses
@@ -282,6 +296,7 @@ class IntentClient:
         intent_text: str,
         *,
         context: dict[str, Any] | None = None,
+        terms: list[TermLike] | None = None,
         requested_outputs: list[str] | None = None,
         ibac_claims: list[str] | None = None,
         assigned_agent_id: str = "",
@@ -295,6 +310,7 @@ class IntentClient:
         Args:
             intent_text: Natural language description of the intent
             context: Additional context data (domain-specific)
+            terms: Stated terms, as for :meth:`submit_intent`
             requested_outputs: List of expected output artifacts
             ibac_claims: IBAC claims requested for this intent
             assigned_agent_id: Optional agent ID to validate the answer
@@ -318,6 +334,7 @@ class IntentClient:
                         requested_outputs,
                         ibac_claims,
                         assigned_agent_id=assigned_agent_id,
+                        terms=terms,
                     )
 
                     # Stream responses
@@ -347,6 +364,7 @@ class IntentClient:
         requested_outputs: list[str] | None,
         ibac_claims: list[str] | None,
         assigned_agent_id: str = "",
+        terms: list[TermLike] | None = None,
     ) -> None:
         """Construct and send an intent message."""
         sender = SenderInfo(
@@ -358,6 +376,7 @@ class IntentClient:
         payload = IntentPayload(
             intent_text=intent_text,
             context=context or {},
+            terms=list(terms or []),
             requested_outputs=requested_outputs or [],
             ibac_claims_requested=ibac_claims or [],
             assigned_agent_id=assigned_agent_id,
@@ -528,6 +547,7 @@ async def submit_intent(
     requested_outputs: list[str] | None = None,
     coordinator_uri: str = "ws://localhost:8765",
     timeout: float = 30.0,
+    terms: list[TermLike] | None = None,
 ) -> IntentResult:
     """Convenience function to submit a single intent.
     
@@ -551,5 +571,6 @@ async def submit_intent(
     return await client.submit_intent(
         intent_text,
         context=context,
+        terms=terms,
         requested_outputs=requested_outputs,
     )

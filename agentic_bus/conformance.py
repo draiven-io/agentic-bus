@@ -118,6 +118,11 @@ REQUIREMENTS: tuple[Requirement, ...] = (
         "Keeps serving when `registered` never arrives",
         "RFC 0001",
     ),
+    Requirement(
+        "LIP-TRM-001", Level.SHOULD,
+        "Does not alter a fixed term in an offer",
+        "RFC 0004",
+    ),
 )
 
 _BY_ID = {r.id: r for r in REQUIREMENTS}
@@ -335,6 +340,37 @@ async def _check_lifecycle(
         bool(offers),
         "no offer was made for an intent (acceptable if no capability matched)"
         if not offers else "",
+    )
+
+    # LIP-TRM-001 — a term the intent fixes is not the agent's to change. The
+    # probe fixes `budget`; an offer whose constraints name it at a different
+    # value has proposed a different objective, not a means (RFC 0004). An
+    # agent that answers no term, or declines, passes: the requirement is
+    # not to alter, not to answer.
+    from agentic_bus.core.terms import compare_terms
+
+    probe_terms = [{"name": "budget", "value": 100, "fixed": True}]
+    term_session = "conformance-terms"
+    term_offers = await bus.send_intent(
+        "conformance probe: do what you do within a budget of 100",
+        session_id=term_session,
+        terms=probe_terms,
+        timeout=timeout,
+    )
+    altered = [
+        d
+        for offer in term_offers
+        for d in compare_terms(
+            probe_terms,
+            offer.constraints,
+            agent_id=agent_id,
+            capability_id=offer.capability_id,
+        ).contradictions
+    ]
+    report.record(
+        "LIP-TRM-001",
+        not altered,
+        "; ".join(str(d) for d in altered) if altered else "",
     )
 
     # LIP-EXE-001 — nothing may complete before an execute is sent.

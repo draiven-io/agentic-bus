@@ -1,8 +1,36 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://liquidinterfaces.org/schemas/0.3.0/intent-payload.json",
-  "x-lip-version": "0.3.0",
-  "description": "Payload for ``message_type='intent'``.",
+  "$id": "https://liquidinterfaces.org/schemas/0.4.0/intent-payload.json",
+  "x-lip-version": "0.4.0",
+  "$defs": {
+    "IntentTerm": {
+      "description": "One quantity the requester stated, and whether a plan may change it.\n\nRFC 0004. An intent used to carry its terms as prose in ``intent_text``\nor as an unlabelled key in ``context``, so nothing could tell an agent\nproposing a *means* from an agent proposing a *different objective*: an\noffer of a 16% discount against an intent asking for 18% looked exactly\nlike negotiation. A term names the quantity in the requester's own\nvocabulary, so an offer can answer in the same words and a coordinator\ncan compare the two without knowing what either means.\n\n``fixed`` defaults to ``False`` deliberately. A requester who has not\nthought about fixity has not committed to anything, and reading silence\nas a commitment would refuse plans that are fine \u2014 the same reasoning\nthat makes an empty credential ceiling mean *no limit expressed* rather\nthan *nothing permitted* (RFC 0003).",
+      "properties": {
+        "name": {
+          "description": "What the term refers to, in the requester's vocabulary. No catalogue applies: a term belongs to one intent and is meaningful only within it.",
+          "title": "Name",
+          "type": "string"
+        },
+        "value": {
+          "description": "The stated value.",
+          "title": "Value"
+        },
+        "fixed": {
+          "default": false,
+          "description": "Whether an agent may propose a different value. A plan that contradicts a fixed term is refused, with both values reported; a contradicted non-fixed term proceeds and is surfaced in the proposed plan for the requester to see.",
+          "title": "Fixed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "title": "IntentTerm",
+      "type": "object"
+    }
+  },
+  "description": "Payload for ``message_type='intent'``.\n\n``terms`` is where a commitment goes (RFC 0004). ``context`` is an open\nbag whose keys mean whatever the requester and the agents have agreed\noffline, so a number in it is a hint; a term is a quantity the requester\n*stated*, which a coordinator compares every offer against, and which an\nagent reading the relayed intent knows it is being asked about.",
   "properties": {
     "intent_text": {
       "title": "Intent Text",
@@ -12,6 +40,14 @@
       "additionalProperties": true,
       "title": "Context",
       "type": "object"
+    },
+    "terms": {
+      "description": "Quantities the requester stated \u2014 a discount, a deadline, a budget \u2014 each with whether an agent may propose a different value. A requester SHOULD state as a term any quantity a plan could get wrong, rather than relying on it being read out of intent_text; and SHOULD mark fixed only what is genuinely not an agent's to change.",
+      "items": {
+        "$ref": "#/$defs/IntentTerm"
+      },
+      "title": "Terms",
+      "type": "array"
     },
     "requested_outputs": {
       "items": {

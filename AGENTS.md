@@ -195,7 +195,7 @@ An envelope arriving without `protocol_version` is read as `0.1.0`.
 
 ```json
 {
-  "protocol_version": "0.2.0",
+  "protocol_version": "0.4.0",
   "message_id": "uuid",
   "session_id": "uuid",
   "message_type": "register|registered|intent|offer|accept|reject|execute|complete|dissolve|event",
@@ -226,10 +226,22 @@ An envelope arriving without `protocol_version` is read as `0.1.0`.
     "time": {},
     "budget": {}
   },
+  "terms": [
+    { "name": "discount", "value": 0.18, "fixed": true },
+    { "name": "delivery_days", "value": 5 }
+  ],
   "requested_outputs": [],
   "ibac_claims_requested": []
 }
 ```
+
+`terms` is where a commitment goes
+([RFC 0004](https://github.com/draiven-io/liquid-interfaces/blob/main/rfcs/0004-intent-terms.md)).
+`context` is an open bag whose keys mean whatever the parties agreed
+offline; a term names a quantity the requester *stated*, which every offer
+is compared against and which a fixed term forbids any plan to alter. The
+implementation is `agentic_bus/core/terms.py`; the comparison is equality on
+the same name, deterministic, and no model reads it.
 
 ---
 
@@ -263,6 +275,16 @@ Negotiation continues until:
 
 - a valid composition exists
 - or negotiation is terminated
+
+Beside negotiation acceptance, every offer's `constraints` are compared
+against the intent's `terms` (RFC 0004). An offer contradicting a **fixed**
+term refuses the whole plan: the requester receives a `reject` with a
+`constraint_violation` naming the term and both values, and the coordinator
+MUST NOT reconcile the difference by preferring either value or by quietly
+composing from the remaining offers. A contradicted non-fixed term proceeds
+and is surfaced on the proposed plan as `term_divergences`. An agent may
+decline to offer by sending `reject` naming the capability; the coordinator
+records it and composes without that agent rather than waiting on it.
 
 ---
 

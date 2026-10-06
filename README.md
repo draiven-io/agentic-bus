@@ -424,6 +424,62 @@ from agentic_bus import submit_intent
 result = await submit_intent("what's the weather in Lisbon?")
 ```
 
+An intent that states a quantity a plan could get wrong says so as a **term**
+(RFC 0004), rather than trusting it to be read out of the prose:
+
+```python
+result = await submit_intent(
+    "Send customer 88213 an upsell email with an 18% coupon, delivered in 2–5 days",
+    terms=[
+        {"name": "discount", "value": 0.18, "fixed": True},
+        {"name": "delivery_days", "value": 5},
+    ],
+)
+```
+
+LIP negotiates *how* an intent is fulfilled, not *what it is*, and a term is
+where that line is drawn. The coordinator compares every offer's
+`constraints` against the terms — deterministically, beside negotiation
+acceptance, with no model in the loop. An offer naming `discount` at `0.16`
+has not proposed a means; it has proposed a different objective, and because
+the term is `fixed` the plan is refused, whole, with a `constraint_violation`
+that names the term and both values:
+
+```
+sales-agent:issue_coupon proposes discount 0.16; the intent fixes it at 0.18
+  → Resubmit with discount 0.16 if that is acceptable
+```
+
+The requester changes their own terms; agents do not. `delivery_days` is not
+fixed, so an offer at three days proceeds — and appears in the proposed plan
+as a divergence, because under equality the coordinator cannot tell that
+three *beats* five, only that it differs, and a divergence a requester may
+accept is still one they should see. Equality is the whole of the semantics:
+`max_discount: 0.16` does not name `discount`, and no narrowing or ordering
+is inferred.
+
+On the agent side the relayed intent carries the terms, and a term is not the
+agent's to adjust because it happens to be a number:
+
+```python
+from agentic_bus import Decline
+
+async def generate_offer(self, intent, capability):
+    term = intent.term("discount")
+    if term is not None and term.fixed and term.value > self.ceiling:
+        return Decline(f"cannot honour discount {term.value}; my ceiling is {self.ceiling}")
+    return await super().generate_offer(intent, capability)
+```
+
+A decline is a `reject` naming the capability, so the coordinator composes
+the plan from the other offers instead of waiting for one that will never
+come. The other honest answer is to declare what you do — a capability whose
+`operational_constraints` say `{"discount": 0.16}` reaches the offer as its
+constraints, and the coordinator refuses by name and with both values. What
+this cannot catch is an agent that changes a term *without saying so*; that
+is caught, if at all, at the artifact, where the coupon says `0.16` and that
+is the deed rather than the claim.
+
 ### Test it without any of the infrastructure
 
 `agentic_bus.testing` ships a stand-in coordinator, so testing an agent needs
@@ -731,7 +787,7 @@ agbus help quickstart                  # Step-by-step setup guide
 
 ## 🧪 Testing
 
-The project includes a comprehensive test suite — **411 tests** across 22
+The project includes a comprehensive test suite — **924 tests** across 49
 modules — covering every subsystem.
 
 The suite is **hermetic**: it ignores your `.env`, requires no API keys, and
@@ -776,6 +832,7 @@ pytest -v
 | `test_mcp_bridge.py` | MCP server bridging |
 | `test_session_memory.py` | Session memory policies |
 | `test_validation.py` | Assigned-validator renegotiation loop |
+| `test_terms.py` | Intent terms — fixed-term refusal, declines, composition (RFC 0004) |
 
 ---
 

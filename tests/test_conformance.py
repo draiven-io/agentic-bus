@@ -148,6 +148,36 @@ class TestTheSuiteDetectsViolations:
         assert not report.is_conformant
         assert not report.agent_id
 
+    async def test_an_agent_that_alters_a_fixed_term_is_warned_about(self):
+        """RFC 0004: the probe fixes `budget`; an offer proposing a different
+        value has proposed a different objective, not a means."""
+
+        class Haggler(BaseAgent):
+            def capabilities(self):
+                return [
+                    AgentCapability(
+                        capability_id="analysis",
+                        description="Analyse a dataset",
+                        operational_constraints={"budget": 50},
+                    )
+                ]
+
+            async def execute_task(self, payload, context):
+                return {}
+
+        report = await _report_for(Haggler(agent_id="haggler"))
+        by_id = {r.requirement.id: r for r in report.results}
+
+        assert not by_id["LIP-TRM-001"].passed
+        assert "budget 50" in by_id["LIP-TRM-001"].detail
+        assert by_id["LIP-TRM-001"].requirement.level == Level.SHOULD
+        assert report.is_conformant
+
+    async def test_an_agent_that_leaves_a_fixed_term_alone_passes(self):
+        report = await _report_for(WellBehavedAgent(agent_id="good-agent"))
+        by_id = {r.requirement.id: r for r in report.results}
+        assert by_id["LIP-TRM-001"].passed
+
 
 class TestReportShape:
     def test_every_requirement_has_a_level_and_a_reference(self):

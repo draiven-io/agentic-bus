@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://liquidinterfaces.org/schemas/0.3.0/offer-payload.json",
-  "x-lip-version": "0.3.0",
+  "$id": "https://liquidinterfaces.org/schemas/0.4.0/offer-payload.json",
+  "x-lip-version": "0.4.0",
   "description": "Payload for ``message_type='offer'``.\n\nWhen sent by an individual agent, this describes a single capability.\nWhen sent by the coordinator to the requester, it describes the full\ncomposed execution plan (multiple agents) for the requester to approve,\nreject, or renegotiate before execution begins.",
   "properties": {
     "capability_id": {
@@ -15,6 +15,7 @@
     },
     "constraints": {
       "additionalProperties": true,
+      "description": "What this offer holds itself to. A key that names one of the intent's terms is read as an answer to that term (RFC 0004): the same name with a different value is a divergence, and a divergence from a fixed term stops the plan. An agent that cannot meet a fixed term SHOULD decline rather than adapt.",
       "title": "Constraints",
       "type": "object"
     },

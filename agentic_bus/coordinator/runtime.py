@@ -30,6 +30,7 @@ from agentic_bus.core.protocol.envelope import (
     MessageType,
     SenderInfo,
     SenderKind,
+    ErrorInfo,
     IntentPayload,
     OfferPayload,
     AcceptPayload,
@@ -71,6 +72,7 @@ from agentic_bus.core.persistence.models import AgentStatus
 from agentic_bus.core.persistence.repository import AgentRepository
 from agentic_bus.core.persistence.scope_repository import ScopeRepository
 from agentic_bus.core.artifacts import validate_artifacts
+from agentic_bus.core.terms import TermDivergence, TermsReport, compare_terms, show_value
 from agentic_bus.core.tenancy import TenantResolver, TenantScope
 from agentic_bus.core.scopes import (
     ScopePolicy,
@@ -665,6 +667,10 @@ class CoordinatorRuntime:
         All agents (ephemeral, persistent, and managed) are contacted over
         WebSocket.  Managed agents run as independent server processes and
         connect to the coordinator just like any other agent.
+
+        The intent is relayed whole, ``terms`` included (RFC 0004), so an
+        agent can offer against what the requester stated rather than guess
+        it from prose — and can decline when it cannot meet a fixed term.
         """
         for candidate in candidates:
             agent_peer_id = self._agent_peers.get(candidate.agent_id)
@@ -807,6 +813,17 @@ class CoordinatorRuntime:
 
         initial_entropy = session.composition_plan["initial_entropy"]
 
+        # Terms (RFC 0004). Deterministic, and *beside* negotiation
+        # acceptance rather than inside it: a fixed term is a fact about the
+        # intent, not about the actor, so it belongs to none of the five IBAC
+        # evaluation points, and no wording of the intent changes its outcome.
+        # A contradicted fixed term refuses the whole plan below; a
+        # contradicted non-fixed term proceeds and is surfaced on the plan.
+        terms_report = await self._check_offers_against_terms(session)
+        if not terms_report.ok:
+            await self._refuse_plan_over_terms(session, terms_report)
+            return
+
         # Auto-accept pending offers that passed IBAC (guardrail — not requester approval)
         for record in session.offers:
             if record.status == "pending":
@@ -920,6 +937,218 @@ class CoordinatorRuntime:
                 )
                 await self._dissolve_session(session.session_id)
 
+    async def _check_offers_against_terms(self, session: SessionState) -> TermsReport:
+        """Compare every pending offer's constraints against the intent's terms.
+
+        Equality on the same name is the whole of the semantics (RFC 0004):
+        a coordinator cannot know that ``max_discount: 0.16`` narrows
+        ``discount: 0.18``, only that a constraint named ``discount`` differs
+        from the term named ``discount``. An offer that answers no term, or
+        a term no offer answers, is not a divergence.
+
+        A contradicted fixed term marks the offer rejected here, with the
+        reason naming both values, so the record says why. Tolerated
+        divergences accumulate on the session's plan for the requester to
+        see: under equality a coordinator cannot tell that three days beats
+        a target of five, so it shows the difference and lets whoever holds
+        the authority decide.
+        """
+        report = TermsReport()
+        terms = list(getattr(session.intent, "terms", None) or [])
+        if not terms:
+            return report
+
+        for record in session.offers:
+            if record.status != "pending":
+                continue
+            found = compare_terms(
+                terms,
+                record.offer.constraints,
+                agent_id=record.agent_id,
+                capability_id=record.offer.capability_id,
+            )
+            if not found.divergences:
+                continue
+            report.extend(found)
+
+            if found.contradictions:
+                record.status = "rejected"
+                record.rejection_reason = "; ".join(str(d) for d in found.contradictions)
+                await self._emit_event(
+                    session.session_id,
+                    "negotiation",
+                    f"Offer from '{record.agent_id}' contradicts a fixed term: "
+                    f"{record.rejection_reason}",
+                    phase="negotiation",
+                    agent_id=record.agent_id,
+                    detail={
+                        "contradictions": [d.as_dict() for d in found.contradictions]
+                    },
+                )
+            for divergence in found.tolerated:
+                await self._emit_event(
+                    session.session_id,
+                    "negotiation",
+                    f"Offer from '{record.agent_id}' diverges from a stated term "
+                    f"(not fixed, so it proceeds): {divergence}",
+                    phase="negotiation",
+                    agent_id=record.agent_id,
+                    detail={"divergence": divergence.as_dict()},
+                )
+
+        if report.tolerated:
+            tolerated = list(session.composition_plan.get("term_divergences") or [])
+            seen = {(d["agent_id"], d["capability_id"], d["name"]) for d in tolerated}
+            for divergence in report.tolerated:
+                key = (divergence.agent_id, divergence.capability_id, divergence.name)
+                if key not in seen:
+                    tolerated.append(divergence.as_dict())
+                    seen.add(key)
+            session.composition_plan["term_divergences"] = tolerated
+        return report
+
+    async def _refuse_plan_over_terms(
+        self, session: SessionState, report: TermsReport
+    ) -> None:
+        """Refuse a plan containing an offer that contradicts a fixed term.
+
+        RFC 0004: the coordinator MUST refuse, MUST report which term with
+        both values, and MUST NOT silently reconcile by preferring either
+        value. Dropping the offending offer and composing from the rest would
+        be that reconciliation in another form — the plan would then quietly
+        not do what was asked. So the requester is told, with the proposed
+        value as a suggestion: **the requester changes their own terms;
+        agents do not.** A resubmission at the agent's number is a decision
+        by whoever holds the authority to make it, which is what the accept
+        gate exists to protect and what a quiet substitution bypasses.
+        """
+        contradictions = report.contradictions
+        message = "; ".join(str(d) for d in contradictions)
+        suggestions = [
+            f"Resubmit with {d.name} {show_value(d.proposed)} if that is acceptable"
+            for d in contradictions
+        ]
+        suggestions.append(
+            "The term is marked fixed, so no agent may change it"
+            if len(contradictions) == 1
+            else "These terms are marked fixed, so no agent may change them"
+        )
+        offenders = sorted({d.agent_id for d in contradictions if d.agent_id})
+
+        self.audit_log.log(
+            action="terms.contradicted",
+            actor=", ".join(offenders) or "unknown",
+            target=session.session_id,
+            target_type="session",
+            details=message,
+            severity="warning",
+        )
+        await self._emit_event(
+            session.session_id,
+            "warning",
+            f"Plan refused — a fixed term was contradicted: {message}",
+            phase="negotiation",
+            detail={
+                "category": "constraint_violation",
+                "contradictions": [d.as_dict() for d in contradictions],
+                "suggestions": suggestions,
+            },
+            progress=1.0,
+        )
+        logger.warning(
+            "Refusing plan for session %s over fixed terms: %s",
+            session.session_id,
+            message,
+        )
+
+        reject_env = build_envelope(
+            MessageType.REJECT,
+            COORDINATOR_SENDER,
+            session.session_id,
+            RejectPayload(
+                rejected_offers=offenders,
+                reason=message,
+                error=ErrorInfo(
+                    category="constraint_violation",
+                    message=message,
+                    suggestions=suggestions,
+                    recoverable=True,
+                ),
+            ),
+            inject_trace_context(),
+        )
+        requester_peer_id = self._session_requester_peers.get(session.session_id)
+        if requester_peer_id:
+            peer = self._server.get_peer(requester_peer_id)
+            if peer:
+                await peer.send_envelope(reject_env)
+        await self._dissolve_session(session.session_id)
+
+    async def _handle_agent_decline(
+        self,
+        session: SessionState,
+        envelope: AgBusEnvelope,
+        reject_payload: RejectPayload,
+    ) -> None:
+        """An agent saying it will not offer, recorded so nothing waits on it.
+
+        ``reject`` travels in either direction in the specification, and an
+        agent that cannot meet a fixed term SHOULD decline rather than adapt
+        it (RFC 0004). Before this, an agent's ``reject`` fell through to the
+        requester's path and dissolved the session — an agent does not own
+        the session — and an agent that simply stayed quiet left convergence
+        waiting for an offer that would never come. The decline is a
+        rejected negotiation record with the agent's reason, so it counts as
+        the agent having responded and the plan is composed from the rest.
+
+        Outside negotiation an agent's ``reject`` is logged and ignored.
+        """
+        agent_id = envelope.sender.id
+        reason = (
+            reject_payload.reason
+            or (reject_payload.error.message if reject_payload.error else "")
+            or "declined to offer"
+        )
+        if session.phase not in (SessionPhase.NEGOTIATION, SessionPhase.DISCOVERY):
+            logger.warning(
+                "Ignoring reject from agent %s in phase %s for session %s: %s",
+                agent_id,
+                session.phase,
+                session.session_id,
+                reason,
+            )
+            return
+
+        capability_id = (
+            reject_payload.rejected_offers[0] if reject_payload.rejected_offers else ""
+        )
+        session.offers.append(
+            NegotiationRecord(
+                agent_id=agent_id,
+                offer=OfferPayload(
+                    capability_id=capability_id,
+                    capability_description=f"declined: {reason}",
+                ),
+                status="rejected",
+                rejection_reason=reason,
+            )
+        )
+        await self._emit_event(
+            session.session_id,
+            "negotiation",
+            f"Agent '{agent_id}' declined to offer"
+            + (f" '{capability_id}'" if capability_id else "")
+            + f": {reason}",
+            phase="negotiation",
+            agent_id=agent_id,
+            detail={
+                "capability_id": capability_id,
+                "reason": reason,
+                "error": reject_payload.error.model_dump() if reject_payload.error else None,
+            },
+        )
+        await self._try_converge(session)
+
     async def _try_propose_from_accepted(self, session: SessionState) -> None:
         """Propose a plan from accepted offers, or dissolve if none remain."""
         accepted = [o for o in session.offers if o.status == "accepted"]
@@ -971,6 +1200,18 @@ class CoordinatorRuntime:
             plan.get("steps", []),
             session.composition_plan.get("decomposition"),
         )
+
+        # RFC 0004. The plan a requester approves lists the terms it was held
+        # to, and every divergence from a non-fixed one — a divergence a
+        # requester may accept is still one they should see, and a plan that
+        # echoes no terms came from a coordinator that never read them, which
+        # is how the absence of enforcement becomes visible.
+        terms = list(getattr(session.intent, "terms", None) or [])
+        if terms:
+            plan["terms"] = [t.model_dump() for t in terms]
+        divergences = list(session.composition_plan.get("term_divergences") or [])
+        if divergences:
+            plan["term_divergences"] = divergences
         session.composition_plan.update(plan)
 
         if not plan.get("viable"):
@@ -1006,12 +1247,29 @@ class CoordinatorRuntime:
             for step in plan.get("steps", [])
         )
 
+        capability_description = f"Proposed execution flow: {flow_description}"
+        if divergences:
+            noted = "; ".join(str(TermDivergence(**d)) for d in divergences)
+            capability_description += f" — diverges from stated terms: {noted}"
+            await self._emit_event(
+                session.session_id,
+                "warning",
+                f"The proposed plan diverges from stated (non-fixed) terms: {noted}",
+                phase="plan_proposed",
+                detail={"term_divergences": divergences},
+            )
+
         await self._emit_event(
             session.session_id,
             "phase",
             f"Execution plan composed: {flow_description}",
             phase="plan_proposed",
-            detail={"steps": plan.get("steps", []), "agents": participating_agents},
+            detail={
+                "steps": plan.get("steps", []),
+                "agents": participating_agents,
+                "terms": plan.get("terms", []),
+                "term_divergences": divergences,
+            },
             progress=0.70,
         )
 
@@ -1022,7 +1280,7 @@ class CoordinatorRuntime:
         from agentic_bus.core.protocol.envelope import OfferPayload
         plan_offer = OfferPayload(
             capability_id="__composed_plan__",
-            capability_description=f"Proposed execution flow: {flow_description}",
+            capability_description=capability_description,
             composition_plan=plan,
             participating_agents=participating_agents,
             output_schema=merged_output_schema,
@@ -1082,6 +1340,8 @@ Return ONLY a JSON object (no markdown fences, no commentary):
     _PLAN_EXPLANATION_HUMAN = """\
 Intent: {intent_text}
 Context: {context}
+Terms the requester stated (a fixed term may not be altered by any plan):
+{terms}
 
 Execution plan steps:
 {steps_description}
@@ -1121,9 +1381,12 @@ Execution plan steps:
             ])
             chain = prompt | llm | JsonOutputParser()
 
+            from agentic_bus.core.terms import describe_terms
+
             result = await chain.ainvoke({
                 "intent_text": session.intent.intent_text if session.intent else "",
                 "context": str(session.intent.context if session.intent else {}),
+                "terms": describe_terms(getattr(session.intent, "terms", None)),
                 "steps_description": steps_text,
             })
 
@@ -1233,6 +1496,9 @@ Execution plan steps:
             step=step,
             prior_results=prior_results,
             memory=memory,
+            # RFC 0004 meets RFC 0005: composition proposes; a fixed term is
+            # not a proposal.
+            terms=list(getattr(getattr(session, "intent", None), "terms", None) or []),
         )
 
         if composed.ok and not composed.unchecked:
@@ -2374,6 +2640,10 @@ Execution plan steps:
         session.audit_log.append(envelope)
 
         reject_payload = RejectPayload.model_validate(envelope.payload)
+
+        if envelope.sender.kind == SenderKind.AGENT:
+            await self._handle_agent_decline(session, envelope, reject_payload)
+            return
 
         if envelope.sender.kind == SenderKind.REQUESTER and reject_payload.renegotiate:
             logger.info(

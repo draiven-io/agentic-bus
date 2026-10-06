@@ -1,8 +1,41 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://liquidinterfaces.org/schemas/0.3.0/reject-payload.json",
-  "x-lip-version": "0.3.0",
-  "description": "Payload for ``message_type='reject'``.\n\nWhen sent by the coordinator: intent or negotiation failed.\nWhen sent by the requester: rejects the proposed plan.  If\n``renegotiation_hint`` is provided, the coordinator SHOULD attempt\na new discovery/negotiation cycle incorporating the feedback.",
+  "$id": "https://liquidinterfaces.org/schemas/0.4.0/reject-payload.json",
+  "x-lip-version": "0.4.0",
+  "$defs": {
+    "ErrorInfo": {
+      "description": "The structured error of LIP \u00a711, as carried on a ``reject``.\n\nErrors in this protocol are opportunities for negotiation rather than\nfailures, which is why the shape has *suggestions* and a\n*recoverable* flag rather than a stack trace. ``category`` is one of the\n\u00a711 categories: ``clarification_needed``, ``constraint_violation``,\n``capability_mismatch``, ``policy_denial``, ``contract_expired`` or\n``schema_violation``.",
+      "properties": {
+        "category": {
+          "title": "Category",
+          "type": "string"
+        },
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        },
+        "suggestions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Suggestions",
+          "type": "array"
+        },
+        "recoverable": {
+          "default": true,
+          "title": "Recoverable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "category"
+      ],
+      "title": "ErrorInfo",
+      "type": "object"
+    }
+  },
+  "description": "Payload for ``message_type='reject'``.\n\nWhen sent by the coordinator: intent or negotiation failed.\nWhen sent by the requester: rejects the proposed plan.  If\n``renegotiation_hint`` is provided, the coordinator SHOULD attempt\na new discovery/negotiation cycle incorporating the feedback.\nWhen sent by an agent during negotiation: declines to offer, naming\nthe capability in ``rejected_offers``. The coordinator records the\ndecline and negotiation proceeds without that agent \u2014 which is what\nlets an agent that cannot meet a fixed term say so (RFC 0004) instead\nof stalling the session or adapting the term.",
   "properties": {
     "rejected_offers": {
       "items": {
@@ -26,6 +59,18 @@
       "description": "When True, the requester is requesting renegotiation rather than outright termination.  The coordinator should attempt a new negotiation round incorporating renegotiation_hint.",
       "title": "Renegotiate",
       "type": "boolean"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ErrorInfo"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The structured reason (LIP \u00a711), when the refusal has one a peer can act on. A coordinator refusing a plan over a fixed term sends category `constraint_violation`, names the term with both values in the message, and suggests resubmitting with the proposed value \u2014 the requester changes their own terms; agents do not. An agent declining to offer sends its reason here too. `reason` carries the same message as prose."
     }
   },
   "title": "LIP reject payload",

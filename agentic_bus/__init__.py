@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 
-from agentic_bus.agents.base.agent import BaseAgent, ReconnectPolicy, TokenProvider
+from agentic_bus.agents.base.agent import BaseAgent, Decline, ReconnectPolicy, TokenProvider
 from agentic_bus.agents.inputs import InvalidInput, inputs
 from agentic_bus.agents.memory import recall, recalled, remember
 from agentic_bus.agents.scope_guard import (
@@ -53,9 +53,11 @@ from agentic_bus.core.protocol.envelope import (
     AgBusEnvelope,
     CompletePayload,
     DissolvePayload,
+    ErrorInfo,
     EventPayload,
     ExecutePayload,
     IntentPayload,
+    IntentTerm,
     MessageType,
     OfferPayload,
     RejectPayload,
@@ -89,6 +91,7 @@ __all__ = [
     "LIP_PROTOCOL_VERSION",
     # Writing a provider agent
     "BaseAgent",
+    "Decline",
     "AgentCapability",
     "AgentRegistration",
     "ReconnectPolicy",
@@ -106,9 +109,11 @@ __all__ = [
     "TraceContext",
     "build_envelope",
     "IntentPayload",
+    "IntentTerm",
     "OfferPayload",
     "AcceptPayload",
     "RejectPayload",
+    "ErrorInfo",
     "ExecutePayload",
     "CompletePayload",
     "DissolvePayload",

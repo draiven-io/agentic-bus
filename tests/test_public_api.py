@@ -22,6 +22,7 @@ import pytest
 #: Everything the README promises an agent author can import.
 PUBLIC_NAMES = [
     "BaseAgent",
+    "Decline",
     "AgentCapability",
     "AgentRegistration",
     "ReconnectPolicy",
@@ -37,9 +38,11 @@ PUBLIC_NAMES = [
     "TraceContext",
     "build_envelope",
     "IntentPayload",
+    "IntentTerm",
     "OfferPayload",
     "AcceptPayload",
     "RejectPayload",
+    "ErrorInfo",
     "ExecutePayload",
     "CompletePayload",
     "DissolvePayload",

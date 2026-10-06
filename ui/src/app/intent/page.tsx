@@ -15,6 +15,7 @@ import {
   WifiOff,
   Wifi,
   AlertCircle,
+  AlertTriangle,
   ChevronDown,
   ChevronUp,
   Play,
@@ -72,6 +73,7 @@ import {
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
+import type { IntentTerm } from "@/lib/protocol";
 import { AgentSelect } from "@/components/agent-select";
 
 import {
@@ -1313,6 +1315,58 @@ function ApprovalBanner({
               ))}
             </div>
 
+            {/* Terms the plan was held to (RFC 0004) */}
+            {plan.terms && plan.terms.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {plan.terms.map((t) => (
+                  <Badge
+                    key={t.name}
+                    variant="outline"
+                    className={`text-[10px] ${
+                      t.fixed
+                        ? "border-amber-500/40 text-amber-300"
+                        : "border-zinc-700 text-zinc-400"
+                    }`}
+                    title={t.fixed ? "Fixed — no agent may change it" : "A target"}
+                  >
+                    {t.name} = {JSON.stringify(t.value)}
+                    {t.fixed ? " · fixed" : ""}
+                  </Badge>
+                ))}
+              </div>
+            )}
+
+            {/* Divergences from non-fixed terms: permitted, and shown */}
+            {plan.termDivergences && plan.termDivergences.length > 0 && (
+              <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+                <div className="flex items-center gap-1.5 mb-1.5">
+                  <AlertTriangle className="size-3.5 text-amber-400" />
+                  <span className="text-[11px] font-semibold text-amber-300">
+                    Diverges from stated terms
+                  </span>
+                </div>
+                <ul className="space-y-1">
+                  {plan.termDivergences.map((d) => (
+                    <li
+                      key={`${d.agent_id}:${d.capability_id}:${d.name}`}
+                      className="text-[11px] text-zinc-300"
+                    >
+                      <span className="font-semibold text-zinc-200">
+                        {d.agent_id}
+                        <span className="text-zinc-500">:{d.capability_id}</span>
+                      </span>{" "}
+                      proposes {d.name} {JSON.stringify(d.proposed)}; the intent states{" "}
+                      {JSON.stringify(d.stated)}
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-1.5 text-[10px] text-zinc-500">
+                  These terms were not marked fixed, so the plan proceeds — approving it
+                  accepts the proposed values.
+                </p>
+              </div>
+            )}
+
             {/* Plan rationale */}
             {explanation && (
               <div className="mt-3 rounded-lg border border-orange-500/20 bg-orange-500/5 p-3">
@@ -1499,20 +1553,43 @@ function ApprovalBanner({
 // Idle state
 // ---------------------------------------------------------------------------
 
+function parseTerms(raw: string): IntentTerm[] | null {
+  const text = raw.trim();
+  if (!text) return [];
+  try {
+    const parsed = JSON.parse(text);
+    if (!Array.isArray(parsed)) return null;
+    const terms: IntentTerm[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== "object" || typeof item.name !== "string" || !("value" in item)) {
+        return null;
+      }
+      terms.push({ name: item.name, value: item.value, fixed: Boolean(item.fixed) });
+    }
+    return terms;
+  } catch {
+    return null;
+  }
+}
+
 function IdleState({
   onSubmit,
 }: {
-  onSubmit: (text: string, assignedAgentId?: string) => void;
+  onSubmit: (text: string, assignedAgentId?: string, terms?: IntentTerm[]) => void;
 }) {
   const [input, setInput] = useState("");
   const [assignedAgentId, setAssignedAgentId] = useState("");
+  const [termsInput, setTermsInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const parsedTerms = parseTerms(termsInput);
+  const termsInvalid = parsedTerms === null;
 
   const handleSubmit = () => {
     const text = input.trim();
-    if (!text) return;
+    if (!text || termsInvalid) return;
     setInput("");
-    onSubmit(text, assignedAgentId || undefined);
+    onSubmit(text, assignedAgentId || undefined, parsedTerms ?? undefined);
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1555,6 +1632,30 @@ function IdleState({
           />
         </div>
 
+        {/* Terms (RFC 0004): quantities a plan may not get wrong */}
+        <div className="mt-3 max-w-xs mx-auto text-left">
+          <label
+            htmlFor="intent-terms"
+            className="block text-[11px] font-medium text-zinc-400 mb-1.5"
+          >
+            Terms <span className="text-zinc-600">(JSON, optional)</span>
+          </label>
+          <Input
+            id="intent-terms"
+            placeholder='[{"name": "discount", "value": 0.18, "fixed": true}]'
+            value={termsInput}
+            onChange={(e) => setTermsInput(e.target.value)}
+            className={`bg-zinc-900/50 border-zinc-700 text-xs ${
+              termsInvalid ? "border-red-500/60" : ""
+            }`}
+          />
+          {termsInvalid && (
+            <p className="mt-1 text-[10px] text-red-400">
+              Expected a JSON list of {"{"}name, value, fixed?{"}"} objects.
+            </p>
+          )}
+        </div>
+
         <div className="mt-4 flex gap-2">
           <Textarea
             ref={textareaRef}
@@ -1567,7 +1668,7 @@ function IdleState({
           />
           <Button
             onClick={handleSubmit}
-            disabled={!input.trim()}
+            disabled={!input.trim() || termsInvalid}
             size="icon"
             className="shrink-0 self-end size-[56px] bg-violet-600 hover:bg-violet-700"
           >
@@ -1636,7 +1737,11 @@ export default function IntentPage() {
 
       {isIdle ? (
         <div className="h-[calc(100vh-3.5rem)]">
-          <IdleState onSubmit={(text, assignedAgentId) => submitIntent(text, undefined, assignedAgentId)} />
+          <IdleState
+            onSubmit={(text, assignedAgentId, terms) =>
+              submitIntent(text, undefined, assignedAgentId, terms)
+            }
+          />
         </div>
       ) : (
         <div className="flex h-[calc(100vh-3.5rem)] flex-col">

@@ -7,6 +7,9 @@ import type {
   OfferPayload,
   EventPayload,
   SenderInfo,
+  ErrorInfo,
+  IntentTerm,
+  TermDivergence,
 } from "@/lib/protocol";
 import { makeEnvelope } from "@/lib/protocol";
 
@@ -112,6 +115,12 @@ export interface ExecutionPlan {
   compositionPlan?: Record<string, unknown>;
   mergedOutputSchema?: Record<string, unknown>;
   explanation?: PlanExplanation;
+  /** The terms the coordinator held this plan to (RFC 0004). A plan
+   *  echoing none came from a coordinator that never read them. */
+  terms?: IntentTerm[];
+  /** Divergences from non-fixed terms — permitted, and shown so the
+   *  requester decides rather than discovers. */
+  termDivergences?: TermDivergence[];
 }
 
 export interface ExecutionResult {
@@ -219,6 +228,9 @@ export function useIntentWs() {
               flowDescription: payload.capability_description || "",
               compositionPlan: payload.composition_plan,
               mergedOutputSchema: payload.output_schema,
+              terms: (payload.composition_plan?.terms as IntentTerm[]) || [],
+              termDivergences:
+                (payload.composition_plan?.term_divergences as TermDivergence[]) || [],
             };
             setPlan(execPlan);
             setAwaitingApproval(true);
@@ -283,18 +295,23 @@ export function useIntentWs() {
           });
           break;
 
-        case "reject":
+        case "reject": {
+          const rejectPayload = envelope.payload as Record<string, unknown>;
+          const error = (rejectPayload.error as ErrorInfo | null | undefined) ?? null;
           addEvent({
             id,
             timestamp: ts,
             category: "warning",
             phase: "negotiation",
             summary:
-              ((envelope.payload as Record<string, unknown>).reason as string) ||
-              "Rejected",
+              (error
+                ? `${error.category}: ${error.message}`
+                : (rejectPayload.reason as string)) || "Rejected",
+            detail: error ? { ...error } : undefined,
             envelope,
           });
           break;
+        }
 
         case "execute":
           setCurrentPhase("execution");
@@ -528,7 +545,12 @@ export function useIntentWs() {
   );
 
   const submitIntent = useCallback(
-    (text: string, context?: Record<string, unknown>, assignedAgentId?: string) => {
+    (
+      text: string,
+      context?: Record<string, unknown>,
+      assignedAgentId?: string,
+      terms?: IntentTerm[],
+    ) => {
       const sid = `${senderRef.current.id}-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
       setSessionId(sid);
       setStatus("connecting");
@@ -562,6 +584,7 @@ export function useIntentWs() {
         const envelope = makeEnvelope("intent", sid, senderRef.current, {
           intent_text: text,
           context: context ?? {},
+          ...(terms && terms.length > 0 ? { terms } : {}),
           requested_outputs: [],
           ibac_claims_requested: [],
           ...(assignedAgentId ? { assigned_agent_id: assignedAgentId } : {}),

@@ -54,6 +54,7 @@ from agentic_bus.core.protocol.envelope import (
     MessageType,
     OfferPayload,
     RegisterPayload,
+    RejectPayload,
     SenderInfo,
     SenderKind,
     build_envelope,
@@ -232,6 +233,7 @@ class LocalBus:
         agent_id: str | None = None,
         session_id: str | None = None,
         context: dict[str, Any] | None = None,
+        terms: list[Any] | None = None,
         expect_offers: int = 1,
         timeout: float = 5.0,
     ) -> list[OfferPayload]:
@@ -240,19 +242,34 @@ class LocalBus:
         With no *agent_id*, every registered agent receives it — which is
         how you check that an agent offers for the intents it should, and
         stays quiet for the ones it should not.
+
+        *terms* are the intent's stated terms (RFC 0004), as models or as
+        dicts: ``[{"name": "discount", "value": 0.18, "fixed": True}]``. An
+        agent that declines a capability answers with a ``reject`` rather
+        than an offer; a decline counts towards *expect_offers* so a test
+        of a declining agent returns as soon as it has answered instead of
+        waiting out the timeout, and :meth:`declines` reads them back.
         """
         session_id = session_id or f"session-{uuid.uuid4().hex[:8]}"
-        payload = {"intent_text": intent_text, "context": context or {}}
+        payload: dict[str, Any] = {"intent_text": intent_text, "context": context or {}}
+        if terms:
+            payload["terms"] = [
+                t.model_dump() if hasattr(t, "model_dump") else dict(t) for t in terms
+            ]
 
         collected: list[OfferPayload] = []
+        answered = 0
 
         def collect(envelope: AgBusEnvelope) -> bool:
-            if (
-                envelope.message_type == MessageType.OFFER
-                and envelope.session_id == session_id
-            ):
+            nonlocal answered
+            if envelope.session_id != session_id:
+                return False
+            if envelope.message_type == MessageType.OFFER:
                 collected.append(OfferPayload.model_validate(envelope.payload))
-            return len(collected) >= expect_offers
+                answered += 1
+            elif envelope.message_type == MessageType.REJECT:
+                answered += 1
+            return answered >= expect_offers
 
         waiter = self._register_waiter(collect)
         await self._send(payload, MessageType.INTENT, session_id, agent_id)
@@ -358,6 +375,19 @@ class LocalBus:
         return [
             EventPayload.model_validate(e.payload)
             for e in self.messages_of_type(MessageType.EVENT)
+            if session_id is None or e.session_id == session_id
+        ]
+
+    def declines(self, *, session_id: str | None = None) -> list[RejectPayload]:
+        """The capabilities the agent declined to offer, with its reasons.
+
+        An agent that cannot meet a fixed term is expected to say so (RFC
+        0004) rather than offer a different value or go quiet; this is where
+        a test checks that it did, and what it said.
+        """
+        return [
+            RejectPayload.model_validate(e.payload)
+            for e in self.messages_of_type(MessageType.REJECT)
             if session_id is None or e.session_id == session_id
         ]
 
